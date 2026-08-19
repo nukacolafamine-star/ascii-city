@@ -4012,24 +4012,27 @@ function clockStr(){
 }
 
 /* ---- weather drifts on its own: dwell in a state, then move on ---------- */
-let wxT = 400;
+let wxT = 4000;
 function applyWeather(n){
   const was = weather;
   weather = n; flash = 0;
   if (n === 3) fogLevel = 0.12 + Math.random() * 0.25;
   if (n === 3 || was === 3){ if (GL) glBuildPalette(); else buildAtlases(); }
-  wxT = [rr(300, 720), rr(180, 420), rr(90, 200), rr(240, 480)][n];
+  // clear stretches span days (a day is 1440s); wet spells are minutes
+  wxT = [rr(6500, 15000), rr(180, 420), rr(90, 200), rr(240, 480)][n];
 }
 function wxUpdate(dt){
   wxT -= dt;
   if (wxT > 0) return;
+  // most days stay dry; a spell always opens with plain rain, storms only
+  // grow out of rain, and fog only settles after rain or a storm
   const r = Math.random();
-  const fogBias = (clock > 4 && clock < 9) ? 0.2 : 0.07;   // fog loves the small hours
+  const fogBias = (clock > 4 && clock < 9) ? 0.3 : 0.18;   // fog loves the small hours
   let n;
-  if (weather === 0)      n = r < 0.52 ? 0 : r < 0.74 ? 1 : r < 0.74 + fogBias ? 3 : 2;
-  else if (weather === 1) n = r < 0.45 ? 0 : r < 0.78 ? 1 : 2;
-  else if (weather === 2) n = r < 0.6 ? 1 : 0;
-  else                    n = r < 0.7 ? 0 : 1;
+  if (weather === 0)      n = 1;
+  else if (weather === 1) n = r < 0.16 ? 2 : r < 0.16 + fogBias ? 3 : 0;
+  else if (weather === 2) n = r < 0.4 ? 1 : r < 0.4 + fogBias ? 3 : 0;
+  else                    n = 0;                           // fog burns off
   applyWeather(n);
   toast('the weather turns: ' + ['clear', 'rain', 'storm', 'fog'][weather]);
 }
@@ -4051,10 +4054,11 @@ function waitOnBench(){
   const edges = [5.75, 6.5, 19.25, 20];
   let next = edges.find(e => e > clock + 0.02);
   if (next === undefined) next = edges[0] + 24;
+  const dh = next - clock;                 // a game hour is 60 real seconds
   clock = next;
   if (clock >= 24){ clock -= 24; dayTick(); }
   fade = 1;
-  wxT = Math.min(wxT, 2);                  // the sky may have other plans now
+  wxUpdate(dh * 60);                       // the sky moves on while you doze
   updateClock(0);
   toast('time passes - ' + clockStr());
 }

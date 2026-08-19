@@ -197,8 +197,10 @@ rides an arc, low at 06:30 and high at noon. Sitting on a **bench**
 and the weather may have other plans by then. Pedestrians take the benches
 too, sometimes.
 
-**Weather drifts on its own**: clear, rain, storm and fog dwell for minutes
-at a time and hand over to each other — fog favours the small hours. Rain
+**Weather drifts on its own**, and most days stay dry: roughly one day in
+six a wet spell rolls through, and it always opens with plain rain. Most
+spells stay just rain; occasionally one grows into a storm, and fog only
+settles in behind rain or a storm — favouring the small hours. Rain
 falls as slanted `/` streaks at per-column speeds; storms add lightning
 that flashes the whole frame. Fog is
 quiet: each bank rolls in with its own thickness (light, rolling or heavy),
