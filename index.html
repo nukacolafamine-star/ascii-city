@@ -4380,7 +4380,10 @@ function stampIntersectionIds(){
       for (let i = 0; i < id.length; i++)
         if (tType[y0 * MAP + x0 + i] !== T_WALK){ ok = false; break; }
       if (!ok) continue;
-      for (let i = 0; i < id.length; i++) signFloor[y0 * MAP + x0 + i] = id[i];
+      // the raycast view mirrors east-west relative to world axes, so the
+      // paint goes down as a mirror image: reversed run, flipped glyphs
+      for (let i = 0; i < id.length; i++)
+        signFloor[y0 * MAP + x0 + i] = id[id.length - 1 - i];
     }
 }
 function openMap(){
@@ -4812,8 +4815,8 @@ function floorSample(wx, wy, ix, iy){
     if (pc !== undefined){                     // the slabs like road markings
       const gl = MINIFONT[pc];
       if (gl && fx >= 0.14 && fy >= 0.10){
-        const gc = ((fx - 0.14) * 4.17) | 0, gr = ((fy - 0.10) * 6.25) | 0;
-        if (gc < 3 && gr < 5 && gl[gr * 4 + gc] === '#'){
+        const gc = 2 - (((fx - 0.14) * 4.17) | 0), gr = ((fy - 0.10) * 6.25) | 0;
+        if (gc >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
           _wb = C.nAmber; _wd = 0.95; _wwet = 1;
           return;
         }
