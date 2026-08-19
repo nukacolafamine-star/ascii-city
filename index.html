@@ -3691,7 +3691,9 @@ function crimeEvent(n, why){
   toast('the system notices: +' + n + ' corruption (' + why + ')');
 }
 function pedCrime(n, why){
-  const pc = player.qvar.pedCorr || 0;
+  // the cap is on OUTSTANDING ped-sourced corruption: as the score decays
+  // (or the fixer clears it), headroom comes back with it
+  const pc = Math.min(player.qvar.pedCorr || 0, player.corruption);
   if (pc >= 2) return;
   const add = Math.min(n, 2 - pc);
   player.qvar.pedCorr = pc + add;
