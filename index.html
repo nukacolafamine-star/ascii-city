@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>ASCII CITY — a raycast 3D engine drawn entirely in colored ASCII</title>
 <style>
   html,body{margin:0;padding:0;height:100%;background:#04060c;overflow:hidden;}
-  canvas{display:block;position:absolute;left:0;top:0;cursor:crosshair;}
+  canvas{display:block;position:absolute;left:0;top:0;cursor:crosshair;touch-action:none;}
   #glv{display:none}
   #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
         color:#7fe0b0;font:13px/1.6 "Cascadia Mono","Consolas","Courier New",monospace;
@@ -2435,6 +2435,7 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { keys[e.code] = 0; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
 function onCanvasClick(){
+  if (TOUCH.on) return;                      // taps are handled by the touch layer
   audioUnlock();
   const m = topMode();
   if (m && m.name === 'pause') modeStack.length = 0;    // click through the pause card
@@ -2443,6 +2444,7 @@ function onCanvasClick(){
 cv.addEventListener('click', onCanvasClick);
 glv.addEventListener('click', onCanvasClick);
 addEventListener('mousedown', e => {
+  if (TOUCH.on) return;                      // touch drives its own fire button
   if (e.button === 0 && document.pointerLockElement === view && !topMode()) fireWeapon();
 });
 addEventListener('mousemove', e => {
@@ -2576,6 +2578,7 @@ function updateCam(dt){
   if (keys.KeyS || keys.ArrowDown) fwd -= 1;
   if (keys.KeyD) str += 1;
   if (keys.KeyA) str -= 1;
+  fwd += TOUCH.f; str += TOUCH.s;             // the virtual stick is analog
   if (keys.ArrowLeft || keys.KeyQ) cam.ang += 1.9 * dt;
   if (keys.ArrowRight || keys.KeyE) cam.ang -= 1.9 * dt;
   if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
@@ -2584,7 +2587,8 @@ function updateCam(dt){
   let mx = (ca * fwd + sa * str), my = (sa * fwd - ca * str);
   const ml = Math.hypot(mx, my);
   if (ml > 0.001){
-    mx /= ml; my /= ml;
+    const mag = Math.min(1, ml);              // keyboard is full tilt; a stick can creep
+    mx = mx / ml * mag; my = my / ml * mag;
     moveCam(mx * sp * dt, my * sp * dt);
     // cadence, not distance: a sprint is a LONGER stride, so its footfalls
     // land slower than a walk's - heavier and lower-pitched too
@@ -2614,6 +2618,7 @@ function popMode(){ modeStack.pop(); }
 // Refusal (browser cooldown after an ESC exit, or a context with no lock at
 // all) just means the player clicks the canvas as before.
 function tryPointerLock(){
+  if (TOUCH.on) return;                      // no mouse to capture on glass
   try {
     const p = view.requestPointerLock && view.requestPointerLock();
     if (p && p.catch) p.catch(() => {});
@@ -2673,7 +2678,25 @@ function makeListMenu(def){
           break;
       }
     },
-    draw(){ drawListMenu(this); }
+    draw(){ drawListMenu(this); },
+    tap(cx, cy){                              // touch: rows are buttons
+      const h = this.hit;
+      if (!h) return;
+      if (cx < h.x || cx >= h.x + h.w || cy < h.y || cy >= h.y + h.h){
+        this.onKey('Escape');                 // tapping past the card backs out
+        return;
+      }
+      const idx = h.first + (cy - (h.y + 1));
+      if (idx < 0 || idx >= this.items.length) return;
+      const it = this.items[idx];
+      if (it.sep) return;
+      if (it.info){                           // the tab row splits left / right
+        if (def.onLR) def.onLR(cx < h.x + (h.w >> 1) ? -1 : 1);
+        return;
+      }
+      this.cursor = idx;
+      this.onKey('Enter');
+    }
   };
   if (m.items.length && m.items[0].sep) menuMove(m, 1);
   return m;
@@ -2747,7 +2770,20 @@ function openTree(title, tree){
           break;
       }
     },
-    draw(){ drawTree(this); }
+    draw(){ drawTree(this); },
+    tap(cx, cy){
+      const h = this.hit;
+      const opts = this.pageDone() ? this.visibleOpts() : [];
+      if (h && opts.length && cx >= h.x && cx < h.x + h.w){
+        const oi = cy - h.optStart;
+        if (oi >= 0 && oi < opts.length){
+          this.cursor = oi;
+          this.onKey('Space');
+          return;
+        }
+      }
+      this.onKey('Space');                    // anywhere else: skip / advance
+    }
   });
   sfx('ui_select', { vol: 0.5 });
 }
@@ -2784,6 +2820,14 @@ function openPauseMenu(){
         adj(d){ if (!stepRes(d)) toast('grid: already at the limit'); } },
       { label: 'MINIMAP', value: () => showMap ? 'ON' : 'OFF',
         adj(){ showMap = !showMap; } },
+      { label: 'TOUCH CONTROLS', value: () => TOUCH.on ? 'ON' : 'OFF',
+        hint: 'stick to move (rim = sprint), drag to look, tap menus directly',
+        adj(){
+          if (!touchUI){ buildTouchUI(); return; }
+          TOUCH.on = !TOUCH.on;
+          touchUI.style.display = TOUCH.on ? 'block' : 'none';
+          TOUCH.f = 0; TOUCH.s = 0;
+        } },
       { label: 'KEY HELP', value: () => showHelp ? 'ON' : 'OFF',
         adj(){ showHelp = !showHelp; } },
       { sep: true },
@@ -3924,6 +3968,156 @@ const VANIM = {
 };
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
+
+/*=========================== 13i. TOUCH ====================================
+  The whole game on glass. A floating analog stick on the left thumb (push
+  to the rim to sprint), drag anywhere else to look, and a small cluster of
+  buttons: FIRE, ACT (context-aware - it knows when you are seated), and a
+  utility row. Menus and dialogs are tapped directly - every row is a
+  button - and a tap past the card backs out. Enabled automatically on
+  coarse-pointer devices; DOM overlay, so the engine never knows.
+============================================================================*/
+const TOUCH = { on: false, f: 0, s: 0 };
+function touchWanted(){
+  try { return matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window; }
+  catch (e){ return false; }
+}
+function touchCell(px, py){ return [((px - R.ox) / R.cellW) | 0, ((py - R.oy) / R.cellH) | 0]; }
+function touchTap(px, py){
+  const m = topMode();
+  if (m){
+    const c = touchCell(px, py);
+    if (m.tap) m.tap(c[0], c[1]);
+    else if (m.onKey) m.onKey('Space');
+    return;
+  }
+  if (!sitting && lookTarget) tryInteract();
+}
+let touchUI = null;
+function buildTouchUI(){
+  if (touchUI) return;
+  TOUCH.on = true;
+  showHelp = false;                          // keyboard help is noise on glass
+  showMap = false;                           // the MAP button brings it back
+  const root = document.createElement('div');
+  root.id = 'touchui';
+  root.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:20;' +
+    'font:11px "Cascadia Mono","Consolas",monospace;-webkit-user-select:none;user-select:none;';
+  const mkBtn = (label, css, fn, hold) => {
+    const b = document.createElement('div');
+    b.textContent = label;
+    b.style.cssText = 'position:absolute;pointer-events:auto;display:flex;align-items:center;' +
+      'justify-content:center;color:#8ff0c0;background:rgba(4,8,14,.55);' +
+      'border:1px solid rgba(143,240,192,.5);border-radius:50%;touch-action:none;' +
+      'letter-spacing:.5px;' + css;
+    let rep = null;
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      audioUnlock();
+      b.style.background = 'rgba(143,240,192,.25)';
+      fn();
+      if (hold) rep = setInterval(fn, 270);
+    });
+    const up = () => { b.style.background = 'rgba(4,8,14,.55)'; if (rep){ clearInterval(rep); rep = null; } };
+    b.addEventListener('pointerup', up);
+    b.addEventListener('pointercancel', up);
+    root.appendChild(b);
+    return b;
+  };
+  // ---- the stick: floats to wherever the thumb lands ----------------------
+  const zone = document.createElement('div');
+  zone.style.cssText = 'position:absolute;left:0;bottom:0;width:44vw;height:46vh;' +
+    'pointer-events:auto;touch-action:none;';
+  const base = document.createElement('div');
+  base.style.cssText = 'position:absolute;width:104px;height:104px;border-radius:50%;' +
+    'border:1px solid rgba(143,240,192,.4);background:rgba(4,8,14,.3);display:none;' +
+    'margin:-52px 0 0 -52px;pointer-events:none;';
+  const nub = document.createElement('div');
+  nub.style.cssText = 'position:absolute;width:44px;height:44px;border-radius:50%;' +
+    'background:rgba(143,240,192,.35);border:1px solid rgba(143,240,192,.7);display:none;' +
+    'margin:-22px 0 0 -22px;pointer-events:none;';
+  zone.appendChild(base); zone.appendChild(nub);
+  root.appendChild(zone);
+  let stickId = null, sx = 0, sy = 0;
+  const RAD = 52;
+  zone.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation();
+    audioUnlock();
+    stickId = e.pointerId; sx = e.clientX; sy = e.clientY;
+    zone.setPointerCapture(e.pointerId);
+    base.style.left = nub.style.left = sx + 'px';
+    base.style.top = nub.style.top = sy + 'px';
+    base.style.display = nub.style.display = 'block';
+  });
+  zone.addEventListener('pointermove', e => {
+    if (e.pointerId !== stickId) return;
+    let dx = e.clientX - sx, dy = e.clientY - sy;
+    const d = Math.hypot(dx, dy);
+    if (d > RAD){ dx = dx / d * RAD; dy = dy / d * RAD; }
+    nub.style.left = (sx + dx) + 'px'; nub.style.top = (sy + dy) + 'px';
+    TOUCH.f = -dy / RAD; TOUCH.s = dx / RAD;
+    keys.ShiftLeft = d > RAD * 0.85 ? 1 : 0;          // rim = sprint
+  });
+  const stickUp = e => {
+    if (e.pointerId !== stickId) return;
+    stickId = null; TOUCH.f = 0; TOUCH.s = 0; keys.ShiftLeft = 0;
+    base.style.display = nub.style.display = 'none';
+  };
+  zone.addEventListener('pointerup', stickUp);
+  zone.addEventListener('pointercancel', stickUp);
+  // ---- look: drag anywhere that is not a control --------------------------
+  let lookId = null, lx = 0, ly2 = 0, moved = 0, downT = 0;
+  addEventListener('pointerdown', e => {
+    if (e.target.closest && e.target.closest('#touchui')) return;
+    audioUnlock();
+    if (lookId !== null) return;
+    lookId = e.pointerId; lx = e.clientX; ly2 = e.clientY; moved = 0; downT = performance.now();
+  });
+  addEventListener('pointermove', e => {
+    if (e.pointerId !== lookId) return;
+    const dx = e.clientX - lx, dy = e.clientY - ly2;
+    lx = e.clientX; ly2 = e.clientY;
+    moved += Math.abs(dx) + Math.abs(dy);
+    if (!topMode() && !paused){
+      cam.ang -= dx * 0.0055;
+      cam.pitch = clamp(cam.pitch - dy * 0.16, -R.rows * 0.62, R.rows * 0.62);
+    }
+  });
+  addEventListener('pointerup', e => {
+    if (e.pointerId !== lookId) return;
+    lookId = null;
+    if (moved < 12 && performance.now() - downT < 350) touchTap(e.clientX, e.clientY);
+  });
+  // ---- the buttons --------------------------------------------------------
+  const SAFE = 'calc(14px + env(safe-area-inset-bottom))';
+  const fire = mkBtn('FIRE', 'right:16px;bottom:' + SAFE + ';width:74px;height:74px;font-size:13px;',
+                     () => { if (!topMode()) fireWeapon(); }, true);
+  const act = mkBtn('ACT', 'right:104px;bottom:calc(40px + env(safe-area-inset-bottom));' +
+                    'width:62px;height:62px;',
+                    () => { if (topMode()) return; if (sitting) standUp(); else tryInteract(); });
+  const wait = mkBtn('WAIT', 'right:30px;bottom:calc(104px + env(safe-area-inset-bottom));' +
+                     'width:56px;height:56px;',
+                     () => { if (!topMode() && sitting) waitOnBench(); });
+  const util = (label, off, fn) => mkBtn(label,
+    'top:calc(10px + env(safe-area-inset-top));left:calc(50% + ' + off + 'px);' +
+    'width:46px;height:34px;border-radius:8px;', fn);
+  util('MENU', -110, () => { if (topMode()) topMode().onKey && topMode().onKey('Escape'); else openPauseMenu(); });
+  util('INV', -55, () => { const m = topMode(); if (m && m.name === 'inventory') m.onKey('Tab'); else if (!m) openInventory(); });
+  util('MAP', 0, () => { showMap = !showMap; });
+  util('FLY', 55, () => { if (topMode()) return; if (inside){ toast('the sky is outside'); return; } toggleRide(); });
+  document.body.appendChild(root);
+  touchUI = root;
+  // context: ACT glows when something answers the probe; WAIT only when seated
+  setInterval(() => {
+    if (!TOUCH.on) return;
+    const menuUp = !!topMode();
+    fire.style.opacity = act.style.opacity = menuUp ? 0.25 : 1;
+    act.style.borderColor = (!menuUp && (lookTarget || sitting)) ? '#ffd166' : 'rgba(143,240,192,.5)';
+    act.textContent = sitting ? 'STAND' : 'ACT';
+    wait.style.display = (!menuUp && sitting) ? 'flex' : 'none';
+  }, 150);
+}
+if (touchWanted()) addEventListener('load', buildTouchUI);
 
 /*============================== 14. RENDERER ===============================*/
 let dirX = 1, dirY = 0, planeX = 0, planeY = -1, planeLen = 1;
@@ -5265,6 +5459,7 @@ function drawListMenu(m){
   const maxIt = h - 4;
   const first = items.length > maxIt
     ? clamp(m.cursor - (maxIt >> 1), 0, items.length - maxIt) : 0;
+  m.hit = { x, y, w, h, first };    // where the rows landed, for tapping
   for (let i = 0; i < Math.min(items.length, maxIt); i++){
     const it = items[first + i], r = y + 1 + i, sel = first + i === m.cursor;
     if (it.sep){ hudStr(x + 2, r, '-'.repeat(Math.max(0, w - 4)), H_DIM); continue; }
@@ -5317,6 +5512,7 @@ function drawTree(m){
   if (m.cursor >= opts.length) m.cursor = Math.max(0, opts.length - 1);
   const h = lines.length + (opts.length ? opts.length + 1 : 0) + 4;
   const x = (cols - w) >> 1, y = Math.max(1, rows - h - 8);
+  m.hit = { x, y, w, h, optStart: y + 2 + lines.length };
   hudPanel(x, y, w, h); hudPanel(x, y, w, h);
   hudBox(x, y, w, h, m.title);
   let shown = m.t0 < 0 ? 1e9 : ((performance.now() - m.t0) * 0.06) | 0;
