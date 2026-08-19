@@ -4045,7 +4045,8 @@ function standUp(){
   cam.x = sp[0]; cam.y = sp[1];
 }
 function waitOnBench(){
-  const edges = [5, 6.5, 18.5, 20];
+  // stops sit ON the looks: full dawn glow, full day, full dusk, full night
+  const edges = [5.75, 6.5, 19.25, 20];
   let next = edges.find(e => e > clock + 0.02);
   if (next === undefined) next = edges[0] + 24;
   clock = next;
