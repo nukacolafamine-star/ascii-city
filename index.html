@@ -4364,7 +4364,7 @@ function drawMapMode(m){
   // the player, and the trail you should follow
   const px2 = sx(cam.x), py2 = sy(cam.y);
   if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
-    const dirCh = '>^<v'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
     hudCell(px2, py2, dirCh, H_WHT);
   }
   const qt = questTarget();
@@ -5974,7 +5974,7 @@ function drawMinimap(x0, y0){
   const hw = MW >> 1, hh = MH >> 1;
   for (let j = 0; j < MH; j++){
     let line = '';
-    const ty = cyT - (j - hh) * 2;
+    const ty = cyT + (j - hh) * 2;      // +y runs down-screen, same as the city map
     for (let i = 0; i < MW; i++){
       const tx = cxT + (i - hw);
       if (!inMap(tx, ty)){ line += ' '; continue; }
@@ -5986,7 +5986,7 @@ function drawMinimap(x0, y0){
     hudStr(x0 + 1, y0 + 1 + j, line, H_GRY);
   }
   const plot = (wx, wy, ch, col) => {
-    const i = Math.round(wx - cxT) + hw, j = hh - Math.round((wy - cyT) * 0.5);
+    const i = Math.round(wx - cxT) + hw, j = hh + Math.round((wy - cyT) * 0.5);
     if (i >= 0 && i < MW && j >= 0 && j < MH) hudStr(x0 + 1 + i, y0 + 1 + j, ch, col);
   };
   for (const c of cars) if (Math.abs(c.x - cam.x) < hw && Math.abs(c.y - cam.y) < hh * 2) plot(c.x, c.y, 'o', H_YEL);
@@ -5996,7 +5996,7 @@ function drawMinimap(x0, y0){
       plot(a.x, a.y, a.brain === 'hostile' ? 'x' : '@', a.brain === 'hostile' ? H_RED : H_PUR);
   const qm = questTarget();
   if (qm) plot(qm.x, qm.y, '!', H_YEL);
-  const dirCh = '>^<v'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+  const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
   plot(cam.x, cam.y, dirCh, H_BLU);
 }
 let fps = 60;
