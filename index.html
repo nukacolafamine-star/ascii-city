@@ -4101,251 +4101,221 @@ function mirrorView(rows){
   const M = { '/': '\\', '\\': '/', '(': ')', ')': '(', '[': ']', ']': '[' };
   return rows.map(r => r.padEnd(w).split('').reverse().map(c => M[c] || c).join(''));
 }
-const CM_ARM = { s: H_SKIN, j: H_JKT };
-const CM_GUN = { s: H_SKIN, j: H_JKT, '%': H_GRY, '#': H_DRK };
+const CM_ARM = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT };
+const CM_GUN = { s: H_SKIN, '@': H_SKIN, j: H_JKT,
+                 '%': H_GRY, '=': H_GRY, '.': H_GRY, '#': H_DRK, o: H_WHT };
+const CM_MUZ = { '\\': H_YEL, '|': H_YEL, '/': H_YEL, '-': H_YEL, '*': H_YEL };
 
-/* the pistol, held up the right of the frame, barrel toward centre */
+/* the pistol from behind, both hands on the grip, muzzle at the reticle */
 const VM_GUN = [
-  '                    ______ ',
-  '                   /%%%%%%/',
-  '                 /%%%%%%/  ',
-  '               /%%%%%%/    ',
-  '             /%%%%%%/      ',
-  '           /%%%%%%/        ',
-  '         /%%%%%%/          ',
-  '       /%%%%%%/            ',
-  '     |%%%%%%|           ',
-  '     |%%%%%%|_          ',
-  '     |%%%%%%|#|         ',
-  '     |%%%%%%|##|        ',
-  '      |%%%%%|###|       ',
-  '      |%%%%%|###|       ',
-  '   ___|%%%%%|_##|       ',
-  '  (sss|%%%%%|s##|       ',
-  ' (ssss|%%%%%|ss||       ',
-  ' |ssss(%%%%%(sss|       ',
-  ' |sss|%%%%%%|sss|       ',
-  ' (sss|%%%%%%|ssss(      ',
-  '(ssss(%%%%%%)sssss(     ',
-  '|sssss(%%%%(ssssss|     ',
-  '(jjssssssssssssssjj(    ',
-  '|jjjjssssssssssssjjj|   ',
-  '|jjjjjjssssssssjjjjjj|  ',
-  '(jjjjjjjjjjjjjjjjjjjjj) '
+  '             .|.              ',
+  '            (===)             ',
+  '           |=====|            ',
+  '           |=%o%=|            ',
+  '          /#=====#\\          ',
+  '          |#=====#|           ',
+  '         |%%=====%%|          ',
+  '         |%%#===#%%|          ',
+  '        |%%%[o]%%%%|          ',
+  '        |%%%%#%%%%%|          ',
+  '     ___|%%%%#%%%%%|___       ',
+  '    (ss/#%%%%#%%%%#\\ss)      ',
+  '   (sss|#%%%%#%%%%#|sss)      ',
+  '  (@s@s(#%%%%%%%%%#)s@s@)     ',
+  '  (sssss(#%%%%%%%#)sssss)     ',
+  '  |sssss|#%%%%%%%#|sssss|     ',
+  '   (ssss(%%%%%%%%%)ssss)      ',
+  '   (jjss(%%%%%%%%%)ssjj)      ',
+  '  /jjjjss\\%%%%%%%/ssjjjj\\   ',
+  ' /jjjjj|ss(_______)ss|jjjjj\\ ',
+  '/jjjjjj(ss)       (ss)jjjjjj\\',
+  'jjjjjj/ (s(       )s) \\jjjjjj',
+  'jjjjj/  (s)       (s)  \\jjjjj',
+  'jjj~/                   \\~jjj',
+  'jjj/                     \\jjj',
+  'jj/                       \\jj'
 ];
-/* an idle fist, guard up - right hand; the left is its mirror */
+/* an idle fist, boxer guard - knuckle ridge, finger seams, thumb, cuff folds */
 const VM_FIST_R = [
-  '      ______      ',
-  '   __(ssssss)_    ',
-  '  (ssssssssssss)  ',
-  ' (ssssssssssssss) ',
-  ' |ssssssssssssss| ',
-  ' (ssssssssssssss) ',
-  '  (ssssssssssss)  ',
-  '  |sssssssssss|   ',
-  ' (jjjsssssssjjj(  ',
-  '(jjjjjjsssjjjjjj( ',
-  '|jjjjjjjjjjjjjjj| ',
-  '|jjjjjjjjjjjjjjj| ',
-  '(jjjjjjjjjjjjjjjj)',
-  '|jjjjjjjjjjjjjjjj|'
+  '       ______       ',
+  '    __(nnnnnn)_     ',
+  '   (n@n@n@n@n@n)    ',
+  '  (s)ss)ss)ss)ss)   ',
+  '  |s)ss)ss)ss)ss|   ',
+  '  (ssssssssssss~)   ',
+  '   (sss~~ssssss~s)  ',
+  '   |sssssssssss|s)  ',
+  '  (:ssssssss:ss)    ',
+  '  (jj=jjjjjj=jjj)   ',
+  '  |jj/jjj~jjj\\jj|  ',
+  '  |jjjjj/jjjjjjj|   ',
+  '  (jjjj~jjjjjjjj)   ',
+  '  |jjjjjjjjjjjjj|   '
 ];
 const VM_FIST_L = mirrorView(VM_FIST_R);
-/* the swing: wound, then thrown at the centre of the screen */
-const VM_PUNCH_MID = [
-  '        ____        ',
-  '    ___(ssss)_      ',
-  '   (ssssssssss)     ',
-  '   (ssssssssss)     ',
-  '    (ssssssss)      ',
-  '    (jjjjjjjj)_     ',
-  '      (jjjjjjjj)_   ',
-  '        (jjjjjjjj)_ ',
-  '          (jjjjjjjj)',
-  '           |jjjjjjj|',
-  '           |jjjjjjj|'
+/* the swing, four beats: wind up big, smear across, hit at the reticle,
+   recover loose - the right-hand set; lefts are mirrors */
+const VM_PUNCH_WIND = [
+  '     _______        ',
+  '  __(nnnnnnn)__     ',
+  ' (n@n@n@n@n@n@n)    ',
+  ' (s)ss)ss)ss)ss)    ',
+  ' |ssssssssssss~s)   ',
+  ' (sssssssssssss~s)  ',
+  '  (:ssssssss:sss)   ',
+  '  (jj=jjjjjjj=jj)   ',
+  '  |jjj/jjj~jjjjj|   ',
+  '  (jjjjjjj/jjjjj)   ',
+  '  |jjjjjjjjjjjjj|   '
 ];
-const VM_PUNCH_EXT = [
-  '  ____                        ',
-  ' (ssss)___                    ',
-  '(ssssssssss)                  ',
-  '(ssssssssss)                  ',
-  ' (ssssssss)                   ',
-  '  (jjjjjj)_                   ',
-  '   (jjjjjjjj)_                ',
-  '     (jjjjjjjj)_              ',
-  '       (jjjjjjjj)_            ',
-  '         (jjjjjjjj)_          ',
-  '           (jjjjjjjj)_        ',
-  '             (jjjjjjjj)_      ',
-  '               (jjjjjjjj)_    ',
-  '                 (jjjjjjjj)_  ',
-  '                  (jjjjjjjjj) ',
-  '                   |jjjjjjjj| '
+const VM_PUNCH_SMEAR = [
+  '        ____            ',
+  '    ===(nnnn)==         ',
+  '  == =(ssssss)= ==      ',
+  ' ==  =(ssssss)=  ==     ',
+  '   == (jjjjjj)_ ==      ',
+  '  ==   (j~jjjjj)_  ==   ',
+  '        (jjjjjjjj)_     ',
+  '          (jjjj/jjj)_   ',
+  '           (jjjjjjjjj)  ',
+  '            |jjjjjjjj|  '
 ];
-const VM_PUNCH_MID_L = mirrorView(VM_PUNCH_MID);
-const VM_PUNCH_EXT_L = mirrorView(VM_PUNCH_EXT);
-/* consuming, at full body scale: cup, can, kit - same hands as the guard */
+const VM_PUNCH_HIT = [
+  '   \\   *   /        ',
+  '  * _(n@n@)_ *      ',
+  '   (n@n@n@n@)       ',
+  '  *(ssssssss)*      ',
+  '   (ssssssss)       ',
+  '   /  *   (jj)_     ',
+  '           (jjjj)_  ',
+  '           (j~jjjj)_',
+  '            (jjjjjjj)_    ',
+  '             (jjjjjjjj)_  ',
+  '              (jjjj/jjjj)_',
+  '               (jjjjjjjjjj)_',
+  '                (jjjj~jjjjjj)_',
+  '                 (jjjjjjjjjjjj)',
+  '                 |jjjjj/jjjjjj|',
+  '                 |jjjjjjjjjjjj|'
+];
+const VM_PUNCH_REC = [
+  '   ______           ',
+  '  (nnnnnn)__        ',
+  ' (ssssssssss)       ',
+  ' (ssss~sssss)       ',
+  '  (:sssssss:)       ',
+  '  (jj=jjjjj=j)      ',
+  '  |jjjj~jjjjj|      ',
+  '  (jjj/jjjjjj)      ',
+  '  |jjjjjjjjjj|      '
+];
+const VM_PUNCH_WIND_L = mirrorView(VM_PUNCH_WIND);
+const VM_PUNCH_SMEAR_L = mirrorView(VM_PUNCH_SMEAR);
+const VM_PUNCH_HIT_L = mirrorView(VM_PUNCH_HIT);
+const VM_PUNCH_REC_L = mirrorView(VM_PUNCH_REC);
+/* consuming, at full body scale - each item its own silhouette and grip:
+   squat corrugated cup / slim tilted can / flat latched case */
 const VANIM = {
-  noodles: { dur: 1.5, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, j: H_JKT, '~': H_WHT }, frames: [
-    [ '      ~     ~    ~      ',
-      '   ~      ~    ~        ',
-      '      ~     ~    ~      ',
-      '     ______________     ',
-      '    |WWWWWWWWWWWWWW|    ',
-      '    |WrrrrrrrrrrrrW|    ',
-      '    |WrrrrrrrrrrrrW|    ',
-      '    |WWWWWWWWWWWWWW|    ',
-      '    |WWWWWWWWWWWWWW|    ',
-      '    (WWWWWWWWWWWWWW)    ',
-      '     (WWWWWWWWWWWW)     ',
-      '      (WWWWWWWWWW)      ',
-      '      |WWWWWWWWWW|      ',
-      '      |WWWWWWWWWW|      ',
-      '   ___|WWWWWWWWWW|___   ',
-      '  (sss|WWWWWWWWWW|sss(  ',
-      ' (ssss|WWWWWWWWWW|ssss( ',
-      ' |ssss(WWWWWWWWWW(ssss| ',
-      ' |sss|WWWWWWWWWWWW|sss| ',
-      ' (sss|WWWWWWWWWWWW|sss( ',
-      '(ssss(WWWWWWWWWWWW)ssss(',
-      '|sssss(WWWWWWWWWW(sssss|',
-      '(jjsssssssssssssssssjj( ',
-      '|jjjjssssssssssssssjjjj|',
-      '|jjjjjjssssssssssjjjjjj|',
-      '(jjjjjjjjjjjjjjjjjjjjjj)' ],
-    [ '        ~    ~          ',
-      '     ______________     ',
-      '    /WWWWWWWWWWWWWW)    ',
-      '    |WrrrrrrrrrrrrW|    ',
-      '    (WWWWWWWWWWWWWW\\    ',
-      '    |WWWWWWWWWWWWWW|    ',
-      '    (WWWWWWWWWWWWWW)    ',
-      '     (WWWWWWWWWWWW)     ',
-      '      (WWWWWWWWWW)      ',
-      '      |WWWWWWWWWW|      ',
-      '      |WWWWWWWWWW|      ',
-      '      |WWWWWWWWWW|      ',
-      '      |WWWWWWWWWW|      ',
-      '      |WWWWWWWWWW|      ',
-      '   ___|WWWWWWWWWW|___   ',
-      '  (sss|WWWWWWWWWW|sss(  ',
-      ' (ssss|WWWWWWWWWW|ssss( ',
-      ' |ssss(WWWWWWWWWW(ssss| ',
-      ' |sss|WWWWWWWWWWWW|sss| ',
-      ' (sss|WWWWWWWWWWWW|sss( ',
-      '(ssss(WWWWWWWWWWWW)ssss(',
-      '|sssss(WWWWWWWWWW(sssss|',
-      '(jjsssssssssssssssssjj( ',
-      '|jjjjssssssssssssssjjjj|',
-      '|jjjjjjssssssssssjjjjjj|',
-      '(jjjjjjjjjjjjjjjjjjjjjj)' ] ] },
-  soda: { dur: 1.2, cmap: { '#': H_GRY, C: H_BLU, s: H_SKIN, j: H_JKT, '~': H_WHT }, frames: [
-    [ '                        ',
-      '                        ',
-      '      __________        ',
-      '      (##########)      ',
-      '      |#CCCCCCCC#|      ',
-      '      |#CCCCCCCC#|      ',
-      '      |#CCCCCCCC#|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      (##########)      ',
-      '   ___|##########|___   ',
-      '  (sss|##########|sss(  ',
-      ' (ssss|##########|ssss( ',
-      ' |ssss(##########(ssss| ',
-      ' |sss|############|sss| ',
-      ' (sss|############|sss( ',
-      '(ssss(############)ssss(',
-      '|sssss(##########(sssss|',
-      '(jjsssssssssssssssssjj( ',
-      '|jjjjssssssssssssssjjjj|',
-      '|jjjjjjssssssssssjjjjjj|',
-      '(jjjjjjjjjjjjjjjjjjjjjj)' ],
-    [ '      ~   ~  ~          ',
-      '    ~   ~  ~   ~        ',
-      '     __________         ',
-      '     (##########)       ',
-      '     |#CCCCCCCC#|       ',
-      '      |#CCCCCCCC#|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      |##########|      ',
-      '      (##########)      ',
-      '   ___|##########|___   ',
-      '  (sss|##########|sss(  ',
-      ' (ssss|##########|ssss( ',
-      ' |ssss(##########(ssss| ',
-      ' |sss|############|sss| ',
-      ' (sss|############|sss( ',
-      '(ssss(############)ssss(',
-      '|sssss(##########(sssss|',
-      '(jjsssssssssssssssssjj( ',
-      '|jjjjssssssssssssssjjjj|',
-      '|jjjjjjssssssssssjjjjjj|',
-      '(jjjjjjjjjjjjjjjjjjjjjj)' ] ] },
-  medkit: { dur: 1.6, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, j: H_JKT, '*': H_RED }, frames: [
-    [ '                        ',
-      '                        ',
-      '    ________________    ',
-      '   |WWWWWWWWWWWWWWWW|   ',
-      '   |WWWWWWWrrWWWWWWW|   ',
-      '   |WWWWWWWrrWWWWWWW|   ',
-      '   |WWWrrrrrrrrrrWWW|   ',
-      '   |WWWrrrrrrrrrrWWW|   ',
-      '   |WWWWWWWrrWWWWWWW|   ',
-      '   |WWWWWWWrrWWWWWWW|   ',
-      '   |WWWWWWWWWWWWWWWW|   ',
-      '   (WWWWWWWWWWWWWWWW)   ',
-      '    (WWWWWWWWWWWWWW)    ',
-      '     (WWWWWWWWWWWW)     ',
-      '   ___|WWWWWWWWWW|___   ',
-      '  (sss|WWWWWWWWWW|sss(  ',
-      ' (ssss|WWWWWWWWWW|ssss( ',
-      ' |ssss(WWWWWWWWWW(ssss| ',
-      ' |sss|WWWWWWWWWWWW|sss| ',
-      ' (sss|WWWWWWWWWWWW|sss( ',
-      '(ssss(WWWWWWWWWWWW)ssss(',
-      '|sssss(WWWWWWWWWW(sssss|',
-      '(jjsssssssssssssssssjj( ',
-      '|jjjjssssssssssssssjjjj|',
-      '|jjjjjjssssssssssjjjjjj|',
-      '(jjjjjjjjjjjjjjjjjjjjjj)' ],
-    [ '   *     *     *    *   ',
-      '      *     *     *     ',
-      '    ________________    ',
-      '   |WWWWWWWWWWWWWWWW|   ',
-      '   |WWWWWWWrrWWWWWWW|   ',
-      '   |WWWrrrrrrrrrrWWW|   ',
-      '   |WWWrrrrrrrrrrWWW|   ',
-      '   |WWWWWWWrrWWWWWWW|   ',
-      '   |WWWWWWWWWWWWWWWW|   ',
-      '  *|WWWWWWWWWWWWWWWW|*  ',
-      '   |WWWWWWWWWWWWWWWW|   ',
-      '   (WWWWWWWWWWWWWWWW)   ',
-      '    (WWWWWWWWWWWWWW)    ',
-      '     (WWWWWWWWWWWW)     ',
-      '   ___|WWWWWWWWWW|___   ',
-      '  (sss|WWWWWWWWWW|sss(  ',
-      ' (ssss|WWWWWWWWWW|ssss( ',
-      ' |ssss(WWWWWWWWWW(ssss| ',
-      ' |sss|WWWWWWWWWWWW|sss| ',
-      ' (sss|WWWWWWWWWWWW|sss( ',
-      '(ssss(WWWWWWWWWWWW)ssss(',
-      '|sssss(WWWWWWWWWW(sssss|',
-      '(jjsssssssssssssssssjj( ',
-      '|jjjjssssssssssssssjjjj|',
-      '|jjjjjjssssssssssjjjjjj|',
-      '(jjjjjjjjjjjjjjjjjjjjjj)' ] ] }
+  noodles: { dur: 1.5, cmap: { W: H_WHT, '"': H_WHT, '=': H_WHT, r: H_RED,
+                               n: H_YEL, '~': H_WHT, s: H_SKIN, j: H_JKT }, frames: [
+    [ '        ~       ~     ~     ',
+      '     ~      ~      ~        ',
+      '        ~       ~           ',
+      '                   \\ \\    ',
+      '                  \\ \\     ',
+      '   ________________\\_\\_   ',
+      '  (===================~=)   ',
+      '  |W"W"W"W"W"W"W"W"W"W"W|   ',
+      '   \\=)=)=)=)=)=)=)=)=)/    ',
+      ' (ss\\rrrrrrrrrrrrrrrr/ss)  ',
+      '(ssss\\=)=)=)=)=)=)=)/ssss) ',
+      '|sssss(______________)sssss|',
+      ' (ssssssssssssssssssssssss) ',
+      ' |jjssssssssssssssssssssjj| ',
+      ' |jjjj=jjjjj~jjjjjj=jjjjjj| ',
+      ' (jjjjjj/jjjjjjjj\\jjjjjjj) ' ],
+    [ '   ~ ~    ~~    ~ ~    ~    ',
+      '  ~    \\ \\  ~~    ~       ',
+      '        \\n\\               ',
+      '        n\\ \\n             ',
+      '        n n  n              ',
+      '   ______n_n__n_______      ',
+      '  (nnn~nnnnnnnn~nnnnn)      ',
+      '  |W"W"W"W"W"W"W"W"W"|      ',
+      '   \\=)=)=)=)=)=)=)=/       ',
+      ' (ss\\rrrrrrrrrrrrr/ss)     ',
+      '(ssss\\=)=)=)=)=)=/ssss)    ',
+      '|sssss(____________)sssss|  ',
+      ' (ssssssssssssssssssssss)   ',
+      ' |jjssssssssssssssssssjj|   ',
+      ' |jjjj=jjjj~jjjjj=jjjjjj|   ',
+      ' (jjjjj/jjjjjjjj\\jjjjjj)   ' ] ] },
+  soda: { dur: 1.2, cmap: { '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT,
+                            C: H_BLU, '!': H_WHT, "'": H_WHT, '*': H_WHT,
+                            s: H_SKIN, j: H_JKT }, frames: [
+    [ '        __ __          ',
+      '       (=[o]=)         ',
+      '       |!CCC:|         ',
+      '       |!CCC:|         ',
+      '       |!C/C:|         ',
+      '       |!CCC:|         ',
+      "       |!C'C:|         ",
+      '       |!CCC:|         ',
+      "       |!CC':|         ",
+      '       |=====|         ',
+      '    ___(_____)___      ',
+      '  (sss(       )sss)    ',
+      ' (ssss(_______)ssss)   ',
+      ' |ssssssssssssssssss|  ',
+      ' (jjss~ssssssss=sjj)   ',
+      ' |jjjjjsss/sssjjjjj|   ',
+      ' (jjjjjjjjjjjjjjjjj)   ' ],
+    [ "        * ' *  '       ",
+      "      '  * __*_        ",
+      '         _(=[o]=)      ',
+      '        /!CCC:/        ',
+      '        /!CCC:/        ',
+      '       /!C/C:/         ',
+      '       /!CCC:/         ',
+      '      /!CCC:/          ',
+      '      /=====/          ',
+      '    __(_____)__        ',
+      '  (sss(      )sss)     ',
+      ' (ssss(______)ssss)    ',
+      ' |ssssssssssssssssss|  ',
+      ' (jjss~ssssssss=sjj)   ',
+      ' |jjjjjsss/sssjjjjj|   ',
+      ' (jjjjjjjjjjjjjjjjj)   ' ] ] },
+  medkit: { dur: 1.6, cmap: { W: H_WHT, r: H_RED, '+': H_RED, '=': H_GRY,
+                              '[': H_GRY, ']': H_GRY, '@': H_WHT, i: H_BLU,
+                              '~': H_WHT, s: H_SKIN, j: H_JKT }, frames: [
+    [ '          ____                ',
+      '         (____)               ',
+      '   [====================]     ',
+      '   |WWWWWWWWWrrWWWWWWWWW|     ',
+      '   |WWWWWrrrrrrrrrrWWWWW|     ',
+      '   |WWWWWWWWWrrWWWWWWWWW|     ',
+      '   [==[]============[]==]     ',
+      '  s(____________________)s    ',
+      ' (ss|                  |ss)   ',
+      ' (sss|________________|sss)   ',
+      '  |jjss|          |ssjj|      ',
+      '  |jj/j|          |j=jj|      ',
+      '  (jjjj)          (jjjj)      ' ],
+    [ '    +     +      +    +      ',
+      '      _________________      ',
+      '     /WWWWWWWrrWWWWWWW/      ',
+      '    /WWWWWrrrrrrWWWWW/       ',
+      '   /WWWWWWWWrrWWWWWW/        ',
+      '   [====================]    ',
+      '   |(@)(@)[i][i](@)(@)~~|    ',
+      '   [==[]============[]==]    ',
+      '  s(____________________)s   ',
+      ' (ss|       +          |ss)  ',
+      ' (sss|________________|sss)  ',
+      '  |jjss|          |ssjj|     ',
+      '  |jj/j|          |j=jj|     ',
+      '  (jjjj)          (jjjj)     ' ] ] }
 };
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
@@ -6229,30 +6199,48 @@ function hudPass(){
         const tw = Math.round(tr * viewW(fr) / fr.length);
         drawViewArt(fr, (cols - tw) >> 1, rows - tr, tr, vAnim.d.cmap);
       } else if (punchT > 0){
+        // the guard hand stays up, slightly withdrawn
+        {
+          const gt = Math.min(VM_FIST_R.length, Math.round(rows * 0.26));
+          const gw = Math.round(gt * viewW(VM_FIST_R) / VM_FIST_R.length);
+          const off = Math.round(cols * 0.19);
+          if (punchLeft) drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - gt + 2, gt, CM_ARM);
+          else drawViewArt(VM_FIST_L, (cols >> 1) - off - gw, rows - gt + 2, gt, CM_ARM);
+        }
+        // four beats on the 0.45s swing: wind, smear, hit, recover
         const e = 0.45 - punchT;
-        const ext = e > 0.1 && e < 0.32;
-        const art = ext ? (punchLeft ? VM_PUNCH_EXT_L : VM_PUNCH_EXT)
-                        : (punchLeft ? VM_PUNCH_MID_L : VM_PUNCH_MID);
-        const tr = Math.min(art.length, Math.round(rows * 0.4));
+        const ph = e < 0.08 ? 0 : e < 0.13 ? 1 : e < 0.30 ? 2 : 3;
+        const art = punchLeft
+          ? [VM_PUNCH_WIND_L, VM_PUNCH_SMEAR_L, VM_PUNCH_HIT_L, VM_PUNCH_REC_L][ph]
+          : [VM_PUNCH_WIND, VM_PUNCH_SMEAR, VM_PUNCH_HIT, VM_PUNCH_REC][ph];
+        const tr = Math.min(art.length, Math.round(rows * 0.45));
         const tw = Math.round(tr * viewW(art) / art.length);
-        const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
-        const ax = punchLeft ? (ext ? (cols >> 1) - Math.round(tw * 0.8) : 3 + ins)
-                             : (ext ? (cols >> 1) - Math.round(tw * 0.2) : cols - tw - 3 - ins);
+        let ax;
+        if (ph === 2)                       // fist lands beside the reticle
+          ax = punchLeft ? (cols >> 1) - 6 - Math.round(tw * 0.75)
+                         : (cols >> 1) + 6 - Math.round(tw * 0.25);
+        else if (ph === 1)                  // the smear reaches across
+          ax = punchLeft ? (cols >> 1) - tw + 6 : (cols >> 1) - 6;
+        else {                              // wind / recover at the flank
+          const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
+          ax = punchLeft ? 3 + ins : cols - tw - 3 - ins;
+        }
         drawViewArt(art, ax, rows - tr, tr, CM_ARM);
       } else if (invCount('pistol')){
-        const tr = Math.min(VM_GUN.length, Math.round(rows * 0.42));
+        const tr = Math.min(VM_GUN.length, Math.round(rows * 0.44));
         const tw = Math.round(tr * viewW(VM_GUN) / VM_GUN.length);
-        const gx = cols - tw - 4, gy = rows - tr + bob - (muzzleT > 0 ? 1 : 0);
+        const kick = muzzleT > 0 ? 2 : 0;         // recoil: the whole gun bucks
+        const gx = ((cols - tw) >> 1) + 3, gy = rows - tr + bob + kick;
         drawViewArt(VM_GUN, gx, gy, tr, CM_GUN);
         if (muzzleT > 0)
-          drawViewArt(['\\ | /', '-- --', '/ | \\'], gx + Math.round(tw * 0.85) - 2, gy - 2, 3,
-                      { '\\': H_YEL, '|': H_YEL, '/': H_YEL, '-': H_YEL });
+          drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
+                      gx + (tw >> 1) - 3, gy - 3, 3, CM_MUZ);
       } else {
-        const tr = Math.min(VM_FIST_R.length, Math.round(rows * 0.26));
+        const tr = Math.min(VM_FIST_R.length, Math.round(rows * 0.28));
         const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
-        const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
-        drawViewArt(VM_FIST_L, 3 + ins, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
-        drawViewArt(VM_FIST_R, cols - tw - 3 - ins, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
+        const off = Math.round(cols * 0.19);      // a boxer guard, framing the reticle
+        drawViewArt(VM_FIST_L, (cols >> 1) - off - tw, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
+        drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
       }
     }
     if (sitting){
