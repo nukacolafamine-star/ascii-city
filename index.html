@@ -2342,7 +2342,7 @@ function probeConsider(x, y, obj){
 }
 function probeInteract(){
   lookTarget = null; _prSc = 0;
-  if (sitting) return;                       // nothing to reach from a bench
+  if (sitting || cam.riding) return;         // nothing to reach from a bench or the air
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
     if ((!a.dialog && !a.tree) || !!a.interior !== !!inside) continue;
