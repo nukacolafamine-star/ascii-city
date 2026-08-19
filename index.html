@@ -4588,6 +4588,250 @@ const VANIM = {
       '  |jj/j|          |j=jj|     ',
       '  (jjjj)          (jjjj)     ' ] ] }
 };
+/* ---- the new rituals: shared grips, per-item tops and palettes ---------- */
+const VG_CUP = [                              // both palms under, arms merging
+  '   ___(______________)___   ',
+  '  (sss(              )sss)  ',
+  ' (ssssssssssssssssssssssss) ',
+  ' |jjssssssssssssssssssssjj| ',
+  ' |jjjj=jjjjj~jjjjjj=jjjjjj| ',
+  ' (jjjjjj/jjjjjjjj\\jjjjjjj) ' ];
+const VG_ONE = [                              // one hand, forearm off right
+  '        _(sss(sss)_         ',
+  '       (sssssssssss)        ',
+  '        (sss~ssssss)_       ',
+  '        |jj=jjjjjjjjj)_     ',
+  '         (jjjj/jjjjjjjj)_   ',
+  '          (jjjjjjj~jjjjjj)  ',
+  '           (jjjjjjjjjjjjj)  ' ];
+const VG_ARM = [                              // the left forearm, presented
+  '  ______________________    ',
+  ' (ssssssssssssssssssssss)__ ',
+  ' (jj=jjjjjjjjj~jjjjjjjjjjjj)',
+  ' (jjjjjjjj/jjjjjjjjj=jjjjjj)' ];
+const va = (dur, cmap, t1, t2, grip) =>
+  ({ dur, cmap, frames: [t1.concat(grip), t2.concat(grip)] });
+// a real bowl of ramen: chopsticks, patterned band, a proper slurp
+VANIM.ramen = va(1.7,
+  { n: H_YEL, '~': H_WHT, W: H_WHT, r: H_RED, '=': H_WHT, s: H_SKIN, j: H_JKT },
+  [ '      ~     ~     ~         ',
+    '   ~     ~     ~            ',
+    '              \\ \\         ',
+    '               \\ \\        ',
+    '   _____________\\_\\_____  ',
+    '  (nnn~nnnnnnnnn\\n\\n~nnn) ',
+    '  |rWrWrWrWrWrWrWrWrWrWrW|  ',
+    '   (WWWWWWWWWWWWWWWWWWWW)   ',
+    '     (=)=)=)=)=)=)=)=)/     ',
+    '      (______________)      ' ],
+  [ '  ~ ~   ~~   ~ ~   ~~   ~   ',
+    '    ~ \\ \\ ~   ~~    ~     ',
+    '       \\n\\  ~             ',
+    '       n\\ \\n              ',
+    '   _____n__n_\\_\\________  ',
+    '  (nn~nnnnnnnnnnnnnn~nnn)   ',
+    '  |rWrWrWrWrWrWrWrWrWrWr|   ',
+    '   (WWWWWWWWWWWWWWWWWWW)    ',
+    '     (=)=)=)=)=)=)=)=/      ',
+    '      (_____________)       ' ], VG_CUP);
+// handheld snacks: same bite, four palettes
+const T_SNACK1 = [
+  '                            ',
+  '                            ',
+  '          ________          ',
+  '        _(BBBBBBBB)_        ',
+  '       (BBBB@@BBBBBB)       ',
+  '       (BB@BBBB@BBBB)       ',
+  '        (BBBBBBBBBB)        ',
+  '         (________)         ' ];
+const T_SNACK2 = [
+  "            '   '           ",
+  "          '   '             ",
+  '          ______            ',
+  '        _(BBBBB(__          ',
+  '       (BBBB@@B(  )         ',
+  '       (BB@BBBB(_)          ',
+  '        (BBBBBBBBB)         ',
+  '         (________)         ' ];
+const SNACK = (bcol, acol) => va(1.1,
+  { B: bcol, '@': acol, "'": H_WHT, s: H_SKIN, j: H_JKT }, T_SNACK1, T_SNACK2, VG_ONE);
+VANIM.bao     = SNACK(H_WHT, H_RED);
+VANIM.onigiri = SNACK(H_WHT, H_DRK);
+VANIM.taiyaki = SNACK(H_YEL, H_RED);
+VANIM.apple   = SNACK(H_GRN, H_WHT);
+VANIM.gyoza = va(1.3,                          // six on a tray, one at a time
+  { G: H_WHT, '=': H_GRY, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  [ '                            ',
+    '                            ',
+    '    __  __  __  __  __      ',
+    '   (GG)(GG)(GG)(GG)(GG)     ',
+    '  [====================]    ',
+    '  (____________________)    ' ],
+  [ "        '    '              ",
+    "     '     '                ",
+    '    __  __      __          ',
+    '   (GG)(GG)     (GG)        ',
+    '  [====================]    ',
+    '  (____________________)    ' ], VG_CUP);
+VANIM.skewer = va(1.2,                         // cubes on a stick, eaten down
+  { K: H_GRN, '*': H_WHT, s: H_SKIN, j: H_JKT },
+  [ '                 __         ',
+    '                (KK)_       ',
+    '               (KKK)/       ',
+    '              _(KK)/        ',
+    '             (KKK)/         ',
+    '              (K)/          ',
+    '              /             ' ],
+  [ '           *   *            ',
+    '            *               ',
+    '               __/          ',
+    '             _(KK)_         ',
+    '            (KKKK)/         ',
+    '             (KK)/          ',
+    '              /             ' ], VG_ONE);
+VANIM.kebab = va(1.2,
+  { K: H_RED, '*': H_YEL, s: H_SKIN, j: H_JKT },
+  VANIM.skewer.frames[0].slice(0, 7), VANIM.skewer.frames[1].slice(0, 7), VG_ONE);
+VANIM.sake = va(1.3,                           // ceramic flask, tipped back
+  { W: H_WHT, r: H_RED, '~': H_WHT, s: H_SKIN, j: H_JKT },
+  [ '                            ',
+    '           __               ',
+    '          (WW)              ',
+    '          |WW|              ',
+    '         (WWWW)             ',
+    '        (WWrrWW)            ',
+    '        (WWWWWW)            ',
+    '         (____)             ' ],
+  [ '        ~  ~                ',
+    '        ___                 ',
+    '       /WW/                 ',
+    '      /WW/                  ',
+    '     (WWWW)                 ',
+    '     (WWrrW)                ',
+    '     (WWWWW)                ',
+    '      (____)                ' ], VG_ONE);
+VANIM.boba = va(1.4,                           // dome lid, straw, pearls
+  { P: H_PUR, o: H_DRK, '|': H_GRY, W: H_WHT, s: H_SKIN, j: H_JKT },
+  [ '              |             ',
+    '              |             ',
+    '          ____|___          ',
+    '        _(WWWW|WWW)_        ',
+    '       |PPPPPP|PPPPP|       ',
+    '       |PPPPPP|PPPPP|       ',
+    '       |PoPoPo|oPoPo|       ',
+    '        (oooooooooo)        ',
+    '         (________)         ' ],
+  [ '              |             ',
+    '           ___|____         ',
+    '        _(WWWW|WWW)_        ',
+    '       |PPPPPP|PPPPP|       ',
+    '       |PPPPPP|PPPPP|       ',
+    '       |PPPPPP|PPPPP|       ',
+    '       |Po_oPo|oP_oo|       ',
+    '        (o_______o)         ',
+    '         (________)         ' ], VG_CUP);
+VANIM.chill = VANIM.haze = VANIM.staticd = null;   // set just below with palettes
+{
+  const T_PILL1 = [
+    '                            ',
+    '                            ',
+    '        __      __          ',
+    '     __(PP)____(PP)__       ',
+    '    (sss(PP)ss(PP)sss)      ',
+    '   (sssssssssssssssss)      ',
+    '    (sss~sssssss~sss)       ',
+    '     |jj=jjjjjjj=jj|        ',
+    '      (jjjj/jjjjjj)         ',
+    '      |jjjjjjjjjjj|         ' ];
+  const T_PILL2 = [
+    '          *    *            ',
+    '       *          *         ',
+    '        ____________        ',
+    '     __(ssssssssssss)_      ',
+    '    (ssssssssssssssss)      ',
+    '   (ssss~sssssss~ssss)      ',
+    '    (sssssssssssssss)       ',
+    '     |jj=jjjjjjj=jj|        ',
+    '      (jjjj/jjjjjj)         ',
+    '      |jjjjjjjjjjj|         ' ];
+  const PILL = (pcol, scol) => ({ dur: 1.1,
+    cmap: { P: pcol, '*': scol, s: H_SKIN, j: H_JKT },
+    frames: [T_PILL1, T_PILL2] });
+  VANIM.chill  = PILL(H_GRN, H_GRN);
+  VANIM.haze   = PILL(H_PUR, H_PUR);
+  VANIM.staticd = PILL(H_WHT, H_PUR);
+}
+VANIM.rush = VANIM.ghost = null;
+{
+  const T_INH1 = [
+    '                            ',
+    '                            ',
+    '           ____             ',
+    '          |IIII|            ',
+    '          |IIII|            ',
+    '         _|IIII|_           ',
+    '        (I======I)          ',
+    '         (______)==D        ' ];
+  const T_INH2 = [
+    '       ~  ~~  ~   ~         ',
+    '     ~   ~~~~   ~           ',
+    '           ____             ',
+    '          |IIII|            ',
+    '         _|IIII|_           ',
+    '        (I======I)          ',
+    '         (______)==D        ',
+    '                            ' ];
+  const INH = (icol) => va(1.0,
+    { I: icol, '=': H_GRY, D: H_GRY, '~': H_WHT, s: H_SKIN, j: H_JKT },
+    T_INH1, T_INH2, VG_ONE);
+  VANIM.rush  = INH(H_RED);
+  VANIM.ghost = INH(H_WHT);
+}
+VANIM.overclock = VANIM.mirror = null;
+{
+  const T_INJ1 = [
+    '            __              ',
+    '           |II|             ',
+    '           |II|             ',
+    '          [=II=]            ',
+    '           |##|             ',
+    '           \\##/            ',
+    '            \\/             ' ];
+  const T_INJ2 = [
+    '     *   |   |   *          ',
+    '        *|  *|              ',
+    '           |II|             ',
+    '          [=II=]            ',
+    '           |##|             ',
+    '           \\##/            ',
+    '            \\/             ' ];
+  const INJ = (icol) => va(1.2,
+    { I: icol, '*': icol, '|': icol, '=': H_GRY, '#': H_DRK,
+      s: H_SKIN, j: H_JKT }, T_INJ1, T_INJ2, VG_ARM);
+  VANIM.overclock = INJ(H_BLU);
+  VANIM.mirror    = INJ(H_PUR);
+}
+VANIM.numb = va(1.4,                            // a patch pressed onto the arm
+  { N: H_BLU, '+': H_WHT, s: H_SKIN, j: H_JKT },
+  [ '                            ',
+    '         ________           ',
+    '        |NNNNNNNN|          ',
+    '        |NN+NN+NN|          ',
+    '        |NNNNNNNN|          ',
+    '         (ssssss)           ',
+    '        (ssssssss)          ' ],
+  [ '       +    +    +          ',
+    '         ________           ',
+    '        |NNNNNNNN|          ',
+    '        |NN+NN+NN|          ',
+    '        |NNNNNNNN|          ',
+    '            +    +          ',
+    '                            ' ], VG_ARM);
+VANIM.coffee = { dur: 1.0, frames: null,        // the soda ritual, re-poured
+  cmap: { '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT, C: H_YEL,
+          '!': H_WHT, "'": H_WHT, '*': H_WHT, s: H_SKIN, j: H_JKT } };
+VANIM.coffee.frames = VANIM.soda.frames;
+
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
 
