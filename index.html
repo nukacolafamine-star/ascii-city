@@ -4003,7 +4003,7 @@ function buildTouchUI(){
   root.id = 'touchui';
   root.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:20;' +
     'font:11px "Cascadia Mono","Consolas",monospace;-webkit-user-select:none;user-select:none;';
-  const mkBtn = (label, css, fn, hold) => {
+  const mkBtn = (label, css, fn, hold, passthru) => {
     const b = document.createElement('div');
     b.textContent = label;
     b.style.cssText = 'position:absolute;pointer-events:auto;display:flex;align-items:center;' +
@@ -4014,6 +4014,10 @@ function buildTouchUI(){
     b.addEventListener('pointerdown', e => {
       e.preventDefault(); e.stopPropagation();
       audioUnlock();
+      if (passthru && topMode()){            // a card is open: the tap is FOR the card
+        touchTap(e.clientX, e.clientY);
+        return;
+      }
       b.style.background = 'rgba(143,240,192,.25)';
       fn();
       if (hold) rep = setInterval(fn, 270);
@@ -4040,9 +4044,17 @@ function buildTouchUI(){
   root.appendChild(zone);
   let stickId = null, sx = 0, sy = 0;
   const RAD = 52;
+  const stickReset = () => {
+    stickId = null; TOUCH.f = 0; TOUCH.s = 0; keys.ShiftLeft = 0;
+    base.style.display = nub.style.display = 'none';
+  };
   zone.addEventListener('pointerdown', e => {
     e.preventDefault(); e.stopPropagation();
     audioUnlock();
+    if (topMode()){                          // a card is open: taps go to the card
+      touchTap(e.clientX, e.clientY);
+      return;
+    }
     stickId = e.pointerId; sx = e.clientX; sy = e.clientY;
     zone.setPointerCapture(e.pointerId);
     base.style.left = nub.style.left = sx + 'px';
@@ -4058,11 +4070,7 @@ function buildTouchUI(){
     TOUCH.f = -dy / RAD; TOUCH.s = dx / RAD;
     keys.ShiftLeft = d > RAD * 0.85 ? 1 : 0;          // rim = sprint
   });
-  const stickUp = e => {
-    if (e.pointerId !== stickId) return;
-    stickId = null; TOUCH.f = 0; TOUCH.s = 0; keys.ShiftLeft = 0;
-    base.style.display = nub.style.display = 'none';
-  };
+  const stickUp = e => { if (e.pointerId === stickId) stickReset(); };
   zone.addEventListener('pointerup', stickUp);
   zone.addEventListener('pointercancel', stickUp);
   // ---- look: drag anywhere that is not a control --------------------------
@@ -4091,13 +4099,14 @@ function buildTouchUI(){
   // ---- the buttons --------------------------------------------------------
   const SAFE = 'calc(14px + env(safe-area-inset-bottom))';
   const fire = mkBtn('FIRE', 'right:16px;bottom:' + SAFE + ';width:74px;height:74px;font-size:13px;',
-                     () => { if (!topMode()) fireWeapon(); }, true);
+                     () => { if (!topMode()) fireWeapon(); }, true, true);
   const act = mkBtn('ACT', 'right:104px;bottom:calc(40px + env(safe-area-inset-bottom));' +
                     'width:62px;height:62px;',
-                    () => { if (topMode()) return; if (sitting) standUp(); else tryInteract(); });
+                    () => { if (topMode()) return; if (sitting) standUp(); else tryInteract(); },
+                    false, true);
   const wait = mkBtn('WAIT', 'right:30px;bottom:calc(104px + env(safe-area-inset-bottom));' +
                      'width:56px;height:56px;',
-                     () => { if (!topMode() && sitting) waitOnBench(); });
+                     () => { if (!topMode() && sitting) waitOnBench(); }, false, true);
   const util = (label, off, fn) => mkBtn(label,
     'top:calc(10px + env(safe-area-inset-top));left:calc(50% + ' + off + 'px);' +
     'width:46px;height:34px;border-radius:8px;', fn);
@@ -4111,6 +4120,7 @@ function buildTouchUI(){
   setInterval(() => {
     if (!TOUCH.on) return;
     const menuUp = !!topMode();
+    if (menuUp && stickId !== null) stickReset();   // no walking under a card
     fire.style.opacity = act.style.opacity = menuUp ? 0.25 : 1;
     act.style.borderColor = (!menuUp && (lookTarget || sitting)) ? '#ffd166' : 'rgba(143,240,192,.5)';
     act.textContent = sitting ? 'STAND' : 'ACT';
@@ -5489,7 +5499,8 @@ function drawDialog(m){
   const w = Math.min(cols - 6, 72);
   const lines = wrapText(m.pages[m.idx], w - 6);
   const h = lines.length + 4;
-  const x = (cols - w) >> 1, y = Math.max(1, rows - h - 8);
+  const x = (cols - w) >> 1;
+  const y = TOUCH.on ? Math.max(1, ((rows - h) >> 1) - 2) : Math.max(1, rows - h - 8);
   hudPanel(x, y, w, h); hudPanel(x, y, w, h);
   hudBox(x, y, w, h, m.title);
   let shown = m.t0 < 0 ? 1e9 : ((performance.now() - m.t0) * 0.06) | 0;
@@ -5511,7 +5522,9 @@ function drawTree(m){
   const opts = done ? m.visibleOpts() : [];
   if (m.cursor >= opts.length) m.cursor = Math.max(0, opts.length - 1);
   const h = lines.length + (opts.length ? opts.length + 1 : 0) + 4;
-  const x = (cols - w) >> 1, y = Math.max(1, rows - h - 8);
+  // on touch the card centres, clear of thumbs; on desktop it sits low
+  const x = (cols - w) >> 1;
+  const y = TOUCH.on ? Math.max(1, ((rows - h) >> 1) - 2) : Math.max(1, rows - h - 8);
   m.hit = { x, y, w, h, optStart: y + 2 + lines.length };
   hudPanel(x, y, w, h); hudPanel(x, y, w, h);
   hudBox(x, y, w, h, m.title);
