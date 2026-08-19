@@ -166,7 +166,7 @@ const TIME = [
   parameter that already existed - palette subset, height curve, how hard the
   block subdivides, prop mix, lit ratio, signage density, fog tint.
 ============================================================================*/
-const D_DOWN = 0, D_STRIP = 1, D_RES = 2, D_IND = 3, D_SUB = 4, D_RURAL = 5;
+const D_DOWN = 0, D_STRIP = 1, D_RES = 2, D_IND = 3, D_SUB = 4, D_RURAL = 5, D_RED = 6;
 const DISTRICT = [
   { name: 'DOWNTOWN',
     shells: [C.bldA, C.bldF, C.bldI, C.bldM, C.bldL, C.bldD],
@@ -226,7 +226,18 @@ const DISTRICT = [
     lamp: 0.008, tree: 0.030, bin: 0.002, hydr: 0.002, sign: 0.06, signV: 0,
     stall: 0.001, inset: 2, fill: 0.34, stree: 0.10, cam: 0.001,
     fog: [26, 30, 34],
-    words: ['BARN', 'FEED', 'GRAIN', 'FARM', 'EGGS'] }
+    words: ['BARN', 'FEED', 'GRAIN', 'FARM', 'EGGS'] },
+  { name: 'RED LIGHT',
+    shells: [C.bldG, C.bldB, C.bldN, C.bldJ, C.bldE],
+    neon:   [C.nMag, C.nPink, C.nViolet, C.nPink, C.nMag, C.nCyan],
+    hBase: [8, 14], hScale: [6, 20], lit: 1.5, wpm: [2, 3, 3, 3],
+    split: 3, park: 0.03, alley: 0.50, tier: 0.20, crown: 0.90, stripe: 0.85,
+    lamp: 0.160, tree: 0.002, bin: 0.030, hydr: 0.010, sign: 0.98, signV: 0.70,
+    stall: 0.030, stree: 0.25, cam: 0.045,
+    fog: [40, 10, 44],
+    words: ['LOVE HOTEL', 'CABARET', 'GIRLS GIRLS', 'PEEP SHOW', 'VELVET ROOM',
+            'MASSAGE', 'NEON DOLLS', 'PRIVATE', 'AFTER DARK', 'XXX ARCADE',
+            'CHERRY CLUB', 'LIPSTICK', 'ROOM SERVICE', 'THE MILE'] }
 ];
 // how far out each ring of the map sits, as a fraction of the half-diagonal
 const Z_CORE = 0.15, Z_URBAN = 0.34, Z_SUB = 0.60, Z_RURAL = 0.85;
@@ -238,6 +249,18 @@ const distMap = new Uint8Array(NB * NB);
 function districtAt(x, y){
   const bi = clamp((x / P) | 0, 0, NB - 1), bj = clamp((y / P) | 0, 0, NB - 1);
   return distMap[bj * NB + bi];
+}
+// distMap carries the TYPE (behaviour profile); regMap carries the PLACE -
+// a contiguous named region like MOSSBROOK or the RED LIGHT wedge
+const REGIONS = [];
+const regMap = new Uint8Array(NB * NB);
+function regionAt(x, y){
+  const bi = clamp((x / P) | 0, 0, NB - 1), bj = clamp((y / P) | 0, 0, NB - 1);
+  return zoneAt(bi, bj) >= 4 ? 255 : regMap[bj * NB + bi];
+}
+function regionName(x, y){
+  const r = regionAt(x, y);
+  return r === 255 ? 'THE WILDS' : REGIONS[r].name;
 }
 
 /*--------------------------- 5. DISTANCE LEVELS ----------------------------*/
@@ -401,30 +424,57 @@ function bsp(x0, y0, x1, y1, depth, out){
   }
 }
 
-// The map is laid out in rings - tower core, urban, suburban, farmland,
-// wilderness - and each ring draws its districts from its own menu, so the
-// character of the place changes as you travel out rather than at random.
-const ZONE_MIX = [
-  [D_DOWN, D_DOWN, D_DOWN, D_STRIP],
-  [D_STRIP, D_RES, D_RES, D_IND, D_DOWN],
-  [D_SUB, D_SUB, D_SUB, D_RES, D_IND],
-  [D_RURAL, D_RURAL, D_RURAL, D_SUB],
-  [D_RURAL]
-];
+// The map is laid out as named, contiguous places: a finance core, then an
+// urban ring split into red-light / strip / downtown wedges with two
+// industrial yards clamped to its outer edge, five residential
+// neighbourhoods filling the suburban ring, and the fields beyond. The whole
+// compass spins per seed, so no two cities put MOSSBROOK in the same corner.
+const RES_NAMES = ['SAKURA HEIGHTS', 'MOSSBROOK', 'KANDA GARDENS', 'EMBER ROW',
+                   'LOWMARSH', 'HALCYON PARK', 'WILLOW COURTS', 'GREYFIELD',
+                   'ASHVALE', 'NORIKO FLATS'];
+const IND_NAMES = ['THE FOUNDRIES', 'RUSTYARD', 'SLAGROW', 'GANTRY ROW',
+                   'COKEWORKS', 'THE SMELTERS'];
+function angDist(a, b){
+  const TAU = Math.PI * 2;
+  const d = Math.abs(a - b) % TAU;
+  return Math.min(d, TAU - d);
+}
 function buildDistricts(){
-  const salt = (rnd() * 65535) | 0;
-  // a coarse patch field, so like districts clump instead of speckling
-  const PS = 3;
-  const pw = Math.ceil(NB / PS) + 1;
-  const patch = new Uint8Array(pw * pw);
-  for (let i = 0; i < patch.length; i++) patch[i] = (rnd() * 64) | 0;
+  const TAU = Math.PI * 2;
+  REGIONS.length = 0;
+  const reg = (name, type) => REGIONS.push({ name, type }) - 1;
+  const deal = pool => pool.splice((rnd() * pool.length) | 0, 1)[0];
+  const resPool = RES_NAMES.slice(), indPool = IND_NAMES.slice();
+  const rFin   = reg('FINANCE DISTRICT', D_DOWN);
+  const rDown  = reg('DOWNTOWN', D_DOWN);
+  const rStrip = reg('THE STRIP', D_STRIP);
+  const rRed   = reg('RED LIGHT', D_RED);
+  const rInd   = [reg(deal(indPool), D_IND), reg(deal(indPool), D_IND)];
+  const rRes   = [];
+  for (let i = 0; i < 5; i++) rRes.push(reg(deal(resPool), i & 1 ? D_RES : D_SUB));
+  const rFields = reg('THE FIELDS', D_RURAL);
+  const rot = rnd() * TAU;
   for (let bj = 0; bj < NB; bj++)
     for (let bi = 0; bi < NB; bi++){
+      const id = bj * NB + bi;
       const z = zoneAt(bi, bj);
-      const mix = ZONE_MIX[z];
-      const pv = patch[((bj / PS) | 0) * pw + ((bi / PS) | 0)];
-      const jitter = hash3(bi, bj, salt) < 0.22 ? ((rnd() * 97) | 0) : 0;
-      distMap[bj * NB + bi] = mix[(pv + jitter) % mix.length];
+      if (z >= 4){ regMap[id] = 255; distMap[id] = D_RURAL; continue; }
+      const a = ((Math.atan2(bj + 0.5 - NB / 2, bi + 0.5 - NB / 2) - rot) % TAU + TAU) % TAU;
+      const zr = Math.hypot(bi + 0.5 - NB * 0.5, bj + 0.5 - NB * 0.5) / (NB * 0.5);
+      let r;
+      if (z === 0) r = rFin;
+      else if (z === 1){
+        const indBand = zr > Z_URBAN - 0.075;    // the urban ring's outer edge
+        if (indBand && angDist(a, TAU * 0.25) < TAU * 0.14) r = rInd[0];
+        else if (indBand && angDist(a, TAU * 0.75) < TAU * 0.14) r = rInd[1];
+        else if (a < TAU * 0.42) r = rRed;       // one unified wedge, contained
+        else if (a < TAU * 0.66) r = rStrip;
+        else r = rDown;
+      }
+      else if (z === 2) r = rRes[Math.min(4, (a / TAU * 5) | 0)];
+      else r = rFields;
+      regMap[id] = r;
+      distMap[id] = REGIONS[r].type;
     }
 }
 
@@ -823,7 +873,7 @@ function stampDataCentre(){
 const RED_WORDS = ['GIRLS', 'LIVE', 'PEEP', 'XXX', 'ROOMS', 'BAR', 'SHOW',
                    'PRIVATE', 'OPEN', 'CABARET'];
 function stampRedLight(){
-  const b = findBlock(1, 2, D_STRIP) || findBlock(1, 2);
+  const b = findBlock(1, 2, D_RED) || findBlock(1, 2, D_STRIP) || findBlock(1, 2);
   if (!b) return;
   const [bi, bj] = b;
   const sx = bi * P + RW * 0.5;                        // the street itself
@@ -1780,7 +1830,7 @@ function astar(sx, sy, tx, ty, limit){
 
 let peds = [];
 const repathQ = [];
-const CROWD = [0.85, 1.00, 0.55, 0.18, 0.30, 0.07];  // by district: how busy the street is
+const CROWD = [0.85, 1.00, 0.55, 0.18, 0.30, 0.07, 1.00];  // by district: how busy the street is
 function randWalkTile(weighted){
   for (let i = 0; i < 500; i++){
     const x = ri(1, MAP - 2), y = ri(1, MAP - 2);
@@ -2064,7 +2114,7 @@ const INT_CEIL = 3.0, IOX = 10, IOY = 10;
 let doors = [], inside = null, EXT = null, INTB = null;
 let intFloorA = 0, intFloorB = 0;
 // district -> room archetype; each carries floor colours, a keeper, lines
-const INTERIOR_KIND = ['lobby', 'shop', 'shop', 'depot', 'home', 'home'];
+const INTERIOR_KIND = ['lobby', 'shop', 'shop', 'depot', 'home', 'home', 'shop'];
 const INT_FLAVOR = {
   shop:  { keeper: 'SHOPKEEP', floorA: 0, floorB: 0, lines: [
            'Browse all you like. The cameras browse you back.',
@@ -3099,7 +3149,7 @@ const AUD = {
   ui_back:         { bus: 'fx' }
 };
 const AMB_BY_DISTRICT = ['amb_downtown', 'amb_strip', 'amb_residential',
-                         'amb_industrial', 'amb_suburbs', 'amb_farmland'];
+                         'amb_industrial', 'amb_suburbs', 'amb_farmland', 'amb_strip'];
 const MUSIC_BY_TIME = ['music_night', 'music_dusk', 'music_day'];
 
 let audioCtx = null;
@@ -4357,18 +4407,29 @@ function stampIntersectionIds(){
     }
 }
 function openMap(){
-  // district labels: the centroid of each district's blocks
+  // region labels: the centroid of each named place's blocks
   const acc = {};
   for (let bj = 0; bj < NB; bj++)
     for (let bi = 0; bi < NB; bi++){
       if (zoneAt(bi, bj) >= 4) continue;
-      const d = distMap[bj * NB + bi];
-      (acc[d] = acc[d] || { x: 0, y: 0, n: 0 });
-      acc[d].x += bi; acc[d].y += bj; acc[d].n++;
+      const r = regMap[bj * NB + bi];
+      (acc[r] = acc[r] || { x: 0, y: 0, n: 0 });
+      acc[r].x += bi; acc[r].y += bj; acc[r].n++;
     }
-  const dlbl = Object.keys(acc).map(d => ({
-    name: DISTRICT[d].name,
-    x: (acc[d].x / acc[d].n + 0.5) * P, y: (acc[d].y / acc[d].n + 0.5) * P }));
+  const dlbl = Object.keys(acc).map(r => ({
+    r: +r, name: REGIONS[r].name,
+    x: (acc[r].x / acc[r].n + 0.5) * P, y: (acc[r].y / acc[r].n + 0.5) * P }));
+  // a ring's centroid lands outside itself (THE FIELDS sits on the city
+  // centre) - shove such labels onto the region's northern arm instead
+  for (const L of dlbl){
+    const bi = clamp((L.x / P) | 0, 0, NB - 1), bj = clamp((L.y / P) | 0, 0, NB - 1);
+    if (zoneAt(bi, bj) < 4 && regMap[bj * NB + bi] === L.r) continue;
+    let x = 0, y = 0, n = 0;
+    for (let bj2 = 0; bj2 < NB >> 1; bj2++)
+      for (let bi2 = 0; bi2 < NB; bi2++)
+        if (zoneAt(bi2, bj2) < 4 && regMap[bj2 * NB + bi2] === L.r){ x += bi2; y += bj2; n++; }
+    if (n){ L.x = (x / n + 0.5) * P; L.y = (y / n + 0.5) * P; }
+  }
   pushMode({
     name: 'map', pausesWorld: true,
     cx: cam.x, cy: cam.y, z: 2, dlbl,
@@ -5344,7 +5405,7 @@ function spritePass(){
         // flavour by district: the strip leans ramen, homes lean produce,
         // downtown and the belt lean tech
         const dn2 = districtAt(o.x | 0, o.y | 0);
-        const bias = dn2 === D_STRIP ? 0 : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
+        const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0 : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
         def = STALL_VARIANTS[(((o.s * 5) | 0) + bias) % 3];
         dyn = NEONC[(o.s * NEONC.length) | 0];
       } else if (o.k === PK_METRO){
@@ -6118,7 +6179,7 @@ function hudPass(){
   hudStr(3, 3, 'fps ' + fps.toFixed(0).padStart(3) + '  grid ' + cols + 'x' + rows +
                '  rays ' + statRays + '  glyphs ' + statCells, H_GRN);
   hudStr(3, 4, (inside ? 'INSIDE: ' + inside.name + (inside.floor > 1 ? '  F' + inside.floor : '')
-                       : DISTRICT[districtAt(cam.x, cam.y)].name) + '  ' +
+                       : regionName(cam.x, cam.y)) + '  ' +
                cam.x.toFixed(0) + ',' + cam.y.toFixed(0) +
                '  cars ' + cars.length + '  peds ' + peds.length +
                '  ' + mode + (!inside && inFields(cam.x, cam.y) ? '  [open ground]' : '') +

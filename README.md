@@ -63,25 +63,28 @@ than at random:
 
 | ring | what it is |
 |---|---|
-| **core** | tower downtown and the strip |
-| **urban** | residential and industrial, some towers |
-| **suburban** | small houses on large plots, gardens, parks |
-| **farmland** | open fields, scattered barns, dirt tracks |
+| **core** | the **FINANCE DISTRICT** — the tower cluster |
+| **urban** | three wedges — a big unified **RED LIGHT** quarter, **THE STRIP** (shops and corps), and **DOWNTOWN** — with two **industrial yards** clamped to the ring's outer edge |
+| **suburban** | **five named residential neighbourhoods** (SAKURA HEIGHTS, MOSSBROOK, EMBER ROW and friends — dealt from a pool per seed), alternating denser blocks and garden suburbs |
+| **farmland** | **THE FIELDS** — open fields, scattered barns, dirt tracks |
 | **wilderness** | past the rural ring the lattice returns to earth — two highways leave the city and degrade to dirt tracks, rocks and scrub take over, and the view distance stretches past 300 tiles for full-skyline shots |
 
-Within its ring, each block draws a district from that ring's menu through a
-coarse patch field, so like districts clump instead of speckling. Six district
-rulesets modulate parameters that already existed — palette subset, height
-curve, subdivision depth, prop mix, lit ratio, signage density, fog tint — plus
-two that the loose rings needed: `fill` (how often a lot is built on at all)
-and `inset` (how far the footprint shrinks inside its plot, which is what turns
-a suburban lot into a house with a garden).
+Every non-wild block belongs to exactly one **named, contiguous region** —
+twelve of them covering the whole map, each a real place a quest can point
+to — and the whole compass spins per seed, so no two cities put MOSSBROOK in
+the same corner. Under the names, seven district rulesets modulate parameters
+that already existed — palette subset, height curve, subdivision depth, prop
+mix, lit ratio, signage density, fog tint — plus two that the loose rings
+needed: `fill` (how often a lot is built on at all) and `inset` (how far the
+footprint shrinks inside its plot, which is what turns a suburban lot into a
+house with a garden). The red light quarter got its own ruleset: the pinkest
+neon in the city, signage on almost every wall, cameras everywhere, and THE
+RED MILE — fixer included — runs through the middle of it.
 
 The result is a real gradient. Median building height runs about 73 units
 downtown, 31 on the strip, 19 residential, 14 industrial, 7 suburban and 5 on
 the farms, with open ground taking over entirely past the rural ring.
 
-## World generation
 ## World generation
 
 The lattice falls out of tile residues inside a 20-tile block period:
