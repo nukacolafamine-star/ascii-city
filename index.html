@@ -353,7 +353,7 @@ const T_ROAD = 0, T_CROSS = 1, T_WALK = 2, T_LOT = 3, T_BLD = 4,
 const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_RAIL = 5, PK_STALL = 6, PK_BENCH = 7, PK_CAM = 8, PK_PLAY = 9,
       PK_METRO = 10, PK_APPLE = 11, PK_TURBINE = 12, PK_ITEM = 13,
-      PK_SAKURA = 14, PK_CROP = 15;
+      PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17;
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -988,6 +988,17 @@ function buildCity(seed){
   buildDistricts();
   carveRiver();
   const mid = Math.round(NB * 0.5);
+  // Beyond the rural ring the lattice gives way: two highways leave the city
+  // through the wilderness and every other road out there returns to earth.
+  for (let bj = 0; bj < NB; bj++)
+    for (let bi = 0; bi < NB; bi++){
+      if (zoneAt(bi, bj) < 4 || bi === mid || bj === mid) continue;
+      for (let y = bj * P; y < Math.min(MAP, (bj + 1) * P); y++)
+        for (let x = bi * P; x < Math.min(MAP, (bi + 1) * P); x++){
+          const id = y * MAP + x, t = tType[id];
+          if (t === T_ROAD || t === T_WALK || t === T_CROSS) tType[id] = T_LOT;
+        }
+    }
   const brMain = carveBridge(mid, false);
   tollBooth(brMain);
   for (const k of [mid - 14, mid - 7, mid + 7, mid + 14])
@@ -996,6 +1007,16 @@ function buildCity(seed){
   const cx0 = MAP * 0.5, cy0 = MAP * 0.5;
   for (let bj = 0; bj < NB; bj++){
     for (let bi = 0; bi < NB; bi++){
+      if (zoneAt(bi, bj) >= 4){                     // wilderness: scrub, stone, sky
+        for (let y = bj * P; y < Math.min(MAP, (bj + 1) * P); y++)
+          for (let x = bi * P; x < Math.min(MAP, (bi + 1) * P); x++){
+            if (tType[y * MAP + x] !== T_LOT) continue;
+            const h4 = hash3(x, y, 606);
+            if (h4 < 0.005) props.push({ x: x + 0.5, y: y + 0.5, k: PK_ROCK, s: rnd(), r: 0.4 });
+            else if (h4 < 0.008) props.push({ x: x + 0.5, y: y + 0.5, k: PK_TREE, s: rnd(), r: 0.42 });
+          }
+        continue;
+      }
       const D = DISTRICT[distMap[bj * NB + bi]];
       const lx0 = bi * P + RW + SW, lx1 = bi * P + P - SW - 1;
       const ly0 = bj * P + RW + SW, ly1 = bj * P + P - SW - 1;
@@ -1494,7 +1515,9 @@ const ART = {
     '......K........',
     '......K........',
     '.....KKK.......']),
-  corn: parseArt(['..V..', '.VVV.', 'V.V.V', '.VVV.', 'V.V.V', '..K..', '..K..'])
+  corn: parseArt(['..V..', '.VVV.', 'V.V.V', '.VVV.', 'V.V.V', '..K..', '..K..']),
+  rock: parseArt(['.XXX.', 'XXXXM', 'XXXMM']),
+  stair: parseArt(['....X', '...XX', '..XXX', '.XXXX', 'XXXXX', 'MMMMM'])
 };
 // Stalls come in flavours - ramen cart, produce stand, tech bench - picked
 // per stall from its hash, weighted by the district it stands in.
@@ -1538,7 +1561,9 @@ const PROPDEF = [
   { art: ART.item,    w: 0.5, h: 0.42, sl: slots({ X: [-1, 0.95], S: [C.nWhite, 0.9] }) },
   { art: ART.sakura,  w: 3.3, h: 4.4, sl: slots({ V: [C.blossom, 0.76], G: [C.blossomD, 0.9],
                                                   K: [C.trunk, 0.8] }) },
-  { art: ART.corn,    w: 0.55, h: 1.8, sl: slots({ V: [C.leaf, 0.8], K: [C.trunk, 0.8] }) }
+  { art: ART.corn,    w: 0.55, h: 1.8, sl: slots({ V: [C.leaf, 0.8], K: [C.trunk, 0.8] }) },
+  { art: ART.rock,    w: 1.0, h: 0.7, sl: slots({ X: [C.rail, 0.72], M: [C.dataDk, 0.6] }) },
+  { art: ART.stair,   w: 1.4, h: 1.5, sl: slots({ X: [C.worktop, 0.8], M: [C.dataDk, 0.7] }) }
 ];
 
 /*========================= 10. SPATIAL HASH BUCKETS ========================*/
@@ -1950,9 +1975,10 @@ function serviceRepaths(){
   range of home. Either one stops and faces the player when approached.
 ============================================================================*/
 const ACTORDEF = {
-  citizen: { speed: 1.1, solid: true, r: 0.34 },
-  vendor:  { speed: 0.9, solid: true, r: 0.34 },
-  razor:   { speed: 2.35, solid: true, r: 0.34 }
+  citizen:  { speed: 1.1, solid: true, r: 0.34 },
+  vendor:   { speed: 0.9, solid: true, r: 0.34 },
+  razor:    { speed: 2.35, solid: true, r: 0.34 },
+  enforcer: { speed: 2.6, solid: true, r: 0.36 }
 };
 let actors = [];
 function spawnActor(kind, x, y, o){
@@ -2039,21 +2065,48 @@ const INT_FLAVOR = {
            'Stock comes in on the metro, same as the customers.'] },
   lobby: { keeper: 'CONCIERGE', floorA: 0, floorB: 0, lines: [
            'Deliveries go around the back. Everyone else waits.',
-           'The elevators are out. The elevators are always out.'] },
+           'The stairs go where the lease says they can.'] },
   depot: { keeper: 'FOREMAN', floorA: 0, floorB: 0, lines: [
            'Mind the forklift lanes. We lost two visitors last quarter.',
            'Everything in here is manifest freight. Do not touch the crates.'] },
   home:  { keeper: 'RESIDENT', floorA: 0, floorB: 0, lines: [
            'You are standing in my house. The door was shut for a reason.',
-           'Rain gets in through the roof. The landlord says that is weather.'] }
+           'Rain gets in through the roof. The landlord says that is weather.'] },
+  office:  { keeper: 'CLERK', floorA: 0, floorB: 0, lines: [
+           'If you are here about the invoices, the answer is still no.',
+           'Every desk on this floor belongs to somebody who quit.'] },
+  apts:    { keeper: 'TENANT', floorA: 0, floorB: 0, lines: [
+           'The walls are thin. The rent is not.',
+           'Do not knock on 4C. Trust me.'] },
+  storage: { keeper: 'CARETAKER', floorA: 0, floorB: 0, lines: [
+           'Everything here belongs to somebody who forgot it.'] }
 };
 function initInteriorFlavors(){          // palette indices exist by now
   INT_FLAVOR.shop.floorA  = C.walk;   INT_FLAVOR.shop.floorB  = C.deckOld;
   INT_FLAVOR.lobby.floorA = C.deck;   INT_FLAVOR.lobby.floorB = C.dataDk;
   INT_FLAVOR.depot.floorA = C.dataDk; INT_FLAVOR.depot.floorB = C.asphalt;
   INT_FLAVOR.home.floorA  = C.deckOld; INT_FLAVOR.home.floorB = C.trunk;
+  INT_FLAVOR.office.floorA = C.deck;   INT_FLAVOR.office.floorB = C.screen;
+  INT_FLAVOR.apts.floorA   = C.deckOld; INT_FLAVOR.apts.floorB = C.walk;
+  INT_FLAVOR.storage.floorA = C.dataDk; INT_FLAVOR.storage.floorB = C.tire;
 }
 initInteriorFlavors();
+// A building's canonical floors: always the street, sometimes a low floor,
+// a couple of hash-picked mid numbers, and the top. Five layouts serve any
+// tower - the numbers are the fiction, the seed makes them real.
+function bldFloors(b){
+  const top = Math.max(1, Math.round(b.h / 3.2));
+  if (top < 3) return top === 1 ? [1] : [1, top];
+  const list = [1], used = { 1: 1, [top]: 1 };
+  const n = Math.min(3, 1 + ((top / 9) | 0));
+  let guard = 0;
+  while (list.length < n && guard++ < 24){
+    const f = 2 + ((hash3(b.seed, list.length * 7 + guard, 55) * (top - 2)) | 0);
+    if (!used[f]){ used[f] = 1; list.push(f); }
+  }
+  list.push(top);
+  return list.sort((a, c) => a - c);
+}
 // One door per worthwhile building, on a wall that fronts a sidewalk.
 function buildDoors(){
   doors = [];
@@ -2080,21 +2133,24 @@ function buildDoors(){
                  name: b.word || D.words[(hash3(b.id, 5, 1) * D.words.length) | 0] });
   }
 }
-function buildInterior(bld, door){
+function buildInterior(bld, door, floor){
+  floor = floor || 1;
   if (!INTB) INTB = { tType: new Uint8Array(MAP * MAP), tH: new Float32Array(MAP * MAP),
                       tB: new Int16Array(MAP * MAP), walkG: new Uint8Array(MAP * MAP) };
   const S = INTB;
   S.tType.fill(0); S.tH.fill(0); S.tB.fill(-1); S.walkG.fill(0);
   const keep = rngState;
-  srand(((bld.seed ^ 0x51ab) >>> 0) || 1);
-  const kind = INTERIOR_KIND[bld.dist], F = INT_FLAVOR[kind];
+  srand((((bld.seed ^ 0x51ab) + floor * 2654435761) >>> 0) || 1);
+  const kind = floor === 1 ? INTERIOR_KIND[bld.dist]
+             : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
+  const F = INT_FLAVOR[kind];
   intFloorA = F.floorA; intFloorB = F.floorB;
   const rw = clamp(bld.x1 - bld.x0 + 3, 6, 15);
   const rh = clamp(bld.y1 - bld.y0 + 3, 6, 15);
   const doorX = IOX + (rw >> 1), doorY = IOY + rh;
-  const rec = { id: buildings.length, interior: 1, col: bld.col, seed: bld.seed,
+  const rec = { id: buildings.length, interior: 1, col: bld.col, seed: bld.seed + floor,
                 h: INT_CEIL, x0: IOX - 1, y0: IOY - 1, x1: IOX + rw, y1: IOY + rh,
-                doorX, doorY };
+                doorX: floor === 1 ? doorX : -99, doorY };
   buildings.push(rec);
   const cRec = { id: buildings.length, interior: 2, col: C.trunk, seed: bld.seed, h: 1.05 };
   buildings.push(cRec);
@@ -2108,11 +2164,41 @@ function buildInterior(bld, door){
   const ip = [];                                    // interior props
   let slot = 0;                                     // deterministic pickup keys
   const dropItem = (x, y, z, id, qty, price) => {
-    const key = 'b' + bld.id + '_' + (slot++);
+    const key = floor === 1 ? 'b' + bld.id + '_' + (slot++)
+                            : 'b' + bld.id + 'f' + floor + '_' + (slot++);
     if (worldDelta.taken[key]) return;              // already scavenged
     ip.push({ x, y, z, k: PK_ITEM, s: 0, r: 0, item: id, key, qty: qty || 1, price });
   };
-  if (kind === 'shop'){                             // counter across the back
+  // a low partition, drawn like the counter
+  const lowWall = (x, y) => {
+    const id = y * MAP + x;
+    S.tType[id] = T_BLD; S.tH[id] = 1.05; S.tB[id] = cRec.id; S.walkG[id] = 0;
+  };
+  if (kind === 'office'){                           // desks in partitioned rows
+    for (let y = IOY + 2; y < IOY + rh - 2; y += 3){
+      for (let x = IOX + 1; x < IOX + rw - 3; x++)
+        if ((x - IOX) % 4 !== 0) lowWall(x, y);
+      if (rnd() < 0.7) ip.push({ x: IOX + 2.5, y: y + 1.5, k: PK_BENCH, s: 0, r: 0.34 });
+    }
+    if (rnd() < 0.4) dropItem(IOX + rw - 1.5, IOY + 1.5, 0, 'soda');
+    if (rnd() < 0.25) dropItem(IOX + 1.5, IOY + rh - 1.5, 0, 'medkit');
+  } else if (kind === 'apts'){                      // a corridor of doors
+    const cx2 = IOX + (rw >> 1);
+    for (let y = IOY + 1; y < IOY + rh - 1; y++){
+      if ((y - IOY) % 3 === 0) continue;            // gaps read as doorways
+      if (cx2 - 2 > IOX) lowWall(cx2 - 2, y);
+      if (cx2 + 2 < IOX + rw - 1) lowWall(cx2 + 2, y);
+    }
+    if (rnd() < 0.5) dropItem(IOX + 1.2, IOY + 1.5, 0, 'soda');
+    if (rnd() < 0.3) dropItem(IOX + rw - 1.4, IOY + rh - 1.6, 0, 'medkit');
+  } else if (kind === 'storage'){                   // deep stacks, good salvage
+    for (let y = IOY + 1; y < IOY + rh - 1; y += 2)
+      for (let x = IOX + 1; x < IOX + rw - 1; x += 2)
+        if (rnd() < 0.65) ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
+    dropItem(IOX + 1.5, IOY + 1.5, 0, 'scrap');
+    if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + rh - 1.5, 0, 'scrap');
+    if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + 1.5, 0, 'ammo', 4);
+  } else if (kind === 'shop'){                      // counter across the back
     const cy = IOY + 2, gap = IOX + rw - 2;         // pass-through at the end
 
     for (let x = IOX + 1; x <= IOX + rw - 2; x++){
@@ -2145,27 +2231,74 @@ function buildInterior(bld, door){
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
     if (rnd() < 0.5) dropItem(IOX + 1.5, IOY + rh - 2.5, 0, 'soda');
   }
-  if (rnd() < 0.85){
-    const a = spawnActor('vendor', doorX + 0.5, IOY + 1.4,
+  if (rnd() < (kind === 'storage' ? 0.35 : 0.85)){
+    const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
+    const a = spawnActor('vendor', kx, IOY + 1.4,
                          { name: F.keeper, brain: 'still', dialog: F.lines });
     a.interior = 1;
     if (kind === 'shop'){ a.tree = SHOP_TREE; a.dialog = null; }
   }
+  // stairs, when the building has anywhere else to go
+  let stairs = null;
+  if (bldFloors(bld).length > 1){
+    const stx = IOX + rw - 1.5, sty = IOY + 1.5;
+    for (const cy2 of [sty | 0, (sty | 0) + 1]){    // the step AND the landing
+      const id2 = cy2 * MAP + (stx | 0);
+      S.walkG[id2] = 25; S.tType[id2] = T_INF; S.tH[id2] = 0; S.tB[id2] = -1;
+    }
+    ip.push({ x: stx, y: sty, k: PK_STAIR, s: 0, r: 0 });
+    stairs = { x: stx, y: sty };
+  }
   rngState = keep;
-  return { props: ip,
-           px: doorX + 0.5, py: IOY + rh - 1.6, ang: -Math.PI / 2,
-           exit: { x: doorX + 0.5, y: doorY - 0.45 } };
+  return { props: ip, stairs,
+           px: floor === 1 ? doorX + 0.5 : (stairs ? stairs.x : doorX + 0.5),
+           py: floor === 1 ? IOY + rh - 1.6 : (stairs ? stairs.y + 1.3 : IOY + rh - 1.6),
+           ang: floor === 1 ? -Math.PI / 2 : Math.PI / 2,
+           exit: floor === 1 ? { x: doorX + 0.5, y: doorY - 0.45 } : null };
+}
+function gotoFloor(f){
+  closeMenus();
+  if (f === inside.floor) return;
+  for (let i = actors.length - 1; i >= 0; i--) if (actors[i].interior) actors.splice(i, 1);
+  buildings.length = EXT.bLen;
+  const room = buildInterior(buildings[inside.bld], inside.door, f);
+  props = room.props; signs = [];
+  indexProps(); indexSpriteProps();
+  inside.floor = f; inside.exit = room.exit; inside.stairs = room.stairs;
+  cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0;
+  fade = 1;
+  sfx('door', { rate: 1.25, vol: 0.7 });
+  toast('FLOOR ' + f);
+}
+function openFloorMenu(){
+  const floors = bldFloors(buildings[inside.bld]);
+  const top = floors[floors.length - 1];
+  const items = [{ info: 'the stairwell hums with recycled air' }, { sep: true }];
+  for (let i = floors.length - 1; i >= 0; i--){
+    const f = floors[i];
+    items.push({ label: 'FLOOR ' + f + (f === top && top > 1 ? ' - top' : f === 1 ? ' - street' : ''),
+                 value: () => f === inside.floor ? 'HERE' : '',
+                 act(){ gotoFloor(f); } });
+  }
+  items.push({ sep: true }, { label: 'STAY', act(){ popMode(); } });
+  pushMode(makeListMenu({ name: 'floors', title: 'STAIRWELL', items }));
 }
 function enterInterior(door){
+  if (player.corruption >= 3 && hash3(door.b, 999, 7) < 0.35){
+    sfx('ui_back', { vol: 0.6, rate: 0.5 });
+    toast('the lock flashes red - the system flags you');
+    return;
+  }
   const bld = buildings[door.b];
   EXT = { tType, tH, tB, walkG, props, signs,
           camX: cam.x, camY: cam.y, camAng: cam.ang, camPitch: cam.pitch,
           bLen: buildings.length };
-  const room = buildInterior(bld, door);
+  const room = buildInterior(bld, door, 1);
   tType = INTB.tType; tH = INTB.tH; tB = INTB.tB; walkG = INTB.walkG;
   props = room.props; signs = [];
   indexProps(); indexSpriteProps();
-  inside = { name: door.name, district: bld.dist, exit: room.exit };
+  inside = { name: door.name, district: bld.dist, exit: room.exit,
+             stairs: room.stairs, bld: door.b, door, floor: 1 };
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
   viewD = 13; fade = 1;
   buildBackground();
@@ -2213,18 +2346,26 @@ function probeInteract(){
   const nearP = gridQuery(propGrid, cam.x, cam.y, 4, _q2);
   for (let i = 0; i < nearP.length; i++){
     const p = nearP[i];
-    if (p.k === PK_ITEM)
+    if (p.k === PK_ITEM){
+      const cost = p.price ? (player.corruption >= 3 ? Math.ceil(p.price * 1.25) : p.price) : 0;
       probeConsider(p.x, p.y, { kind: 'item', p,
-        prompt: p.price ? '[SPACE]  BUY - ' + ITEMS[p.item].name + ' (' + p.price + ' cr)'
-                        : '[SPACE]  TAKE - ' + ITEMS[p.item].name });
+        prompt: !p.price ? '[SPACE]  TAKE - ' + ITEMS[p.item].name
+              : player.credits >= cost
+                ? '[SPACE]  BUY - ' + ITEMS[p.item].name + ' (' + cost + ' cr)'
+                : '[SPACE]  STEAL - ' + ITEMS[p.item].name + ' (+1 corruption)' });
+    }
     else if (p.k === PK_BIN)
       probeConsider(p.x, p.y, { kind: 'bin', prompt: '[SPACE]  TRASH - STREET BIN' });
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
       probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[SPACE]  SIT - BENCH' });
   }
   if (inside){
-    const e = inside.exit;
-    probeConsider(e.x, e.y, { kind: 'door', exit: true, prompt: '[SPACE]  LEAVE - BACK TO THE STREET' });
+    if (inside.exit)
+      probeConsider(inside.exit.x, inside.exit.y,
+        { kind: 'door', exit: true, prompt: '[SPACE]  LEAVE - BACK TO THE STREET' });
+    if (inside.stairs)
+      probeConsider(inside.stairs.x, inside.stairs.y,
+        { kind: 'stairs', prompt: '[SPACE]  STAIRWELL - FLOOR ' + inside.floor });
   } else {
     for (let i = 0; i < doors.length; i++){
       const dr = doors[i];
@@ -2248,13 +2389,16 @@ function tryInteract(){
     openTrashMenu();
   } else if (t.kind === 'bench'){
     sitDown(t.p);
+  } else if (t.kind === 'stairs'){
+    openFloorMenu();
   } else if (t.kind === 'item'){
     const def = ITEMS[t.p.item];
     const st = player.inv.find(s => s.id === t.p.item);
     if (st && st.qty >= def.stack){ toast('cannot carry more ' + def.name.toLowerCase()); return; }
     if (t.p.price){
-      if (player.credits < t.p.price){ toast('not enough credits - the shopkeep is watching'); return; }
-      player.credits -= t.p.price;
+      const cost = player.corruption >= 3 ? Math.ceil(t.p.price * 1.25) : t.p.price;
+      if (player.credits >= cost) player.credits -= cost;
+      else crimeEvent(1, 'theft');           // pocketed in front of the cameras
     }
     invAdd(t.p.item, t.p.qty || 1);
     if (t.p.key) worldDelta.taken[t.p.key] = 1;   // dropped loot has no key
@@ -2363,6 +2507,24 @@ function spawnActors(){
       break;
     }
   }
+  // the fixer keeps a corner on the red mile - or failing that, any corner
+  let fx0 = null;
+  for (const b of buildings) if (b.redlight){ fx0 = [(b.x0 + b.x1) >> 1, b.y1 + 3]; break; }
+  const fspot = fx0 && walkG[fx0[1] * MAP + fx0[0]] ? fx0
+              : randWalkNear(cam.x, cam.y, 12, 24);
+  if (fspot) spawnActor('citizen', fspot[0] + 0.5, fspot[1] + 0.5, {
+    name: 'THE FIXER', brain: 'still', shirt: C.nPink, skin: C.skinB,
+    tree: {
+      entry: () => 'start',
+      start: { text: () => 'Corruption ' + player.corruption + ' of 10. The system remembers everything - unless somebody pays it to forget. Forty a point.',
+        opts: [{ t: 'Pay 40 cr - clean one point',
+                 if: () => player.corruption > 0 && player.credits >= 40,
+                 do(){ player.credits -= 40; player.corruption--; toast('one entry deleted'); },
+                 next: 'start' },
+               { t: 'Who are you?', next: 'who' },
+               { t: 'Leave' }] },
+      who: { text: 'A janitor. The mess I clean is in the records.' }
+    } });
   // the belt has teeth: razors prowl the industrial district streets
   let packed = 0;
   for (let i = 0; i < 4000 && packed < 14; i++){
@@ -2409,7 +2571,7 @@ function propBlocked(x, y, rad){
   const near = gridQuery(propGrid, x, y, 3, _q1);
   for (let i = 0; i < near.length; i++){
     const p = near[i];
-    if (p.k === PK_ITEM || p.k === PK_CROP) continue;  // pickups and crops never block
+    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;   // walk-through kinds
     const dx = x - p.x, dy = y - p.y, rr2 = (rad + p.r) * (rad + p.r);
     if (dx * dx + dy * dy < rr2) return true;
   }
@@ -2464,7 +2626,7 @@ function onPress(code){
     case 'Tab': openInventory(); break;
     case 'KeyP': paused = !paused; break;
     case 'KeyH': showHelp = !showHelp; break;
-    case 'KeyM': showMap = !showMap; break;
+    case 'KeyM': openMap(); break;
     case 'KeyG': if (inside){ toast('no metro in here'); break; } useMetro(); break;
     case 'KeyB': bloomOn = !bloomOn; toast('bloom ' + (bloomOn ? 'on' : 'off')); break;
     case 'KeyV': if (inside){ toast('the sky is outside'); break; } toggleRide(); break;
@@ -3064,7 +3226,8 @@ const player = {
   hp: 100, maxHp: 100, credits: 120,
   stats: { VIT: 1, AGI: 1, TECH: 1 },
   inv: [],                                  // [{ id, qty }]
-  quests: {}, qvar: {}, track: null         // quest stages, counters, compass
+  quests: {}, qvar: {}, track: null,        // quest stages, counters, compass
+  corruption: 0                             // how hard the system watches you
 };
 const ITEMS = {
   noodles: { name: 'CUP NOODLES', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 15,
@@ -3118,6 +3281,12 @@ function resetPlayer(){
   player.credits = 120;
   player.inv = [];
   player.quests = {}; player.qvar = {}; player.track = null;
+  player.corruption = 0;
+}
+// what a thing costs YOU: the flagged pay corpo prices
+function priceOf(id){
+  const p = ITEMS[id].price || 0;
+  return player.corruption >= 3 ? Math.ceil(p * 1.25) : p;
 }
 
 /* the inventory screen is just a list menu built from data, in five tabs */
@@ -3363,6 +3532,7 @@ function questTarget(){
 }
 let qAcc = 0;
 function checkQuests(){
+  corruptionTick();
   for (const id in player.quests){
     const s = player.quests[id];
     if (typeof s !== 'number') continue;
@@ -3385,14 +3555,16 @@ function openShopMenu(){
   const items = [{ info: 'CREDITS ' + player.credits }, { sep: true }, { info: 'BUY' }];
   for (const id of SHOP_STOCK){
     const def = ITEMS[id];
-    items.push({ label: def.name, value: () => def.price + ' cr', hint: def.hint,
+    items.push({ label: def.name, value: () => priceOf(id) + ' cr', hint: def.hint,
       act(){
-        if (player.credits < def.price){ toast('not enough credits'); return; }
+        const cost = priceOf(id);
+        if (player.credits < cost){ toast('not enough credits'); return; }
         if (invCount(id) >= def.stack){ toast('you cannot carry more'); return; }
-        player.credits -= def.price; invAdd(id, 1);
+        player.credits -= cost; invAdd(id, 1);
         sfx('ui_select', { vol: 0.5 }); refreshShop();
       } });
   }
+  if (player.corruption >= 3) items.push({ info: 'flagged customers pay corpo rates' });
   items.push({ sep: true }, { info: 'SELL - 40% of value' });
   const sellable = player.inv.filter(s => ITEMS[s.id].price && s.id !== 'pistol');
   if (!sellable.length) items.push({ info: 'nothing they want' });
@@ -3467,6 +3639,81 @@ function openTrashConfirm(){
 ============================================================================*/
 let hurtT = 0, muzzleT = 0, panicT = 0, panicX = 0, panicY = 0;
 let fxs = [];                                 // short-lived impact sparks
+
+/* ---- corruption: the system keeps a ledger --------------------------------
+   Crimes raise it, two clean days lower it, the fixer erases it for money.
+   1-2: the cameras notice you. 3-5: prices up a quarter, a third of doors
+   refuse you. 6+: enforcers come looking. Ped-sourced corruption caps at 2
+   (assault three different people = +1; killing = +1 each, into the cap). */
+function crimeEvent(n, why){
+  if (n <= 0) return;
+  player.corruption = Math.min(10, player.corruption + n);
+  player.qvar.lastCrimeDay = dayCount;
+  sfx('ui_back', { vol: 0.6, rate: 0.5 });
+  toast('the system notices: +' + n + ' corruption (' + why + ')');
+}
+function pedCrime(n, why){
+  const pc = player.qvar.pedCorr || 0;
+  if (pc >= 2) return;
+  const add = Math.min(n, 2 - pc);
+  player.qvar.pedCorr = pc + add;
+  crimeEvent(add, why);
+}
+function dayTick(){                           // called once per day rollover
+  dayCount++;
+  if (player.corruption > 0 && dayCount - (player.qvar.lastCrimeDay || 0) >= 2){
+    player.corruption--;
+    player.qvar.lastCrimeDay = dayCount;      // the next point needs two more
+    toast('the record fades: -1 corruption');
+  }
+}
+let enfT = 40, camWhisperT = 20;
+function corruptionTick(){                    // polled every half second
+  if (player.corruption <= 0 || inside) return;
+  camWhisperT -= 0.5;
+  if (camWhisperT <= 0){
+    camWhisperT = 22 + Math.random() * 30;
+    const near = gridQuery(propGrid, cam.x, cam.y, 7, _q1);
+    for (let i = 0; i < near.length; i++)
+      if (near[i].k === PK_CAM){ toast('a camera swivels to follow you'); break; }
+  }
+  if (player.corruption >= 6){
+    enfT -= 0.5;
+    if (enfT <= 0){
+      enfT = 45 + Math.random() * 60;
+      if (actors.filter(a => a.kind === 'enforcer').length < 3){
+        const t = randWalkNear(cam.x, cam.y, 18, 30);
+        if (t){
+          const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
+            { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
+          a.aggro = 1; a.atk = 9;
+          toast('an enforcer has your signature');
+        }
+      }
+    }
+  }
+}
+/* peds can be hurt; the ledger fills accordingly */
+function damagePed(p, d){
+  if (p.hp === undefined) p.hp = 10;
+  p.hp -= d;
+  addFx(p.x, p.y, 1.2);
+  sfx('hit', { vol: 0.6 });
+  panicT = worldTime + 5; panicX = cam.x; panicY = cam.y;
+  if (!p.assaulted){
+    p.assaulted = 1;
+    player.qvar.assaults = (player.qvar.assaults || 0) + 1;
+    if (player.qvar.assaults % 3 === 0) pedCrime(1, 'assault');
+  }
+  if (p.hp <= 0){
+    pedCrime(1, 'murder');
+    if (p.sit){ p.sit.occ--; p.sit = null; }
+    const t = randWalkNear(cam.x, cam.y, 60, STREAM_R * 0.8);   // the crowd renews
+    if (t){ p.x = t[0] + 0.5; p.y = t[1] + 0.5; }
+    p.hp = undefined; p.assaulted = 0; p.path = null; p.pi = 0; p.cool = rnd() * 2;
+    toast('they drop. the street empties around you');
+  }
+}
 const SPARK_SL = slots({ X: [-1, 1.0] });
 function addFx(x, y, z){ fxs.push({ x, y, z, t: 0.12 }); }
 function sightClear(x0, y0, x1, y1){
@@ -3514,14 +3761,37 @@ function hostileInSights(maxD, halfW){
   }
   return best && { a: best, d: bd };
 }
+// like the above, but a bullet does not care who is in front of it
+function characterInSights(maxD, halfW){
+  halfW = halfW || 0.45;
+  const hit = hostileInSights(maxD, halfW);
+  let best = hit ? hit.a : null, bd = hit ? hit.d : 1e9, ped = false;
+  if (!inside){
+    const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+    const wd = Math.min(bd, wallDist(maxD));
+    const near = gridQuery(pedGrid, cam.x + vx * Math.min(12, maxD * 0.4),
+                           cam.y + vy * Math.min(12, maxD * 0.4), 16, _q1);
+    for (let i = 0; i < near.length; i++){
+      const p = near[i];
+      const rx = p.x - cam.x, ry = p.y - cam.y;
+      const f = rx * vx + ry * vy;
+      if (f < 0.3 || f > wd) continue;
+      if (Math.abs(vy * rx - vx * ry) > halfW) continue;
+      if (f < bd){ bd = f; best = p; ped = true; }
+    }
+  }
+  return best && { a: best, d: bd, ped };
+}
 // bare knuckles: half a pistol round, arm's reach, a forgiving swing arc
 let punchT = 0;
 function punch(){
   if (punchT > 0) return;                     // still mid-swing
   punchT = 0.45;
   punchLeft = !punchLeft;                     // jab with the other arm
-  const hit = hostileInSights(1.7, 0.7);
-  if (hit){
+  const hit = characterInSights(1.7, 0.7);
+  if (hit && hit.ped){
+    damagePed(hit.a, 5 + ((Math.random() * 3) | 0));
+  } else if (hit){
     const a = hit.a;
     a.hp -= 5 + ((Math.random() * 3) | 0);
     a.aggro = 1; a.hitT = 0.15;
@@ -3551,8 +3821,10 @@ function fireWeapon(){
   panicT = worldTime + 6; panicX = cam.x; panicY = cam.y;
   for (const a of actors)                       // gunfire carries
     if (a.brain === 'hostile' && Math.hypot(a.x - cam.x, a.y - cam.y) < 15) a.aggro = 1;
-  const hit = hostileInSights(34);
-  if (hit){
+  const hit = characterInSights(34);
+  if (hit && hit.ped){
+    damagePed(hit.a, 9 + ((Math.random() * 6) | 0));
+  } else if (hit){
     const a = hit.a;
     a.hp -= 9 + ((Math.random() * 6) | 0);
     a.aggro = 1; a.hitT = 0.15;
@@ -3630,7 +3902,7 @@ function hostileBrain(a, dt){
     a.moving = 1;
   } else if (a.atkCool <= 0 && player.hp > 0){
     a.atkCool = 1.1;
-    damagePlayer(5 + ((Math.random() * 6) | 0));
+    damagePlayer((a.atk || 5) + ((Math.random() * 6) | 0));
   }
 }
 let punchLeft = false;                       // the swing alternates arms
@@ -3667,7 +3939,7 @@ function curTime(){
 }
 function updateClock(dt){
   clock += dt / 60;
-  if (clock >= 24){ clock -= 24; dayCount++; }
+  if (clock >= 24){ clock -= 24; dayTick(); }
   const t = timeBlend();
   const dom = t.u < 0.5 ? t.a : t.b;
   if (dom !== CFG.timeMode){                // the gameplay flags snap here
@@ -3737,7 +4009,7 @@ function waitOnBench(){
   let next = edges.find(e => e > clock + 0.02);
   if (next === undefined) next = edges[0] + 24;
   clock = next;
-  if (clock >= 24){ clock -= 24; dayCount++; }
+  if (clock >= 24){ clock -= 24; dayTick(); }
   fade = 1;
   wxT = Math.min(wxT, 2);                  // the sky may have other plans now
   updateClock(0);
@@ -3783,7 +4055,6 @@ function mirrorView(rows){
 }
 const CM_ARM = { s: H_SKIN, j: H_JKT };
 const CM_GUN = { s: H_SKIN, j: H_JKT, '%': H_GRY, '#': H_DRK };
-const CM_BODY = { j: H_JKT, p: H_PNT, s: H_SKIN, '#': H_DRK, '=': H_GRY };
 
 /* the pistol, held up the right of the frame, barrel toward centre */
 const VM_GUN = [
@@ -3866,44 +4137,6 @@ const VM_PUNCH_EXT = [
 ];
 const VM_PUNCH_MID_L = mirrorView(VM_PUNCH_MID);
 const VM_PUNCH_EXT_L = mirrorView(VM_PUNCH_EXT);
-/* the body, seen down your own chest: boots far, chest near */
-const BODY_LEGS_A = [
-  '          [##]   [##]         ',
-  '          [##]   [##]         ',
-  '          |pp|   |pp|         ',
-  '          |pp|   |pp|         ',
-  '         |ppp|   |ppp|        ',
-  '         |ppp|   |ppp|        ',
-  '        |pppp|___|pppp|       ',
-  '        |ppppppppppppp|       ',
-  '       |ppppppppppppppp|      ',
-  '       |ppppppppppppppp|      '
-];
-const BODY_LEGS_B = [
-  '                 [##]         ',
-  '          [##]   [##]         ',
-  '          [##]   |pp|         ',
-  '          |pp|   |pp|         ',
-  '         |ppp|   |ppp|        ',
-  '         |ppp|   |ppp|        ',
-  '        |pppp|___|pppp|       ',
-  '        |ppppppppppppp|       ',
-  '       |ppppppppppppppp|      ',
-  '       |ppppppppppppppp|      '
-];
-const BODY_TRUNK = [
-  '      _|ppppppppppppppp|_     ',
-  '     |###################|    ',
-  '    |jjjjjjjjjjjjjjjjjjjjj|   ',
-  '   |jjjjjjjjjjjjjjjjjjjjjjj|  ',
-  '  |jjjjjjjjjjjjjjjjjjjjjjjjj| ',
-  ' |jjjjjjjjjjjjjjjjjjjjjjjjjjj|',
-  '|jjjjjjjjjjjjjjjjjjjjjjjjjjjjj|',
-  '|jjjjjjjjjjjjjjjjjjjjjjjjjjjjj|'
-];
-const VM_BODY_A = BODY_LEGS_A.concat(BODY_TRUNK);
-const VM_BODY_B = BODY_LEGS_B.concat(BODY_TRUNK);
-
 /* consuming, at full scale: cup, can, kit */
 const VANIM = {
   noodles: { dur: 1.5, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, '~': H_WHT }, frames: [
@@ -3968,6 +4201,137 @@ const VANIM = {
 };
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
+
+/*=========================== 13i2. THE CITY MAP ============================
+  A full-screen chart of all 4 km2: pan with WASD or a drag, zoom with Q/E,
+  read the street names. Avenues run east-west and carry names hashed from
+  the seed; the numbered streets run north-south. Landmarks and districts
+  label themselves at the right zooms. M opens it; the corner minimap stays
+  a pause-menu toggle.
+============================================================================*/
+const AVE_NAMES = ['KANDA', 'MERIDIAN', 'HARBOR', 'NAGATA', 'CINDER', 'VOLT',
+                   'SABLE', 'ORCHID', 'HALCYON', 'MIRROR', 'FURNACE', 'LANTERN',
+                   'STATIC', 'VELVET', 'IRON', 'PLUM', 'AZUMA', 'KESTREL'];
+function aveName(k){
+  return AVE_NAMES[(hash3(k, worldSeed & 0xffff, 3) * AVE_NAMES.length) | 0] + ' AVE';
+}
+function openMap(){
+  // district labels: the centroid of each district's blocks
+  const acc = {};
+  for (let bj = 0; bj < NB; bj++)
+    for (let bi = 0; bi < NB; bi++){
+      if (zoneAt(bi, bj) >= 4) continue;
+      const d = distMap[bj * NB + bi];
+      (acc[d] = acc[d] || { x: 0, y: 0, n: 0 });
+      acc[d].x += bi; acc[d].y += bj; acc[d].n++;
+    }
+  const dlbl = Object.keys(acc).map(d => ({
+    name: DISTRICT[d].name,
+    x: (acc[d].x / acc[d].n + 0.5) * P, y: (acc[d].y / acc[d].n + 0.5) * P }));
+  pushMode({
+    name: 'map', pausesWorld: true,
+    cx: cam.x, cy: cam.y, z: 2, dlbl,
+    onKey(code){
+      const step = this.z * 5;
+      switch (code){
+        case 'KeyW': case 'ArrowUp':    this.cy -= step; break;
+        case 'KeyS': case 'ArrowDown':  this.cy += step; break;
+        case 'KeyA': case 'ArrowLeft':  this.cx -= step; break;
+        case 'KeyD': case 'ArrowRight': this.cx += step; break;
+        case 'KeyQ': case 'BracketLeft':  this.z = Math.min(8, this.z * 2); sfx('ui_move', { vol: 0.4 }); break;
+        case 'KeyE': case 'BracketRight': this.z = Math.max(1, this.z / 2); sfx('ui_move', { vol: 0.4 }); break;
+        case 'KeyM': case 'Escape': case 'Space': case 'Tab':
+          popMode(); sfx('ui_back', { vol: 0.5 }); break;
+      }
+      this.cx = clamp(this.cx, 0, MAP); this.cy = clamp(this.cy, 0, MAP);
+    },
+    drag(dx, dy){
+      this.cx = clamp(this.cx - dx / R.cellW * this.z, 0, MAP);
+      this.cy = clamp(this.cy - dy / R.cellH * this.z * 1.8, 0, MAP);
+    },
+    tap(cx, cy){
+      if (cy <= 4 && cx >= R.cols - 8){         // the corner zoom buttons
+        if (cy <= 2) this.onKey('KeyQ'); else this.onKey('KeyE');
+        return;
+      }
+      if (cy >= R.rows - 3) this.onKey('Escape');
+    },
+    draw(){ drawMapMode(this); }
+  });
+  sfx('ui_select', { vol: 0.5 });
+}
+function drawMapMode(m){
+  const cols = R.cols, rows = R.rows;
+  hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
+  const za = m.z * 1.8;                        // cells are tall; rows cover more
+  for (let r = 1; r < rows - 1; r++){
+    const ty = (m.cy + (r - rows / 2) * za) | 0;
+    for (let x = 0; x < cols; x++){
+      const tx = (m.cx + (x - cols / 2) * m.z) | 0;
+      if (!inMap(tx, ty)) continue;
+      const t = tType[ty * MAP + tx];
+      if (t === T_BLD) hudCell(x, r, '#', H_GRY);
+      else if (t === T_WATER) hudCell(x, r, '~', H_BLU);
+      else if (t === T_BRIDGE) hudCell(x, r, '=', H_DIM);
+      else if (t === T_ROAD || t === T_CROSS) hudCell(x, r, '.', H_DIM);
+      else if (t === T_WALK) hudCell(x, r, ':', H_DRK);
+      else if (t === T_PATH) hudCell(x, r, ',', H_GRN);
+      else if (t === T_LOT) hudCell(x, r, '"', H_DRK);
+    }
+  }
+  const sx = wx => ((wx - m.cx) / m.z + cols / 2) | 0;
+  const sy = wy => ((wy - m.cy) / za + rows / 2) | 0;
+  // street names at close zoom
+  if (m.z <= 2){
+    const cbi = clamp((m.cx / P) | 0, 0, NB - 1), cbj = clamp((m.cy / P) | 0, 0, NB - 1);
+    for (let k = 1; k < NB; k++){
+      const ry = sy(k * P + RW / 2);
+      if (ry > 2 && ry < rows - 2 && zoneAt(cbi, k) < 4)
+        hudStr(2, ry, aveName(k), H_DIM);
+      const rx = sx(k * P + RW / 2);
+      if (rx > 4 && rx < cols - 4 && zoneAt(k, cbj) < 4){
+        const nm = 'ST' + k;
+        for (let i = 0; i < nm.length; i++) hudCell(rx, 2 + i, nm[i], H_DIM);
+      }
+    }
+  }
+  // district names at far zoom - drawn whole and never over each other
+  if (m.z >= 4){
+    const placed = [];
+    for (const d of m.dlbl){
+      const x = sx(d.x) - (d.name.length >> 1), y = sy(d.y);
+      if (y <= 1 || y >= rows - 2 || x < 1 || x + d.name.length > cols - 1) continue;
+      if (placed.some(p => Math.abs(p.y - y) < 2 && x < p.x1 + 2 && x + d.name.length > p.x0 - 2)) continue;
+      placed.push({ x0: x, x1: x + d.name.length, y });
+      hudStr(x, y, d.name, H_PUR);
+    }
+  }
+  // landmarks
+  if (m.z <= 4)
+    for (const l of landmarks){
+      const x = sx(l.x), y = sy(l.y);
+      if (x < 1 || x >= cols - 1 || y < 2 || y >= rows - 2) continue;
+      hudCell(x, y, '*', H_YEL);
+      if (m.z <= 2) hudStr(x + 2, y, l.name, H_YEL);
+    }
+  // the player, and the trail you should follow
+  const px2 = sx(cam.x), py2 = sy(cam.y);
+  if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
+    const dirCh = '>^<v'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    hudCell(px2, py2, dirCh, H_WHT);
+  }
+  const qt = questTarget();
+  if (qt){
+    const x = sx(qt.x), y = sy(qt.y);
+    if (x >= 0 && x < cols && y >= 1 && y < rows - 1) hudCell(x, y, '!', H_YEL);
+  }
+  // chrome
+  hudStr(2, 0, ' CITY MAP  x' + m.z + ' ', H_GRN);
+  hudStr(cols - 8, 1, '[ + ]', H_GRN);
+  hudStr(cols - 8, 3, '[ - ]', H_GRN);
+  const foot = 'WASD/drag pan   Q/E zoom   M close';
+  hudStr((cols - foot.length) >> 1, rows - 1, foot, H_DIM);
+}
 
 /*=========================== 13i. TOUCH ====================================
   The whole game on glass. A floating analog stick on the left thumb (push
@@ -4086,10 +4450,11 @@ function buildTouchUI(){
     const dx = e.clientX - lx, dy = e.clientY - ly2;
     lx = e.clientX; ly2 = e.clientY;
     moved += Math.abs(dx) + Math.abs(dy);
-    if (!topMode() && !paused){
+    const tm = topMode();
+    if (!tm && !paused){
       cam.ang -= dx * 0.0055;
       cam.pitch = clamp(cam.pitch - dy * 0.16, -R.rows * 0.62, R.rows * 0.62);
-    }
+    } else if (tm && tm.drag) tm.drag(dx, dy);
   });
   addEventListener('pointerup', e => {
     if (e.pointerId !== lookId) return;
@@ -4112,7 +4477,11 @@ function buildTouchUI(){
     'width:46px;height:34px;border-radius:8px;', fn);
   util('MENU', -110, () => { if (topMode()) topMode().onKey && topMode().onKey('Escape'); else openPauseMenu(); });
   util('INV', -55, () => { const m = topMode(); if (m && m.name === 'inventory') m.onKey('Tab'); else if (!m) openInventory(); });
-  util('MAP', 0, () => { showMap = !showMap; });
+  util('MAP', 0, () => {
+    const m = topMode();
+    if (m && m.name === 'map') m.onKey('Escape');
+    else if (!m) openMap();
+  });
   util('FLY', 55, () => { if (topMode()) return; if (inside){ toast('the sky is outside'); return; } toggleRide(); });
   document.body.appendChild(root);
   touchUI = root;
@@ -4310,7 +4679,13 @@ function floorSample(wx, wy, ix, iy){
     return;
   }
   if (t === T_LOT){
-    if (districtAt(ix, iy) === D_RURAL){        // worked land: crop rows, soil between
+    if (districtAt(ix, iy) === D_RURAL){
+      if (zoneAt((ix / P) | 0, (iy / P) | 0) >= 4){    // open wilderness
+        _wb = C.turf; _wd = 0.20 + hash3(ix, iy, 12) * 0.16;
+        if (hash3(ix, iy, 44) > 0.985){ _wb = C.rail; _wd = 0.5; }   // stones
+        return;
+      }
+      // worked land: crop rows, soil between
       if (iy % 3 === 0){ _wb = C.path;  _wd = 0.26 + hash3(ix, iy, 7) * 0.08; }
       else             { _wb = C.grass; _wd = 0.40 + hash3(ix, iy, 8) * 0.20; }
       return;
@@ -4541,7 +4916,7 @@ function wallPass(){
     if (rdy < 0){ stepY = -1; sdy = (py - mapY) * ddy; } else { stepY = 1; sdy = (mapY + 1 - py) * ddy; }
     let ceilLimit = rows - 1, side = 0, guard = 0;
     statRays++;
-    while (ceilLimit >= 0 && guard++ < 760){
+    while (ceilLimit >= 0 && guard++ < 1700){
       if (sdx < sdy){ sdx += ddx; mapX += stepX; side = 0; }
       else          { sdy += ddy; mapY += stepY; side = 1; }
       const d = side === 0 ? sdx - ddx : sdy - ddy;
@@ -4781,7 +5156,7 @@ function spritePass(){
     const p = vp[i];
     const rx = p.x - cam.x, ry = p.y - cam.y;
     const f = rx * dirX + ry * dirY;
-    if (f < 0.3 || f > MD) continue;
+    if (f < 0.3 || f > MD || f > 170) continue;   // sub-cell past 170 anyway
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 3) continue;
     drawList.push({ d: f, k: 2, o: p });
   }
@@ -4923,7 +5298,7 @@ function signPass(){
     const rx = sg.x - cam.x, ry = sg.y - cam.y;
     if (rx < -viewD || rx > viewD || ry < -viewD || ry > viewD) continue;
     const d = rx * dirX + ry * dirY;
-    if (d < 0.3 || d > viewD) continue;
+    if (d < 0.3 || d > viewD || d > 130) continue;       // unreadable past 130
     if (rx * sg.nx + ry * sg.ny > 0) continue;           // facing away
     if (Math.abs(dirY * rx - dirX * ry) > d * planeLen + sg.wm + 2) continue;
     if (sg.blink && ((worldTime / sg.blink) % 1) < 0.26) continue;
@@ -5587,11 +5962,15 @@ function hudPass(){
   hudPanel(1, 1, 52, 7);
   hudBox(1, 1, 52, 7, 'ASCII CITY');
   const mode = cam.riding ? 'RIDING' : sitting ? 'SEATED' : 'ON FOOT';
-  hudStr(3, 2, dateStr() + '   ' + clockStr() + '   ' +
-               ['CLEAR', 'RAIN', 'STORM', 'FOG'][weather], H_BLU);
+  const dateLine = dateStr() + '   ' + clockStr() + '   ' +
+                   ['CLEAR', 'RAIN', 'STORM', 'FOG'][weather];
+  hudStr(3, 2, dateLine, H_BLU);
+  if (player.corruption > 0)
+    hudStr(3 + dateLine.length + 3, 2, 'CORRUPT ' + player.corruption, H_RED);
   hudStr(3, 3, 'fps ' + fps.toFixed(0).padStart(3) + '  grid ' + cols + 'x' + rows +
                '  rays ' + statRays + '  glyphs ' + statCells, H_GRN);
-  hudStr(3, 4, (inside ? 'INSIDE: ' + inside.name : DISTRICT[districtAt(cam.x, cam.y)].name) + '  ' +
+  hudStr(3, 4, (inside ? 'INSIDE: ' + inside.name + (inside.floor > 1 ? '  F' + inside.floor : '')
+                       : DISTRICT[districtAt(cam.x, cam.y)].name) + '  ' +
                cam.x.toFixed(0) + ',' + cam.y.toFixed(0) +
                '  cars ' + cars.length + '  peds ' + peds.length +
                '  ' + mode + (!inside && inFields(cam.x, cam.y) ? '  [open ground]' : '') +
@@ -5662,16 +6041,8 @@ function hudPass(){
   // ---- held weapon, reticle, or whichever mode owns the screen ----
   const im = topMode();
   if (!im){
-    // ---- the body: look down and you exist, at full size ------------------
+    // ---- the player exists as arms: guard, weapon, or ritual --------------
     if (!cam.riding){
-      const pf = clamp((-cam.pitch - R.rows * 0.14) / (R.rows * 0.42), 0, 1);
-      if (pf > 0 && !sitting){
-        const bodyArt = (Math.round(cam.walkPhase) & 1) ? VM_BODY_B : VM_BODY_A;
-        const reveal = Math.max(2, Math.round(pf * bodyArt.length));
-        const bw = viewW(bodyArt);
-        drawViewArt(bodyArt, (cols - bw) >> 1, rows - reveal, bodyArt.length, CM_BODY);
-      }
-      // ---- arms, weapon, or the consuming ritual --------------------------
       const bob = Math.round(cam.walkPhase) & 1;
       if (vAnim){
         const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
@@ -5894,10 +6265,12 @@ function frame(now){
     vAnim.t += dt;
     if (vAnim.t > vAnim.d.dur) vAnim = null;
   }
-  // out in the fields the eye carries much further, so ease the horizon out -
-  // and fog is above all a CEILING on how far you can see at all
+  // out in the fields the eye carries much further - and in the wilderness
+  // further still, far enough to take in the whole skyline. Fog remains a
+  // CEILING on how far you can see at all.
+  const pz = zoneAt(clamp((cam.x / P) | 0, 0, NB - 1), clamp((cam.y / P) | 0, 0, NB - 1));
   const wantD = inside ? 13
-              : CFG.MAXD * (inFields(cam.x, cam.y) ? 1.85 : 1) *
+              : CFG.MAXD * (pz >= 4 ? 3.4 : pz === 3 ? 1.85 : 1) *
                 (weather === 3 ? 1 - fogLevel * 1.6 : 1);
   viewD += (wantD - viewD) * Math.min(1, dt * 0.7);
   if (!topMode()) updateCam(dt);
