@@ -1154,6 +1154,7 @@ function buildCity(seed){
     }
   }
   stampLandmarks();
+  stampIntersectionIds();
   buildProps();
   buildWalkGrid();
   buildSigns();
@@ -4356,11 +4357,31 @@ function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
   label themselves at the right zooms. M opens it; the corner minimap stays
   a pause-menu toggle.
 ============================================================================*/
-const AVE_NAMES = ['KANDA', 'MERIDIAN', 'HARBOR', 'NAGATA', 'CINDER', 'VOLT',
-                   'SABLE', 'ORCHID', 'HALCYON', 'MIRROR', 'FURNACE', 'LANTERN',
-                   'STATIC', 'VELVET', 'IRON', 'PLUM', 'AZUMA', 'KESTREL'];
-function aveName(k){
-  return AVE_NAMES[(hash3(k, worldSeed & 0xffff, 3) * AVE_NAMES.length) | 0] + ' AVE';
+/* the lattice names itself: avenues are letters, streets are numbers, and
+   every crossing is an id like C7 - painted on the sidewalk at the corner */
+let signFloor = Object.create(null);       // tile id -> character painted there
+function aveLetter(k){
+  let s = ''; k--;
+  do { s = String.fromCharCode(65 + k % 26) + s; k = ((k / 26) | 0) - 1; } while (k >= 0);
+  return s;
+}
+function xingId(k2, k){ return aveLetter(k) + k2; }
+function stampIntersectionIds(){
+  signFloor = Object.create(null);
+  for (let k = 1; k < NB; k++)             // avenues run east-west (y lattice)
+    for (let k2 = 1; k2 < NB; k2++){       // streets run north-south (x lattice)
+      if (zoneAt(k2, k) >= 4) continue;
+      const rx = k2 * P + (RW >> 1), ry = k * P + (RW >> 1);
+      const tc = tType[ry * MAP + rx];     // the crossing must actually exist
+      if (tc !== T_CROSS && tc !== T_ROAD) continue;
+      const id = xingId(k2, k);
+      const x0 = k2 * P + RW, y0 = k * P + RW;   // SE corner of the crossing
+      let ok = true;
+      for (let i = 0; i < id.length; i++)
+        if (tType[y0 * MAP + x0 + i] !== T_WALK){ ok = false; break; }
+      if (!ok) continue;
+      for (let i = 0; i < id.length; i++) signFloor[y0 * MAP + x0 + i] = id[i];
+    }
 }
 function openMap(){
   // district labels: the centroid of each district's blocks
@@ -4428,19 +4449,15 @@ function drawMapMode(m){
   }
   const sx = wx => ((wx - m.cx) / m.z + cols / 2) | 0;
   const sy = wy => ((wy - m.cy) / za + rows / 2) | 0;
-  // street names at close zoom
+  // intersection ids at close zoom
   if (m.z <= 2){
-    const cbi = clamp((m.cx / P) | 0, 0, NB - 1), cbj = clamp((m.cy / P) | 0, 0, NB - 1);
-    for (let k = 1; k < NB; k++){
-      const ry = sy(k * P + RW / 2);
-      if (ry > 2 && ry < rows - 2 && zoneAt(cbi, k) < 4)
-        hudStr(2, ry, aveName(k), H_DIM);
-      const rx = sx(k * P + RW / 2);
-      if (rx > 4 && rx < cols - 4 && zoneAt(k, cbj) < 4){
-        const nm = 'ST' + k;
-        for (let i = 0; i < nm.length; i++) hudCell(rx, 2 + i, nm[i], H_DIM);
+    for (let k = 1; k < NB; k++)
+      for (let k2 = 1; k2 < NB; k2++){
+        if (zoneAt(k2, k) >= 4) continue;
+        const x = sx(k2 * P + RW / 2), y = sy(k * P + RW / 2);
+        if (y <= 2 || y >= rows - 2 || x < 1 || x >= cols - 5) continue;
+        hudStr(x + 1, y, xingId(k2, k), H_DIM);
       }
-    }
   }
   // district names at far zoom - drawn whole and never over each other
   if (m.z >= 4){
@@ -4791,6 +4808,17 @@ function floorSample(wx, wy, ix, iy){
     return;
   }
   if (t === T_WALK){
+    const pc = signFloor[iy * MAP + ix];       // intersection id, painted on
+    if (pc !== undefined){                     // the slabs like road markings
+      const gl = MINIFONT[pc];
+      if (gl && fx >= 0.14 && fy >= 0.10){
+        const gc = ((fx - 0.14) * 4.17) | 0, gr = ((fy - 0.10) * 6.25) | 0;
+        if (gc < 3 && gr < 5 && gl[gr * 4 + gc] === '#'){
+          _wb = C.nAmber; _wd = 0.95; _wwet = 1;
+          return;
+        }
+      }
+    }
     _wb = C.walk; _wd = 0.27 + hash3(ix, iy, 5) * 0.09;
     const jx = (wx * 0.5) % 1, jy = (wy * 0.5) % 1;
     if (jx < 0.05 || jy < 0.05) _wd = 0.44;

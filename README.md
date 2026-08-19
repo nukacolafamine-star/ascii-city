@@ -376,10 +376,13 @@ worth scavenging. The street door exists only on floor 1; everything above
 belongs to the stairs.
 
 **The city map** (`M`) charts all four square kilometres: pan with `WASD`
-or a drag, zoom `Q`/`E` from street grain to the whole grid. Avenues carry
-seed-hashed names — KANDA AVE, VOLT AVE — the numbered streets cross them,
-landmarks label themselves up close and districts from afar, and your
-arrow and the quest marker ride on top.
+or a drag, zoom `Q`/`E` from street grain to the whole grid. The lattice
+names itself: east–west avenues are letters, north–south streets are
+numbers, and every crossing carries an id like **C7** or **AB31** — shown
+on the map up close, and **painted on the sidewalk** at the corner of the
+crossing itself, block lettering stencilled onto the slabs like road
+markings. Landmarks label themselves up close and districts from afar,
+and your arrow and the quest marker ride on top.
 
 ## Quests and conversations
 
@@ -492,7 +495,7 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `W` (seated) | wait until the light changes |
 | `LMB` / `CTRL` | attack — bare knuckles, or the zip pistol once you own one |
 | `TAB` | inventory and stats |
-| `M` | the full city map — pan, zoom, street names |
+| `M` | the full city map — pan, zoom, intersection ids |
 | `ESC` | pause menu — settings, volumes, save / load, new city |
 | `SHIFT` | run |
 | `Q` `E` | turn · `R` `F` look up/down |
