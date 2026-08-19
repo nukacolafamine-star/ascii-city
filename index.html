@@ -2373,6 +2373,7 @@ function enterInterior(door){
   inside = { name: door.name, district: bld.dist, exit: room.exit,
              stairs: room.stairs, shop: room.shop, bld: door.b, door, floor: 1 };
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
+  skating = false; airT = 0;
   viewD = 13; fade = 1;
   buildBackground();
   sfx('door');
@@ -2431,6 +2432,9 @@ function probeInteract(){
       probeConsider(p.x, p.y, { kind: 'bin', prompt: '[SPACE]  TRASH - STREET BIN' });
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
       probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[SPACE]  SIT - BENCH' });
+    else if ((p.k === PK_CAM || p.k === PK_LAMP) && invCount('saw'))
+      probeConsider(p.x, p.y, { kind: 'cut', p,
+        prompt: '[SPACE]  CUT DOWN - ' + (p.k === PK_CAM ? 'FLOCK CAM' : 'STREET LIGHT') });
   }
   if (inside){
     if (inside.exit)
@@ -2462,6 +2466,14 @@ function tryInteract(){
     openTrashMenu();
   } else if (t.kind === 'bench'){
     sitDown(t.p);
+  } else if (t.kind === 'cut'){                 // the hacksaw versus the flock
+    props.splice(props.indexOf(t.p), 1);
+    indexProps(); indexSpriteProps();
+    sfx('hit', { vol: 0.7, rate: 0.5 });
+    if (t.p.k === PK_CAM){ invAdd('scrap', 1); toast('the flock cam comes down - + scrap'); }
+    else toast('the light goes dark');
+    player.qvar.vandal = (player.qvar.vandal || 0) + 1;
+    if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');
   } else if (t.kind === 'stairs'){
     openFloorMenu();
   } else if (t.kind === 'item'){
@@ -2620,6 +2632,37 @@ function spawnActors(){
                { name: 'RAZOR', brain: 'hostile', hp: 26, shirt: C.camRed, skin: C.skinB });
     packed++;
   }
+  // stall vendors: somebody minds a third of the carts, and their prices
+  // never check your record - street food does not scan corpo flags
+  const vopt = id => ({
+    t: 'Buy ' + ITEMS[id].name.toLowerCase() + ' - ' + ITEMS[id].price + ' cr',
+    if: () => player.credits >= ITEMS[id].price && invCount(id) < ITEMS[id].stack,
+    do(){ player.credits -= ITEMS[id].price; invAdd(id, 1); toast('+ ' + ITEMS[id].name); },
+    next: 'start' });
+  const VEND = [
+    { name: 'CART COOK', greet: 'Broth has been going since dawn. You look like you need the big bowl.',
+      a: 'ramen', b: 'noodles' },
+    { name: 'GREENGROCER', greet: 'Picked this morning, more or less. The wax is complimentary.',
+      a: 'apple', b: 'onigiri' },
+    { name: 'FIXPOINT VENDOR', greet: 'Batteries, bangers, whatever fell off the truck this week.',
+      a: 'battery', b: 'firecracker' }
+  ];
+  let stallN = 0;
+  for (const p of props){
+    if (p.k !== PK_STALL || stallN >= 60) continue;
+    if (hash3(p.x | 0, p.y | 0, 44) > 0.34) continue;
+    const dn2 = districtAt(p.x | 0, p.y | 0);
+    const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0
+               : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
+    const V = VEND[(((p.s * 5) | 0) + bias) % 3];
+    const sp2 = freeSpotNear(p.x, p.y);
+    if (Math.hypot(sp2[0] - p.x, sp2[1] - p.y) > 2.5) continue;
+    spawnActor('vendor', sp2[0], sp2[1], {
+      name: V.name, brain: 'still',
+      tree: { start: { text: V.greet,
+        opts: [vopt(V.a), vopt(V.b), { t: 'Just looking' }] } } });
+    stallN++;
+  }
 }
 
 /*========================= 13. CAMERA, INPUT, COLLISION ====================*/
@@ -2705,7 +2748,10 @@ function onPress(code){
   if (m){ if (m.onKey) m.onKey(code); return; }
   switch (code){
     case 'Escape': openPauseMenu(); break;
-    case 'Space': if (sitting){ standUp(); break; } tryInteract(); break;
+    case 'Space':
+      if (sitting){ standUp(); break; }
+      if (skating && !lookTarget){ ollie(); break; }
+      tryInteract(); break;
     case 'KeyW': if (sitting) waitOnBench(); break;
     case 'ControlLeft': case 'ControlRight': fireWeapon(); break;
     case 'Tab': openInventory(); break;
@@ -2786,9 +2832,22 @@ function toggleRide(){
   }
   if (best && bd < 90){
     cam.riding = best; cam.z = best.z + 0.7;
+    skating = false;
     sfx('metro', { rate: 1.4, vol: 0.5 });
     toast('boarding air traffic');
+  } else if (!inside && invCount('deck')){       // no car close: kick the deck down
+    skating = !skating;
+    toast(skating ? 'wheels down' : 'deck up');
+    sfx('ui_select', { rate: skating ? 1.45 : 0.8, vol: 0.5 });
   }
+}
+/* ---- the kickdeck: momentum, ollies, and flip tricks -------------------- */
+let skating = false, airT = 0, trickArm = 0, styleN = 0;
+const TRICKS = ['kickflip', 'heelflip', '360 shove-it', 'varial', 'impossible'];
+function ollie(){
+  if (airT > 0) return;
+  airT = 0.55; trickArm = 0;
+  sfx('footstep', { vol: 0.8, rate: 1.5 });
 }
 function updateCam(dt){
   if (cam.riding){
@@ -2819,7 +2878,7 @@ function updateCam(dt){
     cam.x += dx / l * step; cam.y += dy / l * step;
   }
   const run = keys.ShiftLeft || keys.ShiftRight ? 2.2 + 0.1 * player.stats.AGI : 1;
-  const sp = 3.1 * run * drugFx('speed', 1);
+  const sp = 3.1 * (skating ? 2.3 : run) * drugFx('speed', 1);
   let fwd = 0, str = 0;
   if (keys.KeyW || keys.ArrowUp) fwd += 1;
   if (keys.KeyS || keys.ArrowDown) fwd -= 1;
@@ -2848,6 +2907,21 @@ function updateCam(dt){
     }
   }
   cam.z = 1.62 + Math.sin(cam.walkPhase) * (run > 1 ? 0.06 : 0.035) * (ml > 0.001 ? 1 : 0);
+  if (skating){
+    cam.z = 1.62 + Math.sin(worldTime * 6.5) * 0.02;      // wheel hum, not footsteps
+    if (airT > 0){
+      if (keys.KeyQ || keys.KeyE) trickArm = 1;           // flip input mid-air
+      airT -= dt;
+      cam.z = 1.62 + Math.sin(Math.min(1, 1 - airT / 0.55) * Math.PI) * 0.95;
+      if (airT <= 0){
+        sfx('footstep', { vol: 0.9, rate: 0.7 });
+        if (trickArm){
+          styleN++;
+          toast(TRICKS[(Math.random() * TRICKS.length) | 0] + '  (style ' + styleN + ')');
+        }
+      }
+    }
+  } else airT = 0;
 }
 
 /*========================== 13b. MODES + MENUS =============================
@@ -3434,11 +3508,24 @@ const ITEMS = {
              use(){ return startJammer(); } },
   shim:    { name: 'MAG-SHIM', pcol: C.rail, stack: 3, cat: 'misc', price: 60,
              hint: 'slips one door that refuses you' },
+  saw:     { name: 'HACKSAW', pcol: C.rail, stack: 1, cat: 'misc', price: 45,
+             hint: 'face a flock cam or street light and SPACE cuts it down' },
+  camjack: { name: 'CAM-JACK', pcol: C.nGreen, stack: 1, cat: 'misc', price: 150, keep: 1,
+             hint: 'ride the flock: view any camera in range',
+             use(){ return openCamJack(); } },
+  burner:  { name: 'GRAFFITI BURNER', pcol: C.nMag, stack: 1, cat: 'misc', price: 80, keep: 1,
+             hint: 'burns a tag on the wall you face; fades in days',
+             use(){ return burnTag(); } },
+  sniffer: { name: 'SNIFFER CHIP', pcol: C.tlAmb, stack: 3, cat: 'misc', price: 40,
+             hint: 'pings loose loot on the minimap for a while',
+             use(){ snifferT = 90; toast('the chip hums - loot pings on the map'); return true; } },
   // ---- misc ----
   scrap:   { name: 'SCRAP ELECTRONICS', pcol: C.nGreen, stack: 9, cat: 'misc', price: 12,
              hint: 'shops pay a little; the watcher pays well' },
   battery: { name: 'BATTERY', pcol: C.nCyan, stack: 8, cat: 'misc', price: 6,
-             hint: 'everything here runs on these' }
+             hint: 'everything here runs on these' },
+  deck:    { name: 'KICKDECK', pcol: C.nMag, stack: 1, cat: 'misc', price: 280,
+             hint: 'press V away from traffic to ride; SPACE ollies, Q/E flip' }
 };
 function invAdd(id, n){
   let st = player.inv.find(s => s.id === id);
@@ -3509,7 +3596,68 @@ function popFirecracker(){
   toast('the corner clears out fast');
   return true;
 }
-let jamT = 0;
+let jamT = 0, snifferT = 0;
+/* ride the flock: hop your eyes into any camera in range */
+function openCamJack(){
+  const cams = [];
+  for (const p of props)
+    if (p.k === PK_CAM && Math.hypot(p.x - cam.x, p.y - cam.y) < 120) cams.push(p);
+  if (!cams.length){ toast('no flock cams in range'); return false; }
+  cams.sort((a, b) => Math.hypot(a.x - cam.x, a.y - cam.y) -
+                      Math.hypot(b.x - cam.x, b.y - cam.y));
+  const save = { x: cam.x, y: cam.y, z: cam.z, ang: cam.ang, pitch: cam.pitch };
+  const m = {
+    name: 'camjack', pausesWorld: false, cams, i: 0,
+    jump(){
+      const c = this.cams[this.i];
+      cam.x = c.x; cam.y = c.y; cam.z = 4.6;
+      cam.ang = hash3(c.x | 0, c.y | 0, 5) * Math.PI * 2; cam.pitch = -6;
+      sfx('ui_move', { vol: 0.5, rate: 1.5 });
+    },
+    onKey(code){
+      if (code === 'KeyA' || code === 'ArrowLeft'){
+        this.i = (this.i + this.cams.length - 1) % this.cams.length; this.jump();
+      } else if (code === 'KeyD' || code === 'ArrowRight'){
+        this.i = (this.i + 1) % this.cams.length; this.jump();
+      } else if (code === 'KeyQ') cam.ang += 0.35;
+      else if (code === 'KeyE') cam.ang -= 0.35;
+      else if (code === 'Escape' || code === 'Space' || code === 'Tab'){
+        Object.assign(cam, save); popMode(); sfx('ui_back', { vol: 0.5 });
+      }
+    },
+    draw(){
+      const s = ' FLOCK CAM ' + (this.i + 1) + '/' + this.cams.length +
+                '   [A/D] hop   [Q/E] pan   [ESC] unplug ';
+      hudPanel(Math.max(0, (R.cols - s.length) >> 1), 2, s.length, 1);
+      hudStr(Math.max(0, (R.cols - s.length) >> 1), 2, s, H_RED);
+    },
+    tap(){ this.onKey('KeyD'); }
+  };
+  pushMode(m);
+  m.jump();
+  return true;
+}
+/* digital graffiti: burned onto the wall you face, gone in a few days */
+let tags = {};
+const TAG_SYMS = ['A', 'X', '!', '0', 'H'];    // chirality-proof glyphs
+function burnTag(){
+  const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+  for (let d = 0.6; d < 4.2; d += 0.25){
+    const x = (cam.x + vx * d) | 0, y = (cam.y + vy * d) | 0;
+    if (!inMap(x, y)) break;
+    if (tH[y * MAP + x] > 1.6){
+      tags[y * MAP + x] = { sym: TAG_SYMS[(Math.random() * TAG_SYMS.length) | 0],
+                            day: dayCount };
+      toast('burned in - it will hold a few days');
+      sfx('ui_select', { rate: 0.6, vol: 0.7 });
+      player.qvar.vandal = (player.qvar.vandal || 0) + 1;
+      if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');
+      return true;
+    }
+  }
+  toast('face a wall, up close');
+  return false;
+}
 function startJammer(){
   if (jamT > 0){ toast('already jamming'); return false; }
   jamT = 60;
@@ -3531,6 +3679,7 @@ function useItem(id){
   }
   if (!def.use){ toast('no use for it yet'); return; }
   if (!def.use(player)){ toast('no effect right now'); sfx('ui_back', { vol: 0.3 }); return; }
+  if (def.keep){ sfx('ui_select', { vol: 0.5, rate: 0.9 }); return; }   // a tool, not a snack
   st.qty--;
   if (st.qty <= 0) player.inv.splice(player.inv.indexOf(st), 1);
   sfx('ui_select', { vol: 0.5, rate: 0.9 });
@@ -3546,7 +3695,7 @@ function resetPlayer(){
   player.quests = {}; player.qvar = {}; player.track = null;
   player.corruption = 0;
   player.outfit = null;
-  drug = null; jamT = 0;
+  drug = null; jamT = 0; snifferT = 0; tags = {};
 }
 // what a thing costs YOU: the flagged pay corpo prices
 function priceOf(id){
@@ -3703,7 +3852,7 @@ function loadGame(n){
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
   cam.x = s.cam.x; cam.y = s.cam.y; cam.ang = s.cam.ang; cam.pitch = s.cam.pitch;
-  cam.riding = null; cam.z = 1.62; sitting = null;
+  cam.riding = null; cam.z = 1.62; sitting = null; skating = false; airT = 0;
   if (!walkG[clamp(cam.y | 0, 0, MAP - 1) * MAP + clamp(cam.x | 0, 0, MAP - 1)]){
     const sp = freeSpotNear(cam.x, cam.y);
     cam.x = sp[0]; cam.y = sp[1]; faceClear();
@@ -3961,6 +4110,7 @@ function pedCrime(n, why){
 }
 function dayTick(){                           // called once per day rollover
   dayCount++;
+  for (const k in tags) if (dayCount - tags[k].day > 3) delete tags[k];
   if (player.corruption > 0 && dayCount - (player.qvar.lastCrimeDay || 0) >= 2){
     player.corruption--;
     player.qvar.lastCrimeDay = dayCount;      // the next point needs two more
@@ -4094,7 +4244,8 @@ function punch(){
   if (punchT > 0) return;                     // still mid-swing
   const m = meleeStats();
   punchT = punchDur = m.cool;
-  punchLeft = !punchLeft;                     // swing with the other arm
+  if (m.id === 'fist') punchLeft = !punchLeft;   // fists alternate; a weapon
+  else punchLeft = false;                        // stays in the right hand
   const hit = characterInSights(m.reach, 0.7);
   const dmg = m.d + ((Math.random() * m.r) | 0);
   if (hit && hit.ped){
@@ -4180,7 +4331,7 @@ function playerDown(){
 function respawn(){
   player.credits = Math.ceil(player.credits / 2);
   player.hp = player.maxHp;
-  cam.riding = null; cam.z = 1.62; sitting = null;
+  cam.riding = null; cam.z = 1.62; sitting = null; skating = false; airT = 0;
   if (inside) exitInterior();
   let best = null, bd = 1e9;
   for (const m of metroStops){
@@ -4197,7 +4348,9 @@ function respawn(){
 }
 function hostileBrain(a, dt){
   a.atkCool = (a.atkCool || 0) - dt;
-  if ((drug && drug.fx.ghost) || jamT > 0) a.aggro = 0;   // ghosted or jammed
+  const tm0 = topMode();
+  if ((drug && drug.fx.ghost) || jamT > 0 ||
+      (tm0 && tm0.name === 'camjack')) a.aggro = 0;   // ghosted, jammed, or absent
   const rx = cam.x - a.x, ry = cam.y - a.y;
   const pr = Math.hypot(rx, ry) || 0.001;
   if (!a.aggro){
@@ -4484,6 +4637,90 @@ const VM_PUNCH_WIND_L = mirrorView(VM_PUNCH_WIND);
 const VM_PUNCH_SMEAR_L = mirrorView(VM_PUNCH_SMEAR);
 const VM_PUNCH_HIT_L = mirrorView(VM_PUNCH_HIT);
 const VM_PUNCH_REC_L = mirrorView(VM_PUNCH_REC);
+/* bludgeons ride in the right hand: a rest pose and a full swing each */
+const CM_MELEE = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT,
+                   '%': H_GRY, '#': H_DRK, w: H_YEL };
+/* the kickdeck, seen past your feet */
+const CM_DECK = { '=': H_DRK, '%': H_PUR, o: H_GRY };
+const VM_DECK = [
+  '      ________________      ',
+  '    _(================)_    ',
+  '   (=%=%=          =%=%=)   ',
+  '    [o]              [o]    '
+];
+const VM_PIPE_HOLD = [
+  '        |%%|        ',
+  '        |%%|        ',
+  '        |%%|        ',
+  '        |%%|        ',
+  '       _|%%|__      ',
+  '    __(nn%%nnn)_    ',
+  '   (n@n@%%@n@n@n)   ',
+  '  (s)ss)%%)ss)ss)   ',
+  '  |s)ss)%%)ss)ss|   ',
+  '  (sssss%%ssss~)    ',
+  '   (sss~%%ssss~s)   ',
+  '  (:ssss##ssss:s)   ',
+  '  (jj=jjjjjj=jjj)   ',
+  '  |jj/jjj~jjj\\jj|  ',
+  '  |jjjjj/jjjjjjj|   ',
+  '  |jjjjjjjjjjjjj|   '
+];
+const VM_PIPE_HIT = [
+  ' \\  *  /               ',
+  '  *__ *                 ',
+  '  |%%|_                 ',
+  '   |%%|_                ',
+  '    |%%|_               ',
+  '     |%%|_              ',
+  '      (n@n@)_           ',
+  '      (ssssss)          ',
+  '      (jjjj)_           ',
+  '       (j~jjjj)_        ',
+  '        (jjjjjjj)_      ',
+  '         (jjjj/jjj)_    ',
+  '          (jjjjjjjjj)_  ',
+  '           (jjjj~jjjjj) ',
+  '           |jjjj/jjjjj| ',
+  '           |jjjjjjjjjj| '
+];
+const VM_BAT_HOLD = [
+  '       _____        ',
+  '      (wwwww)       ',
+  '      |ww#ww|       ',
+  '      |wwwww|       ',
+  '      |ww#ww|       ',
+  '      (wwww)        ',
+  '       |www|        ',
+  '       _|ww|__      ',
+  '    __(nnwwnnn)_    ',
+  '   (n@n@ww@n@n@n)   ',
+  '  (s)ss)ww)ss)ss)   ',
+  '  (sssssswwsss~)    ',
+  '   (sss~wwssss~s)   ',
+  '  (:ssssswwsss:s)   ',
+  '  (jj=jjjjjj=jjj)   ',
+  '  |jj/jjj~jjj\\jj|  ',
+  '  |jjjjjjjjjjjjj|   '
+];
+const VM_BAT_HIT = [
+  ' \\   *   /             ',
+  '  _____ *               ',
+  ' (wwwww)_               ',
+  '  (ww#www)_             ',
+  '   (wwwww#w)_           ',
+  '     (wwwwww)_          ',
+  '      (www)             ',
+  '      (n@n@)_           ',
+  '      (ssssss)          ',
+  '      (jjjj)_           ',
+  '       (j~jjjj)_        ',
+  '        (jjjjjjj)_      ',
+  '         (jjjj/jjj)_    ',
+  '          (jjjjjjjjj)_  ',
+  '           (jjjj~jjjjj) ',
+  '           |jjjjjjjjjj| '
+];
 /* consuming, at full body scale - each item its own silhouette and grip:
    squat corrugated cup / slim tilted can / flat latched case */
 const VANIM = {
@@ -5508,6 +5745,17 @@ function facade(b, gu, z, side, hh, hitX, hitY){
   _wg = -1;
   if (b.dome){ domeSurface(b, z, hitX, hitY); return; }
   if (b.interior){ interiorWall(b, gu, z, side, hitX, hitY); return; }
+  // burned graffiti: a bright stencil holding on the wall for a few days
+  const tg = tags[(hitY | 0) * MAP + (hitX | 0)];
+  if (tg && z > 0.9 && z < 2.5){
+    const fu = (side === 0 ? hitY : hitX) % 1;
+    const gc = ((fu - 0.2) * 5) | 0, gr = ((2.5 - z) / 1.6 * 5) | 0;
+    const gl = MINIFONT[tg.sym];
+    if (gc >= 0 && gc < 3 && gr >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
+      _wb = C.nMag; _wd = 1;
+      return;
+    }
+  }
   // the entrance, drawn where the interact point is - clamped to exactly the
   // door tile's face, with a band of plain wall around it so no window or
   // signage butts against the frame
@@ -6627,6 +6875,9 @@ function drawMinimap(x0, y0){
   for (const a of actors)
     if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
       plot(a.x, a.y, a.brain === 'hostile' ? 'x' : '@', a.brain === 'hostile' ? H_RED : H_PUR);
+  if (snifferT > 0)                             // the chip pings loose loot
+    for (const p of gridQuery(propGrid, cam.x, cam.y, hw, _q2))
+      if (p.k === PK_ITEM) plot(p.x, p.y, '$', H_YEL);
   const qm = questTarget();
   if (qm) plot(qm.x, qm.y, '!', H_YEL);
   const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
@@ -6726,6 +6977,10 @@ function hudPass(){
     // ---- the player exists as arms: guard, weapon, or ritual --------------
     if (!cam.riding){
       const bob = Math.round(cam.walkPhase) & 1;
+      if (skating){                             // the deck under your feet
+        const dw = Math.round(4 * viewW(VM_DECK) / VM_DECK.length);
+        drawViewArt(VM_DECK, (cols >> 1) - (dw >> 1), rows - 4, 4, CM_DECK);
+      }
       if (vAnim){
         const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
                      (vAnim.t / vAnim.d.dur * vAnim.d.frames.length) | 0)];
@@ -6745,9 +7000,16 @@ function hudPass(){
         // smear, hit, recover
         const e = punchDur - punchT, kk = punchDur / 0.45;
         const ph = e < 0.08 * kk ? 0 : e < 0.13 * kk ? 1 : e < 0.30 * kk ? 2 : 3;
-        const art = punchLeft
+        const mw = meleeStats();
+        let art = punchLeft
           ? [VM_PUNCH_WIND_L, VM_PUNCH_SMEAR_L, VM_PUNCH_HIT_L, VM_PUNCH_REC_L][ph]
           : [VM_PUNCH_WIND, VM_PUNCH_SMEAR, VM_PUNCH_HIT, VM_PUNCH_REC][ph];
+        let cmA = CM_ARM;
+        if (mw.id !== 'fist'){                  // the weapon rides the swing
+          cmA = CM_MELEE;
+          if (ph === 2) art = mw.id === 'bat' ? VM_BAT_HIT : VM_PIPE_HIT;
+          else if (ph !== 1) art = mw.id === 'bat' ? VM_BAT_HOLD : VM_PIPE_HOLD;
+        }
         const tr = Math.min(art.length, Math.round(rows * 0.45));
         const tw = Math.round(tr * viewW(art) / art.length);
         let ax;
@@ -6760,7 +7022,7 @@ function hudPass(){
           const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
           ax = punchLeft ? 3 + ins : cols - tw - 3 - ins;
         }
-        drawViewArt(art, ax, rows - tr, tr, CM_ARM);
+        drawViewArt(art, ax, rows - tr, tr, cmA);
       } else if (invCount('pistol')){
         const tr = Math.min(VM_GUN.length, Math.round(rows * 0.44));
         const tw = Math.round(tr * viewW(VM_GUN) / VM_GUN.length);
@@ -6771,11 +7033,16 @@ function hudPass(){
           drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
                       gx + (tw >> 1) - 3, gy - 3, 3, CM_MUZ);
       } else {
+        const mw = meleeStats();
+        const hold = mw.id === 'bat' ? VM_BAT_HOLD : mw.id === 'pipe' ? VM_PIPE_HOLD : VM_FIST_R;
         const tr = Math.min(VM_FIST_R.length, Math.round(rows * 0.28));
+        const tr2 = Math.min(hold.length, Math.round(rows * (mw.id === 'fist' ? 0.28 : 0.34)));
         const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
+        const tw2 = Math.round(tr2 * viewW(hold) / hold.length);
         const off = Math.round(cols * 0.19);      // a boxer guard, framing the reticle
         drawViewArt(VM_FIST_L, (cols >> 1) - off - tw, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
-        drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
+        drawViewArt(hold, (cols >> 1) + off, rows - tr2 + (bob ? 0 : 1), tr2,
+                    mw.id === 'fist' ? CM_ARM : CM_MELEE);
       }
     }
     if (sitting){
@@ -6954,6 +7221,7 @@ function frame(now){
   if (!worldFrozen()){
     drugTick(dt);
     if (jamT > 0) jamT -= dt;
+    if (snifferT > 0) snifferT -= dt;
     const ts = drugFx('tScale', 1);       // overclock: the world runs slow, you do not
     worldTime += dt * ts; simulate(dt * ts);
     updateClock(dt * ts);

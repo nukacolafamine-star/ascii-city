@@ -440,6 +440,42 @@ carrying your signature. Two clean days fade a point; **the fixer** on the
 red mile deletes one for forty credits, no questions. Razors and enforcers
 are fair game — putting them down costs nothing but ammunition.
 
+## The arsenal
+
+Nearly forty items, and every consumable has its own first-person ritual
+drawn at full body scale. **Street food** (ramen bowls with a real slurp,
+gyoza off a tray, bao and onigiri that lose bites, skewers eaten cube by
+cube, boba whose pearls deplete, sake that leaves you warm and loose) heals.
+**The dispensary shelf** rides you: CHILLAX saturates the world, RUSH
+trades speed for heartbeat, HAZE makes the neon breathe, NUMB halves damage
+and greys everything out, GHOST DUST makes the hunters lose the scent,
+OVERCLOCK drops the whole city into slow motion around you, STATIC makes
+reality drop packets, and MIRRORSHADE bends every color in the district —
+each substance warps movement, palette, camera, and audio to match, one
+ride at a time. **Bludgeons**: a lead pipe swings fast, a nail bat swings
+like a verdict, both with their own hold-and-swing animations. **Drip**,
+from bodega tee to ADIBAS tracksuit to BALENCIAGO puffer to a ROLLIX on the
+wrist — wear it; the street notices. **Tools of gentle anarchy**: a hacksaw
+that cuts flock cams (they drop scrap) and street lights, the CAM-JACK that
+jumps your eyes into any camera in range and hops between them, a graffiti
+burner that stencils bright tags on walls until they fade days later, a
+signal jammer, firecrackers that clear a corner, mag-shims for doors that
+refuse you, and sniffer chips that ping loose loot on the minimap.
+Vandalism and theft still feed the corruption ledger — the city keeps
+count.
+
+**Shops have trades now**: groceries and bodegas in the neighbourhoods,
+clothiers, jewelers, armories and tool shops on the strip, dispensaries
+glowing pink in the RED LIGHT quarter — each stocking what makes sense,
+with matching displays on the counter. And a third of the street stalls
+keep a vendor: the cart cook, the greengrocer, the fixpoint dealer, each
+selling their one or two things through honest conversation, no corpo
+rates applied.
+
+**The kickdeck** (`V`, away from air traffic) rides at more than double
+walking pace: `SPACE` ollies, and a flip input mid-air lands named tricks
+onto a running style counter.
+
 ## Inventory, stats and saves
 
 The player is data: health, credits, three stats (`VIT` sets max health,
@@ -502,7 +538,7 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `ESC` | pause menu — settings, volumes, save / load, new city |
 | `SHIFT` | run |
 | `Q` `E` | turn · `R` `F` look up/down |
-| `V` | board the air traffic |
+| `V` | board the air traffic — or, away from it, kick the deck down |
 | `G` | metro (at an entrance) |
 | `M` `H` | minimap · key list |
 | `B` | bloom on / off |
