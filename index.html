@@ -305,13 +305,19 @@ function buildAtlases(){
              'px "Cascadia Mono","Consolas","Courier New",monospace';
     const f = LV_FADE[l] * fogScale();
     const dim = 1 - 0.22 * f;
-    const sat = CFG.timeMode === 2 ? 1.5 : 1;   // daylight pulls the hue OUT of
+    const sat = (CFG.timeMode === 2 ? 1.5 : 1) * drugFx('sat', 1);
+    const hueK = drugFx('hue', 0);              // the ride bends the palette
+    const hueM = hueK ? hueK * (0.5 + 0.5 * Math.sin(worldTime * 0.6)) : 0;
     for (let b = 0; b < NBASE; b++){            // shells that were cut for night
       const c = BASE[b];
       let r0 = c[0] * dim * T.amb, g0 = c[1] * dim * T.amb, b0 = c[2] * dim * T.amb;
       if (sat !== 1){
         const lum = r0 * 0.3 + g0 * 0.59 + b0 * 0.11;
         r0 = lum + (r0 - lum) * sat; g0 = lum + (g0 - lum) * sat; b0 = lum + (b0 - lum) * sat;
+      }
+      if (hueM){
+        const r1 = r0 + (g0 - r0) * hueM, g1 = g0 + (b0 - g0) * hueM, b1 = b0 + (r0 - b0) * hueM;
+        r0 = r1; g0 = g1; b0 = b1;
       }
       const rC = Math.round(clamp(r0, 0, 255) * (1 - f) + T.fog[0] * f);
       const gC = Math.round(clamp(g0, 0, 255) * (1 - f) + T.fog[1] * f);
@@ -2266,8 +2272,10 @@ function buildInterior(bld, door, floor){
       if (rnd() < 0.75) ip.push({ x: IOX + 0.6, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
     if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(), r: 0.5 });
     const t1 = IOX + 2, t2 = IOX + rw - 3;            // stock on the counter top
-    dropItem(t1 + 0.5, cy + 0.5, 1.1, 'noodles', 1, 15);   // displays are priced
-    if (t2 !== t1) dropItem(t2 + 0.5, cy + 0.5, 1.1, 'soda', 1, 10);
+    const stk = SHOP_TYPES[shopTypeFor(bld)].stock.filter(id => ITEMS[id]);
+    const d1 = stk[0] || 'noodles', d2 = stk[1] || 'soda';
+    dropItem(t1 + 0.5, cy + 0.5, 1.1, d1, 1, ITEMS[d1].price);   // displays are priced
+    if (t2 !== t1) dropItem(t2 + 0.5, cy + 0.5, 1.1, d2, 1, ITEMS[d2].price);
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
@@ -2307,6 +2315,7 @@ function buildInterior(bld, door, floor){
   }
   rngState = keep;
   return { props: ip, stairs,
+           shop: kind === 'shop' ? shopTypeFor(bld) : null,
            px: floor === 1 ? doorX + 0.5 : (stairs ? stairs.x : doorX + 0.5),
            py: floor === 1 ? IOY + rh - 1.6 : (stairs ? stairs.y + 1.3 : IOY + rh - 1.6),
            ang: floor === 1 ? -Math.PI / 2 : Math.PI / 2,
@@ -2321,6 +2330,7 @@ function gotoFloor(f){
   props = room.props; signs = [];
   indexProps(); indexSpriteProps();
   inside.floor = f; inside.exit = room.exit; inside.stairs = room.stairs;
+  inside.shop = room.shop;
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0;
   fade = 1;
   sfx('door', { rate: 1.25, vol: 0.7 });
@@ -2341,9 +2351,16 @@ function openFloorMenu(){
 }
 function enterInterior(door){
   if (player.corruption >= 3 && hash3(door.b, 999, 7) < 0.35){
-    sfx('ui_back', { vol: 0.6, rate: 0.5 });
-    toast('the lock flashes red - the system flags you');
-    return;
+    if (invCount('shim')){                     // a mag-shim eats one refusal
+      invTake('shim', 1);
+      toast('the mag-shim chews through the lock');
+      sfx('ui_select', { vol: 0.6, rate: 0.7 });
+    } else {
+      sfx('ui_back', { vol: 0.6, rate: 0.5 });
+      toast('the lock flashes red - the system flags you' +
+            (ITEMS.shim ? ' (a MAG-SHIM would open it)' : ''));
+      return;
+    }
   }
   const bld = buildings[door.b];
   EXT = { tType, tH, tB, walkG, props, signs,
@@ -2354,7 +2371,7 @@ function enterInterior(door){
   props = room.props; signs = [];
   indexProps(); indexSpriteProps();
   inside = { name: door.name, district: bld.dist, exit: room.exit,
-             stairs: room.stairs, bld: door.b, door, floor: 1 };
+             stairs: room.stairs, shop: room.shop, bld: door.b, door, floor: 1 };
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
   viewD = 13; fade = 1;
   buildBackground();
@@ -2802,7 +2819,7 @@ function updateCam(dt){
     cam.x += dx / l * step; cam.y += dy / l * step;
   }
   const run = keys.ShiftLeft || keys.ShiftRight ? 2.2 + 0.1 * player.stats.AGI : 1;
-  const sp = 3.1 * run;
+  const sp = 3.1 * run * drugFx('speed', 1);
   let fwd = 0, str = 0;
   if (keys.KeyW || keys.ArrowUp) fwd += 1;
   if (keys.KeyS || keys.ArrowDown) fwd -= 1;
@@ -3216,6 +3233,10 @@ function audioLoad(name){
 function sfx(name, o){
   if (!audio.tier || audio.missing[name]) return;
   o = o || {};
+  // the ride warps the ears: pitch bend, plus jitter on static
+  const aw = drugFx('aud', 1), aj = drugFx('audJit', 0);
+  if (aw !== 1 || aj) o = Object.assign({}, o,
+    { rate: (o.rate || 1) * aw * (1 + (aj ? (Math.random() * 2 - 1) * aj : 0)) });
   const bus = AUD[name] ? AUD[name].bus : 'fx';
   if (audio.tier === 1){
     const buf = audio.buffers[name]; if (!buf) return;
@@ -3318,22 +3339,106 @@ const player = {
   quests: {}, qvar: {}, track: null,        // quest stages, counters, compass
   corruption: 0                             // how hard the system watches you
 };
+const heal = n => p => { if (p.hp >= p.maxHp) return false;
+                         p.hp = Math.min(p.maxHp, p.hp + n); return true; };
 const ITEMS = {
+  // ---- street food ----
   noodles: { name: 'CUP NOODLES', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 15,
-             hint: 'restores 25 hp',
-             use(p){ if (p.hp >= p.maxHp) return false; p.hp = Math.min(p.maxHp, p.hp + 25); return true; } },
+             hint: 'restores 25 hp', use: heal(25) },
+  ramen:   { name: 'RAMEN BOWL', pcol: C.nAmber, stack: 3, cat: 'consumable', price: 24,
+             hint: 'the real thing - 40 hp', use: heal(40) },
+  gyoza:   { name: 'GYOZA SIX', pcol: C.nWhite, stack: 4, cat: 'consumable', price: 14,
+             hint: 'pan-fried - 20 hp', use: heal(20) },
+  bao:     { name: 'PORK BAO', pcol: C.nWhite, stack: 4, cat: 'consumable', price: 10,
+             hint: 'steamed soft - 15 hp', use: heal(15) },
+  onigiri: { name: 'ONIGIRI', pcol: C.nWhite, stack: 5, cat: 'consumable', price: 8,
+             hint: 'pocket rice - 12 hp', use: heal(12) },
+  taiyaki: { name: 'TAIYAKI', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 8,
+             hint: 'sweet fish-cake - 12 hp', use: heal(12) },
+  skewer:  { name: 'TOFU SKEWER', pcol: C.nGreen, stack: 6, cat: 'consumable', price: 7,
+             hint: 'charred on the cart - 10 hp', use: heal(10) },
+  kebab:   { name: 'SYNTH KEBAB', pcol: C.camRed, stack: 4, cat: 'consumable', price: 16,
+             hint: 'vat meat, real fire - 25 hp', use: heal(25) },
+  apple:   { name: 'SYNTH APPLE', pcol: C.nGreen, stack: 6, cat: 'consumable', price: 4,
+             hint: 'polished, waxy - 6 hp', use: heal(6) },
   soda:    { name: 'SYNTH COLA', pcol: C.nCyan, stack: 5, cat: 'consumable', price: 10,
-             hint: 'restores 10 hp',
-             use(p){ if (p.hp >= p.maxHp) return false; p.hp = Math.min(p.maxHp, p.hp + 10); return true; } },
+             hint: 'restores 10 hp', use: heal(10) },
+  coffee:  { name: 'CANNED COFFEE', pcol: C.tlAmb, stack: 5, cat: 'consumable', price: 6,
+             hint: 'hot from the vending machine - 8 hp', use: heal(8) },
+  boba:    { name: 'BOBA TEA', pcol: C.nPink, stack: 4, cat: 'consumable', price: 9,
+             hint: 'pearls at the bottom - 10 hp', use: heal(10) },
+  sake:    { name: 'SAKE FLASK', pcol: C.nWhite, stack: 3, cat: 'consumable', price: 14,
+             hint: 'warm and loose for a while',
+             use(p){ heal(8)(p); return takeDrug('sake'); } },
   medkit:  { name: 'MEDKIT', pcol: C.camRed, stack: 2, cat: 'consumable', price: 60,
              hint: 'restores all hp',
              use(p){ if (p.hp >= p.maxHp) return false; p.hp = p.maxHp; return true; } },
-  scrap:   { name: 'SCRAP ELECTRONICS', pcol: C.nGreen, stack: 9, cat: 'misc', price: 12,
-             hint: 'shops pay a little; the watcher pays well' },
+  // ---- the shelf behind the dispensary counter ----
+  chill:   { name: 'CHILLAX GUMMIES', pcol: C.nGreen, stack: 4, cat: 'consumable', price: 20,
+             hint: 'everything softens and saturates', use(){ return takeDrug('chill'); } },
+  rush:    { name: 'RUSH INHALER', pcol: C.camRed, stack: 3, cat: 'consumable', price: 35,
+             hint: 'you speed up; your heart keeps the bill', use(){ return takeDrug('rush'); } },
+  haze:    { name: 'HAZE TAB', pcol: C.nViolet, stack: 4, cat: 'consumable', price: 30,
+             hint: 'the neon starts breathing', use(){ return takeDrug('haze'); } },
+  numb:    { name: 'NUMB PATCH', pcol: C.nCyan, stack: 3, cat: 'consumable', price: 40,
+             hint: 'half damage; the world goes grey', use(){ return takeDrug('numb'); } },
+  ghost:   { name: 'GHOST DUST', pcol: C.nWhite, stack: 3, cat: 'consumable', price: 45,
+             hint: 'the hunters lose the scent', use(){ return takeDrug('ghost'); } },
+  overclock:{ name: 'OVERCLOCK SHOT', pcol: C.nCyan, stack: 2, cat: 'consumable', price: 70,
+             hint: 'the world drops into slow motion', use(){ return takeDrug('overclock'); } },
+  staticd: { name: 'STATIC', pcol: C.nMag, stack: 4, cat: 'consumable', price: 25,
+             hint: 'reality drops packets', use(){ return takeDrug('staticd'); } },
+  mirror:  { name: 'MIRRORSHADE', pcol: C.nViolet, stack: 2, cat: 'consumable', price: 55,
+             hint: 'see every heartbeat in the district', use(){ return takeDrug('mirror'); } },
+  // ---- weapons ----
   pistol:  { name: 'ZIP PISTOL', pcol: C.rail, stack: 1, cat: 'weapon', price: 90,
              hint: 'LMB or CTRL fires; feeds on ammo' },
   ammo:    { name: 'AMMO', pcol: C.tlAmb, stack: 24, cat: 'weapon', price: 3,
-             hint: 'rounds for the zip pistol' }
+             hint: 'rounds for the zip pistol' },
+  pipe:    { name: 'LEAD PIPE', pcol: C.rail, stack: 1, cat: 'weapon', price: 120,
+             hint: 'fast swings, honest dents - fires when out of ammo' },
+  bat:     { name: 'NAIL BAT', pcol: C.trunk, stack: 1, cat: 'weapon', price: 220,
+             hint: 'slow, heavy, unreasonable' },
+  // ---- drip: bodega to hype ----
+  tee:     { name: 'BODEGA TEE', pcol: C.nWhite, stack: 2, cat: 'clothing', price: 8,
+             hint: 'three for twenty, one for eight' },
+  hoodie:  { name: 'GREYMARKET HOODIE', pcol: C.rail, stack: 2, cat: 'clothing', price: 25,
+             hint: 'the drawstrings are already gone' },
+  sneakers:{ name: 'CANVAS LO-TOPS', pcol: C.nWhite, stack: 2, cat: 'clothing', price: 18,
+             hint: 'they were white once' },
+  tracksuit:{ name: 'ADIBAS TRACKSUIT', pcol: C.nCyan, stack: 1, cat: 'clothing', price: 60,
+             hint: 'four stripes of pure confidence' },
+  workjacket:{ name: 'CARHARTZ JACKET', pcol: C.tlAmb, stack: 1, cat: 'clothing', price: 75,
+             hint: 'outlives its owners' },
+  runners: { name: 'YEEZUS RUNNERS', pcol: C.nPink, stack: 1, cat: 'clothing', price: 340,
+             hint: 'resale is the whole point' },
+  puffer:  { name: 'BALENCIAGO PUFFER', pcol: C.nMag, stack: 1, cat: 'clothing', price: 520,
+             hint: 'looks stolen even when it is not' },
+  vest:    { name: 'OFF-BRAND(TM) VEST', pcol: C.nAmber, stack: 1, cat: 'clothing', price: 410,
+             hint: 'the quotation marks are load-bearing' },
+  // ---- ice ----
+  shades:  { name: 'GOOCHY SHADES', pcol: C.nViolet, stack: 1, cat: 'accessory', price: 260,
+             hint: 'the GG stands for whatever you want' },
+  ring:    { name: 'SIGNET RING', pcol: C.tlAmb, stack: 2, cat: 'accessory', price: 90,
+             hint: 'somebody\'s initials, now yours' },
+  chain:   { name: 'CUBAN LINK CHAIN', pcol: C.tlAmb, stack: 1, cat: 'accessory', price: 650,
+             hint: 'heavy enough to count as cardio' },
+  watch:   { name: 'ROLLIX SUBMERSIBLE', pcol: C.nCyan, stack: 1, cat: 'accessory', price: 900,
+             hint: 'waterproof to depths you will never see' },
+  // ---- tools of gentle anarchy ----
+  firecracker:{ name: 'FIRECRACKERS', pcol: C.camRed, stack: 5, cat: 'misc', price: 15,
+             hint: 'clears a street corner instantly',
+             use(){ popFirecracker(); return true; } },
+  jammer:  { name: 'SIGNAL JAMMER', pcol: C.nGreen, stack: 1, cat: 'misc', price: 120,
+             hint: 'cameras and enforcers lose you for a minute',
+             use(){ return startJammer(); } },
+  shim:    { name: 'MAG-SHIM', pcol: C.rail, stack: 3, cat: 'misc', price: 60,
+             hint: 'slips one door that refuses you' },
+  // ---- misc ----
+  scrap:   { name: 'SCRAP ELECTRONICS', pcol: C.nGreen, stack: 9, cat: 'misc', price: 12,
+             hint: 'shops pay a little; the watcher pays well' },
+  battery: { name: 'BATTERY', pcol: C.nCyan, stack: 8, cat: 'misc', price: 6,
+             hint: 'everything here runs on these' }
 };
 function invAdd(id, n){
   let st = player.inv.find(s => s.id === id);
@@ -3351,10 +3456,79 @@ function invTake(id, n){
   if (st.qty <= 0) player.inv.splice(player.inv.indexOf(st), 1);
   return true;
 }
+/* ---- the ride: one substance at a time, each with its own physics -------
+   speed, time-scale, camera wobble, palette saturation / hue drift, glyph
+   glitch, damage resistance, audio pitch - all read through drugFx()      */
+let drug = null;
+const DRUGFX = {
+  sake:      { dur: 25, speed: 0.95, wob: 0.35, aud: 0.95, sat: 1.1,
+               label: 'warm and loose' },
+  chill:     { dur: 60, speed: 0.92, aud: 0.9, sat: 1.45, wob: 0.15,
+               label: 'everything is fine, actually' },
+  rush:      { dur: 45, speed: 1.4, shake: 0.5, aud: 1.12, hpDrain: 0.12,
+               label: 'the city cannot keep up with you' },
+  haze:      { dur: 50, wob: 0.8, hue: 0.6, sat: 1.5, aud: 0.93,
+               label: 'the neon starts breathing' },
+  numb:      { dur: 60, speed: 0.88, resist: 0.5, sat: 0.4, aud: 0.9,
+               label: 'the edges stop hurting' },
+  ghost:     { dur: 40, ghost: 1, sat: 0.6, aud: 0.8, speed: 0.96,
+               label: 'nobody sees you. maybe nobody ever did' },
+  overclock: { dur: 16, tScale: 0.45, aud: 0.72, shake: 0.15,
+               label: 'the world drops into slow motion' },
+  staticd:   { dur: 30, glitch: 0.8, audJit: 0.25,
+               label: 'reality drops packets' },
+  mirror:    { dur: 35, hue: 1, sat: 1.2, seeAll: 1, wob: 0.3,
+               label: 'you can see every heartbeat in the district' }
+};
+function takeDrug(id){
+  const d = DRUGFX[id];
+  if (!d) return false;
+  drug = { id, t: 0, dur: d.dur, fx: d };
+  bakeKey = -1;
+  toast(d.label);
+  return true;
+}
+function drugFx(k, dflt){
+  return drug && drug.fx[k] !== undefined ? drug.fx[k] : dflt;
+}
+function drugTick(dt){
+  if (!drug) return;
+  drug.t += dt;
+  if (drug.fx.hpDrain) player.hp = Math.max(1, player.hp - drug.fx.hpDrain * dt);
+  if (drug.t >= drug.dur){
+    drug = null; bakeKey = -1;
+    toast('the ride wears off');
+  }
+}
+/* ---- pocket anarchy ---- */
+function popFirecracker(){
+  panicT = worldTime + 6; panicX = cam.x; panicY = cam.y;
+  flash = Math.max(flash, 0.5);
+  sfx('shot', { vol: 0.9, rate: 1.6 });
+  sfx('shot', { vol: 0.7, rate: 1.9 });
+  toast('the corner clears out fast');
+  return true;
+}
+let jamT = 0;
+function startJammer(){
+  if (jamT > 0){ toast('already jamming'); return false; }
+  jamT = 60;
+  for (const a of actors) if (a.kind === 'enforcer') a.aggro = 0;
+  toast('sixty seconds of static - move');
+  sfx('ui_select', { rate: 0.5, vol: 0.7 });
+  return true;
+}
 function useItem(id){
   const st = player.inv.find(s => s.id === id);
   if (!st) return;
   const def = ITEMS[id];
+  if (def.cat === 'clothing' || def.cat === 'accessory'){
+    player.outfit = id;                       // drip is its own reward
+    toast('wearing ' + def.name.toLowerCase() +
+          (def.price >= 200 ? ' - the street notices' : ''));
+    sfx('ui_select', { vol: 0.5 });
+    return;
+  }
   if (!def.use){ toast('no use for it yet'); return; }
   if (!def.use(player)){ toast('no effect right now'); sfx('ui_back', { vol: 0.3 }); return; }
   st.qty--;
@@ -3371,6 +3545,8 @@ function resetPlayer(){
   player.inv = [];
   player.quests = {}; player.qvar = {}; player.track = null;
   player.corruption = 0;
+  player.outfit = null;
+  drug = null; jamT = 0;
 }
 // what a thing costs YOU: the flagged pay corpo prices
 function priceOf(id){
@@ -3638,11 +3814,44 @@ function sellScrap(){
   if (questStage('scrap') === 0 && player.qvar.scrap >= 3) advanceQuest('scrap');
 }
 /* every shopkeep runs the same store: a proper buy/sell counter screen */
-const SHOP_STOCK = ['noodles', 'soda', 'medkit'];
+/* every shop has a trade: the stock behind the counter follows it */
+const SHOP_TYPES = {
+  general:    { name: 'GENERAL STORE',
+                stock: ['noodles', 'soda', 'coffee', 'medkit', 'battery', 'firecracker'] },
+  grocery:    { name: 'GROCERY',
+                stock: ['apple', 'onigiri', 'gyoza', 'bao', 'ramen', 'noodles', 'soda', 'boba'] },
+  bodega:     { name: 'BODEGA',
+                stock: ['noodles', 'soda', 'coffee', 'taiyaki', 'sake', 'tee', 'battery'] },
+  clothier:   { name: 'CLOTHIER',
+                stock: ['tee', 'hoodie', 'sneakers', 'tracksuit', 'workjacket', 'runners', 'puffer', 'vest'] },
+  jeweler:    { name: 'JEWELER',
+                stock: ['shades', 'ring', 'chain', 'watch'] },
+  armory:     { name: 'ARMORY',
+                stock: ['ammo', 'pipe', 'bat', 'pistol'] },
+  tools:      { name: 'TOOLS & TRINKETS',
+                stock: ['saw', 'burner', 'jammer', 'firecracker', 'shim', 'sniffer', 'camjack', 'deck', 'battery'] },
+  dispensary: { name: 'DISPENSARY',
+                stock: ['chill', 'haze', 'staticd', 'numb', 'rush', 'ghost', 'overclock', 'mirror', 'sake'] }
+};
+function shopTypeFor(bld){
+  const h = hash3(bld.id, 31, 7);
+  switch (bld.dist){
+    case D_RES: case D_SUB: return h < 0.5 ? 'grocery' : h < 0.85 ? 'bodega' : 'general';
+    case D_STRIP: return ['clothier', 'tools', 'grocery', 'jeweler', 'general', 'armory'][(h * 6) | 0];
+    case D_RED:   return h < 0.45 ? 'dispensary' : h < 0.7 ? 'bodega' : h < 0.9 ? 'jeweler' : 'tools';
+    case D_IND:   return h < 0.6 ? 'tools' : 'armory';
+    default:      return h < 0.4 ? 'clothier' : h < 0.7 ? 'jeweler' : 'general';
+  }
+}
+function shopStock(){
+  const t = SHOP_TYPES[(inside && inside.shop) || 'general'];
+  return { name: t.name, stock: t.stock.filter(id => ITEMS[id]) };
+}
 function sellPrice(id){ return Math.max(1, Math.floor((ITEMS[id].price || 0) * 0.4)); }
 function openShopMenu(){
+  const SS = shopStock();
   const items = [{ info: 'CREDITS ' + player.credits }, { sep: true }, { info: 'BUY' }];
-  for (const id of SHOP_STOCK){
+  for (const id of SS.stock){
     const def = ITEMS[id];
     items.push({ label: def.name, value: () => priceOf(id) + ' cr', hint: def.hint,
       act(){
@@ -3668,7 +3877,7 @@ function openShopMenu(){
       } });
   }
   items.push({ sep: true }, { label: 'LEAVE THE COUNTER', act(){ popMode(); } });
-  pushMode(makeListMenu({ name: 'shop', title: 'THE COUNTER', items }));
+  pushMode(makeListMenu({ name: 'shop', title: SS.name, items }));
 }
 function refreshShop(){
   const cur = topMode().cursor;
@@ -3760,7 +3969,7 @@ function dayTick(){                           // called once per day rollover
 }
 let enfT = 40, camWhisperT = 20;
 function corruptionTick(){                    // polled every half second
-  if (player.corruption <= 0 || inside) return;
+  if (player.corruption <= 0 || inside || jamT > 0) return;
   camWhisperT -= 0.5;
   if (camWhisperT <= 0){
     camWhisperT = 22 + Math.random() * 30;
@@ -3875,21 +4084,29 @@ function characterInSights(maxD, halfW){
 }
 // bare knuckles: half a pistol round, arm's reach, a forgiving swing arc
 let punchT = 0;
+function meleeStats(){                        // the best bludgeon you carry
+  if (invCount('bat')) return { d: 14, r: 6, reach: 2.2, cool: 0.8, id: 'bat' };
+  if (invCount('pipe')) return { d: 9, r: 4, reach: 2.0, cool: 0.55, id: 'pipe' };
+  return { d: 5, r: 3, reach: 1.7, cool: 0.45, id: 'fist' };
+}
+let punchDur = 0.45;
 function punch(){
   if (punchT > 0) return;                     // still mid-swing
-  punchT = 0.45;
-  punchLeft = !punchLeft;                     // jab with the other arm
-  const hit = characterInSights(1.7, 0.7);
+  const m = meleeStats();
+  punchT = punchDur = m.cool;
+  punchLeft = !punchLeft;                     // swing with the other arm
+  const hit = characterInSights(m.reach, 0.7);
+  const dmg = m.d + ((Math.random() * m.r) | 0);
   if (hit && hit.ped){
-    damagePed(hit.a, 5 + ((Math.random() * 3) | 0));
+    damagePed(hit.a, dmg);
   } else if (hit){
     const a = hit.a;
-    a.hp -= 5 + ((Math.random() * 3) | 0);
+    a.hp -= dmg;
     a.aggro = 1; a.hitT = 0.15;
     addFx(a.x, a.y, 1.25);
-    sfx('hit', { vol: 0.6, rate: 1.2 });
+    sfx('hit', { vol: 0.6, rate: m.id === 'fist' ? 1.2 : 0.85 });
     if (a.hp <= 0) killActor(a);
-  } else sfx('ui_move', { vol: 0.25, rate: 0.5 });
+  } else sfx('ui_move', { vol: 0.25, rate: m.id === 'fist' ? 0.5 : 0.4 });
 }
 let unarmedT = 0;
 function fireWeapon(){
@@ -3898,7 +4115,7 @@ function fireWeapon(){
   if (sitting){ toast('not from the bench'); return; }
   const armed = invCount('pistol') > 0;
   if (!armed || invCount('ammo') === 0){
-    if (!armed && worldTime > unarmedT){
+    if (!armed && worldTime > unarmedT && meleeStats().id === 'fist'){
       unarmedT = worldTime + 12;
       toast('bare knuckles - the watcher sells something better');
     }
@@ -3940,6 +4157,7 @@ function killActor(a){
 }
 function damagePlayer(d){
   if (player.hp <= 0) return;
+  d *= drugFx('resist', 1);
   player.hp = Math.max(0, player.hp - d);
   hurtT = 1;
   sfx('hurt', { vol: 0.8, rate: 0.9 + Math.random() * 0.2 });
@@ -3979,6 +4197,7 @@ function respawn(){
 }
 function hostileBrain(a, dt){
   a.atkCool = (a.atkCool || 0) - dt;
+  if ((drug && drug.fx.ghost) || jamT > 0) a.aggro = 0;   // ghosted or jammed
   const rx = cam.x - a.x, ry = cam.y - a.y;
   const pr = Math.hypot(rx, ry) || 0.001;
   if (!a.aggro){
@@ -4040,7 +4259,9 @@ function updateClock(dt){
     for (const b of buildings)
       b.litP = clamp(curTime().lit * (0.45 + hash3(b.id, 3, 9)), 0.05, 0.95);
   }
-  const key = t.a * 1000 + t.b * 100 + ((t.u * 24) | 0);
+  const key = t.a * 1000 + t.b * 100 + ((t.u * 24) | 0)
+            + (drug && (drug.fx.hue || drug.fx.sat)
+                 ? 100000 + (drug.fx.hue ? ((worldTime * 2) | 0) % 89 : 1) * 101 : 0);
   if (key !== bakeKey){                     // the palette chases the blend
     bakeKey = key;
     bgGrad = null;
@@ -5775,11 +5996,17 @@ function glBuildPalette(){
     for (let l = 0; l < LV; l++){
       const f = LV_FADE[l] * fogScale();
       const dim = 1 - 0.22 * f;
-      const sat = CFG.timeMode === 2 ? 1.5 : 1;
+      const sat = (CFG.timeMode === 2 ? 1.5 : 1) * drugFx('sat', 1);
+      const hueK = drugFx('hue', 0);
+      const hueM = hueK ? hueK * (0.5 + 0.5 * Math.sin(worldTime * 0.6)) : 0;
       let r0 = c[0] * dim * T.amb, g0 = c[1] * dim * T.amb, b0 = c[2] * dim * T.amb;
       if (sat !== 1){
         const lum = r0 * 0.3 + g0 * 0.59 + b0 * 0.11;
         r0 = lum + (r0 - lum) * sat; g0 = lum + (g0 - lum) * sat; b0 = lum + (b0 - lum) * sat;
+      }
+      if (hueM){
+        const r1 = r0 + (g0 - r0) * hueM, g1 = g0 + (b0 - g0) * hueM, b1 = b0 + (r0 - b0) * hueM;
+        r0 = r1; g0 = g1; b0 = b1;
       }
       const r = Math.round(clamp(r0, 0, 255) * (1 - f) + T.fog[0] * f);
       const g = Math.round(clamp(g0, 0, 255) * (1 - f) + T.fog[1] * f);
@@ -6167,6 +6394,14 @@ function hudPass(){
   hudRects.length = 0;
   hudR0 = 1e9; hudR1 = -1;
   const rows = R.rows, cols = R.cols;
+  if (drug && drug.fx.glitch){          // static: the frame drops packets
+    const n = (drug.fx.glitch * 240) | 0;
+    for (let i = 0; i < n; i++){
+      const idx = (Math.random() * gBuf.length) | 0;
+      gBuf[idx] = (Math.random() * RMAX) | 0;
+      if (Math.random() < 0.4) bBuf[idx] = (Math.random() * NBASE) | 0;
+    }
+  }
   // ---- status ----
   hudPanel(1, 1, 52, 7);
   hudBox(1, 1, 52, 7, 'ASCII CITY');
@@ -6262,9 +6497,10 @@ function hudPass(){
           if (punchLeft) drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - gt + 2, gt, CM_ARM);
           else drawViewArt(VM_FIST_L, (cols >> 1) - off - gw, rows - gt + 2, gt, CM_ARM);
         }
-        // four beats on the 0.45s swing: wind, smear, hit, recover
-        const e = 0.45 - punchT;
-        const ph = e < 0.08 ? 0 : e < 0.13 ? 1 : e < 0.30 ? 2 : 3;
+        // four beats on the swing (weapon cooldown stretches them): wind,
+        // smear, hit, recover
+        const e = punchDur - punchT, kk = punchDur / 0.45;
+        const ph = e < 0.08 * kk ? 0 : e < 0.13 * kk ? 1 : e < 0.30 * kk ? 2 : 3;
         const art = punchLeft
           ? [VM_PUNCH_WIND_L, VM_PUNCH_SMEAR_L, VM_PUNCH_HIT_L, VM_PUNCH_REC_L][ph]
           : [VM_PUNCH_WIND, VM_PUNCH_SMEAR, VM_PUNCH_HIT, VM_PUNCH_REC][ph];
@@ -6472,9 +6708,12 @@ function frame(now){
   if (dt < 0) dt = 0;
   const w0 = performance.now();
   if (!worldFrozen()){
-    worldTime += dt; simulate(dt);
-    updateClock(dt);
-    wxUpdate(dt);
+    drugTick(dt);
+    if (jamT > 0) jamT -= dt;
+    const ts = drugFx('tScale', 1);       // overclock: the world runs slow, you do not
+    worldTime += dt * ts; simulate(dt * ts);
+    updateClock(dt * ts);
+    wxUpdate(dt * ts);
     if (weather === 2){
       nextBolt -= dt;
       if (nextBolt <= 0){
@@ -6508,7 +6747,16 @@ function frame(now){
   probeInteract();
   audioFrame(dt);
   buildBackground();
+  // the ride leans on the camera: slow sway or stimulant jitter, render-only
+  let wo = 0, wp = 0;
+  if (drug){
+    const wob = drugFx('wob', 0), shk = drugFx('shake', 0);
+    wo = wob * 0.045 * Math.sin(worldTime * 0.9) + shk * 0.012 * (Math.random() * 2 - 1);
+    wp = wob * 1.7 * Math.sin(worldTime * 0.63 + 1.7) + shk * 0.6 * (Math.random() * 2 - 1);
+    cam.ang += wo; cam.pitch += wp;
+  }
   render();
+  if (wo || wp){ cam.ang -= wo; cam.pitch -= wp; }
   if (toastT > 0) toastT -= dt;
   workAcc += performance.now() - w0; workN++;
   fpsAcc += dt; fpsN++;
