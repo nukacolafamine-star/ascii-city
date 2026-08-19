@@ -138,7 +138,7 @@ Mostly art authoring; the machinery is modest.
 bottle tilt, wrap flash); `useItem` plays one and applies the effect at the
 animation's midpoint.
 
-## Phase 6 — Law & disorder (DEEP: the #19 system)
+## Phase 6 — Law & disorder — **DONE 2026-08-19**
 
 **#19 Corruption. (DEEP)**
 `player.corruption` 0–10, fed by a `crimeEvent()` hook (theft via #4's
@@ -156,7 +156,7 @@ Peds get lazy-init hp (~10); the sights helper generalizes to actors+peds
 them. Corruption per your spec: attacking 3 distinct peds = +1, ped-sourced
 corruption caps at 2.
 
-## Phase 7 — Big structures (each one its own session)
+## Phase 7 — Big structures — **DONE 2026-08-19**
 
 **#13 Full city map. (M+)**
 A full-screen mode (mode stack) sampling `tType` at 1/2/4/8 tiles-per-cell
@@ -184,3 +184,19 @@ from new archetypes (office, apartment corridor, storage), the street door
 exists only on floor 1, and interior walls facing outward can carry a
 window band showing sky. The work is the new room archetypes and the floor
 picker — the swap trick already built carries all of it.
+
+---
+
+## Post-roadmap additions (unplanned, shipped alongside)
+
+- **GitHub Pages deploy** — public repo `nukacolafamine-star/ascii-city`,
+  live at https://nukacolafamine-star.github.io/ascii-city/.
+- **Mobile touch suite** — floating movement stick with sprint rim, look
+  drag, FIRE/ACT/WAIT clusters, MENU/INV/MAP/FLY buttons, tap-through to
+  cards/dialogs, dialogs centered on touch.
+- **Custom literal ASCII art pipeline** — `parseArtLit` renders authored
+  art exactly as typed (the oak from `tree ascii.txt` replaced the default
+  green tree); the door for more player-authored art is open.
+- **Arms-only first person** — held pistol with recoil and muzzle flash,
+  alternating guard fists and punches, consume rituals; torso/legs removed
+  by design.

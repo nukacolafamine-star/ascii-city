@@ -67,7 +67,7 @@ than at random:
 | **urban** | residential and industrial, some towers |
 | **suburban** | small houses on large plots, gardens, parks |
 | **farmland** | open fields, scattered barns, dirt tracks |
-| **wilderness** | the outer ring — open ground, long views |
+| **wilderness** | past the rural ring the lattice returns to earth — two highways leave the city and degrade to dirt tracks, rocks and scrub take over, and the view distance stretches past 300 tiles for full-skyline shots |
 
 Within its ring, each block draws a district from that ring's menu through a
 coarse patch field, so like districts clump instead of speckling. Six district
@@ -365,6 +365,20 @@ keeper — concierge, shopkeep, foreman, resident — standing ready to be talke
 to, and the way out is drawn as a real door: dark panels, bright frame,
 amber handles.
 
+**Buildings carry canonical floors.** A tower announces itself as floors
+1, 22, 33, 38 — hash-picked from its height — and the stairwell in the back
+corner opens a picker. Each floor regenerates from the building's seed the
+moment you arrive: **offices** in partitioned rows, **apartment corridors**
+whose tenants warn you off 4C, **storage floors** stacked with crates and
+worth scavenging. The street door exists only on floor 1; everything above
+belongs to the stairs.
+
+**The city map** (`M`) charts all four square kilometres: pan with `WASD`
+or a drag, zoom `Q`/`E` from street grain to the whole grid. Avenues carry
+seed-hashed names — KANDA AVE, VOLT AVE — the numbered streets cross them,
+landmarks label themselves up close and districts from afar, and your
+arrow and the quest marker ride on top.
+
 ## Quests and conversations
 
 Conversations are **trees**: a map of nodes, each with typed-out text and
@@ -406,6 +420,17 @@ reticle turns to a red `x` with a nameplate when a hostile is in your sights,
 gunfire scatters the crowd and carries to every razor in earshot, and impacts
 spark. Dying costs half your credits and a walk back from the nearest metro
 platform — or load a save, or start over.
+
+**The law keeps a ledger.** Pedestrians can be fought — a bullet does not
+care who stands in front of it — but the city notices: assaulting three
+different people or killing one raises your **corruption** (ped-sourced
+corruption caps at 2), stealing priced goods raises it too, and the score
+sits red in the status bar. At 1–2 the cameras swivel to follow you. At 3–5
+shops charge corpo rates and a third of the city's doors flash red and
+refuse you. At 6+ **enforcers** come looking — armoured, fast, and already
+carrying your signature. Two clean days fade a point; **the fixer** on the
+red mile deletes one for forty credits, no questions. Razors and enforcers
+are fair game — putting them down costs nothing but ammunition.
 
 ## Inventory, stats and saves
 
@@ -465,6 +490,7 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `W` (seated) | wait until the light changes |
 | `LMB` / `CTRL` | attack — bare knuckles, or the zip pistol once you own one |
 | `TAB` | inventory and stats |
+| `M` | the full city map — pan, zoom, street names |
 | `ESC` | pause menu — settings, volumes, save / load, new city |
 | `SHIFT` | run |
 | `Q` `E` | turn · `R` `F` look up/down |

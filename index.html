@@ -540,6 +540,11 @@ function findBlock(bw, bh, want, zone){
       if (!blockFree(bi, bj, bw, bh)) continue;
       if (want !== undefined && distMap[bj * NB + bi] !== want) continue;
       if (zone !== undefined && zoneAt(bi, bj) !== zone) continue;
+      let zOk = true;                 // no span may touch the wilderness ring
+      for (let zj = bj; zOk && zj < bj + bh; zj++)
+        for (let zi = bi; zi < bi + bw; zi++)
+          if (zoneAt(zi, zj) >= 4){ zOk = false; break; }
+      if (!zOk) continue;
       c.push([bi, bj]);
     }
   if (!c.length) return null;
@@ -2197,7 +2202,7 @@ function buildInterior(bld, door, floor){
         if (rnd() < 0.65) ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
     dropItem(IOX + 1.5, IOY + 1.5, 0, 'scrap');
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + rh - 1.5, 0, 'scrap');
-    if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + 1.5, 0, 'ammo', 4);
+    if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + 2.5, 0, 'ammo', 4);   // clear of the stair corner
   } else if (kind === 'shop'){                      // counter across the back
     const cy = IOY + 2, gap = IOX + rw - 2;         // pass-through at the end
 
@@ -2394,18 +2399,28 @@ function tryInteract(){
   } else if (t.kind === 'item'){
     const def = ITEMS[t.p.item];
     const st = player.inv.find(s => s.id === t.p.item);
-    if (st && st.qty >= def.stack){ toast('cannot carry more ' + def.name.toLowerCase()); return; }
+    const space = def.stack - (st ? st.qty : 0);
+    if (space <= 0){ toast('cannot carry more ' + def.name.toLowerCase()); return; }
+    const want = t.p.qty || 1;
+    if (!t.p.price && want > space){         // bag fills - take what fits, leave the rest
+      invAdd(t.p.item, space);
+      t.p.qty = want - space;
+      sfx('ui_select', { rate: 1.35, vol: 0.6 });
+      toast('+ ' + space + ' ' + def.name + '   (bag full)');
+      return;
+    }
+    let paid = 0;
     if (t.p.price){
       const cost = player.corruption >= 3 ? Math.ceil(t.p.price * 1.25) : t.p.price;
-      if (player.credits >= cost) player.credits -= cost;
+      if (player.credits >= cost){ player.credits -= cost; paid = cost; }
       else crimeEvent(1, 'theft');           // pocketed in front of the cameras
     }
-    invAdd(t.p.item, t.p.qty || 1);
+    invAdd(t.p.item, want);
     if (t.p.key) worldDelta.taken[t.p.key] = 1;   // dropped loot has no key
     props.splice(props.indexOf(t.p), 1);
     indexProps(); indexSpriteProps();
     sfx('ui_select', { rate: 1.35, vol: 0.6 });
-    toast((t.p.price ? '-' + t.p.price + ' cr   ' : '') + '+ ' + def.name);
+    toast((paid ? '-' + paid + ' cr   ' : '') + '+ ' + def.name);
   }
 }
 
@@ -2430,7 +2445,8 @@ function spawnActors(){
       pass: { text: 'Everyone is just passing through. The city keeps them anyway.' },
       job: { text: () => 'The count stands at ' + (player.qvar.scrap || 0) + ' of 3. The offer holds.',
         opts: [{ t: 'Sell scrap - 25 cr', if: () => invCount('scrap') > 0,
-                 do(){ sellScrap(); }, next: 'job' },
+                 do(){ sellScrap(); },
+                 next: () => questStage('scrap') === 'done' ? 'paid' : 'job' },
                { t: 'Buy zip pistol - 90 cr', if: () => player.credits >= 90 && !invCount('pistol'),
                  do(){ player.credits -= 90; invAdd('pistol', 1); toast('+ ZIP PISTOL'); }, next: 'armed' },
                { t: 'Buy ammo x8 - 20 cr',
@@ -2448,6 +2464,7 @@ function spawnActors(){
                            invCount('ammo') <= ITEMS.ammo.stack - 8,
                  do(){ player.credits -= 20; invAdd('ammo', 8); toast('+ 8 ROUNDS'); }, next: 'after' },
                { t: 'Leave' }] },
+      paid: { text: 'That makes three. Seventy-five credits, counted and cleared. The belt keeps shedding - if you keep hauling, the price stands.' },
       armed: { text: 'Procurement goes both ways. It jams if you think too loudly, but the razors do not know that. Rounds are twenty for eight.' }
     } });
   const d = randWalkNear(cam.x, cam.y, 8, 16);
@@ -2860,7 +2877,7 @@ function makeListMenu(def){
       this.onKey('Enter');
     }
   };
-  if (m.items.length && m.items[0].sep) menuMove(m, 1);
+  if (m.items.length && (m.items[0].sep || m.items[0].info)) menuMove(m, 1);
   return m;
 }
 
@@ -2900,30 +2917,49 @@ function openTree(title, tree){
   pushMode({
     name: 'dialog', pausesWorld: true, title, tree,
     node: (tree.entry && tree.entry()) || 'start',
-    cursor: 0, t0: performance.now(),
+    cursor: 0, t0: performance.now(), nodeT: performance.now(), lastSig: null,
     cur(){ return this.tree[this.node]; },
     visibleOpts(){ const n = this.cur(); return (n.opts || []).filter(o => !o.if || o.if()); },
+    sig(opts){ return opts.map(o => o.t).join('\x1f'); },
     pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= nodeText(this.cur()).length; },
     go(id){
       if (!id || !this.tree[id]){ popMode(); sfx('ui_back', { vol: 0.5 }); return; }
-      this.node = id; this.cursor = 0; this.t0 = performance.now();
+      const same = id === this.node;
+      this.node = id; this.t0 = performance.now(); this.nodeT = performance.now();
+      // same-node re-entry keeps cursor and sig so option loops stay one press;
+      // if the option list reflowed, the commit guard catches the mismatch
+      if (!same){ this.cursor = 0; this.lastSig = null; }
+      else this.cursor = Math.max(0, Math.min(this.cursor, this.visibleOpts().length - 1));
     },
     onKey(code){
       const opts = this.pageDone() ? this.visibleOpts() : [];
       switch (code){
         case 'KeyW': case 'ArrowUp':
-          if (opts.length){ this.cursor = (this.cursor + opts.length - 1) % opts.length; sfx('ui_move', { vol: 0.4 }); }
+          if (opts.length){ this.cursor = (this.cursor + opts.length - 1) % opts.length;
+            this.lastSig = this.sig(opts); sfx('ui_move', { vol: 0.4 }); }
           break;
         case 'KeyS': case 'ArrowDown':
-          if (opts.length){ this.cursor = (this.cursor + 1) % opts.length; sfx('ui_move', { vol: 0.4 }); }
+          if (opts.length){ this.cursor = (this.cursor + 1) % opts.length;
+            this.lastSig = this.sig(opts); sfx('ui_move', { vol: 0.4 }); }
           break;
         case 'Space': case 'Enter':
           if (!this.pageDone()){ this.t0 = -1; break; }
           if (opts.length){
+            const sigNow = this.sig(opts);
+            // a commit only fires on a list the player has seen: if the options
+            // reflowed and the press came too fast to have read them, park the
+            // cursor on the bottom (safe) row and eat the press
+            if (sigNow !== this.lastSig && performance.now() - this.nodeT < 450){
+              this.lastSig = sigNow;
+              this.cursor = opts.length - 1;
+              sfx('ui_move', { vol: 0.4 });
+              break;
+            }
+            this.lastSig = sigNow;
             const o = opts[Math.min(this.cursor, opts.length - 1)];
             sfx('ui_select', { vol: 0.5 });
             if (o.do) o.do();
-            this.go(o.next);
+            this.go(typeof o.next === 'function' ? o.next() : o.next);
           } else this.go(this.cur().next);
           break;
         case 'Escape': case 'Backspace':
@@ -2940,11 +2976,13 @@ function openTree(title, tree){
         const oi = cy - h.optStart;
         if (oi >= 0 && oi < opts.length){
           this.cursor = oi;
+          this.lastSig = this.sig(opts);      // tapping a row is seeing it
           this.onKey('Space');
           return;
         }
       }
-      this.onKey('Space');                    // anywhere else: skip / advance
+      if (!this.pageDone()){ this.t0 = -1; return; }        // tap skips the typewriter
+      if (!this.visibleOpts().length) this.onKey('Space');  // text page: tap to continue
     }
   });
   sfx('ui_select', { vol: 0.5 });
@@ -3438,7 +3476,7 @@ function loadGame(n){
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
   cam.x = s.cam.x; cam.y = s.cam.y; cam.ang = s.cam.ang; cam.pitch = s.cam.pitch;
-  cam.riding = null; cam.z = 1.62;
+  cam.riding = null; cam.z = 1.62; sitting = null;
   if (!walkG[clamp(cam.y | 0, 0, MAP - 1) * MAP + clamp(cam.x | 0, 0, MAP - 1)]){
     const sp = freeSpotNear(cam.x, cam.y);
     cam.x = sp[0]; cam.y = sp[1]; faceClear();
@@ -3804,6 +3842,7 @@ let unarmedT = 0;
 function fireWeapon(){
   if (topMode() || worldFrozen()) return;
   if (cam.riding){ toast('not from up here'); return; }
+  if (sitting){ toast('not from the bench'); return; }
   const armed = invCount('pistol') > 0;
   if (!armed || invCount('ammo') === 0){
     if (!armed && worldTime > unarmedT){
@@ -3844,7 +3883,7 @@ function killActor(a){
                item: roll < 0.6 ? 'ammo' : 'scrap', qty: roll < 0.6 ? 3 : 1 });
   indexProps(); indexSpriteProps();
   sfx('hit', { vol: 0.8, rate: 0.6 });
-  toast('the razor drops');
+  toast('the ' + (a.kind === 'enforcer' ? 'enforcer' : 'razor') + ' drops');
 }
 function damagePlayer(d){
   if (player.hp <= 0) return;
@@ -3870,6 +3909,7 @@ function playerDown(){
 function respawn(){
   player.credits = Math.ceil(player.credits / 2);
   player.hp = player.maxHp;
+  cam.riding = null; cam.z = 1.62; sitting = null;
   if (inside) exitInterior();
   let best = null, bd = 1e9;
   for (const m of metroStops){
@@ -6000,7 +6040,7 @@ function hudPass(){
   hudStr(16, 6, ' ' + player.hp + '/' + player.maxHp + '   cr ' + player.credits +
                 (invCount('pistol') ? '   ammo ' + invCount('ammo') : '   TAB inventory'), H_DIM);
   // ---- minimap ----
-  if (showMap) drawMinimap(cols - MW - 3, 1);
+  if (showMap && cols >= MW + 30) drawMinimap(cols - MW - 3, 1);
   // ---- help ----
   if (showHelp){
     const lines = [
