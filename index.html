@@ -4377,8 +4377,8 @@ function openMap(){
       switch (code){
         case 'KeyW': case 'ArrowUp':    this.cy -= step; break;
         case 'KeyS': case 'ArrowDown':  this.cy += step; break;
-        case 'KeyA': case 'ArrowLeft':  this.cx -= step; break;
-        case 'KeyD': case 'ArrowRight': this.cx += step; break;
+        case 'KeyA': case 'ArrowLeft':  this.cx += step; break;   // east is left now
+        case 'KeyD': case 'ArrowRight': this.cx -= step; break;
         case 'KeyQ': case 'BracketLeft':  this.z = Math.min(8, this.z * 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'KeyE': case 'BracketRight': this.z = Math.max(1, this.z / 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'KeyM': case 'Escape': case 'Space': case 'Tab':
@@ -4387,7 +4387,7 @@ function openMap(){
       this.cx = clamp(this.cx, 0, MAP); this.cy = clamp(this.cy, 0, MAP);
     },
     drag(dx, dy){
-      this.cx = clamp(this.cx - dx / R.cellW * this.z, 0, MAP);
+      this.cx = clamp(this.cx + dx / R.cellW * this.z, 0, MAP);
       this.cy = clamp(this.cy - dy / R.cellH * this.z * 1.8, 0, MAP);
     },
     tap(cx, cy){
@@ -4408,7 +4408,7 @@ function drawMapMode(m){
   for (let r = 1; r < rows - 1; r++){
     const ty = (m.cy + (r - rows / 2) * za) | 0;
     for (let x = 0; x < cols; x++){
-      const tx = (m.cx + (x - cols / 2) * m.z) | 0;
+      const tx = (m.cx - (x - cols / 2) * m.z) | 0;   // east left, like the view
       if (!inMap(tx, ty)) continue;
       const t = tType[ty * MAP + tx];
       if (t === T_BLD) hudCell(x, r, '#', H_GRY);
@@ -4420,7 +4420,7 @@ function drawMapMode(m){
       else if (t === T_LOT) hudCell(x, r, '"', H_DRK);
     }
   }
-  const sx = wx => ((wx - m.cx) / m.z + cols / 2) | 0;
+  const sx = wx => ((m.cx - wx) / m.z + cols / 2) | 0;
   const sy = wy => ((wy - m.cy) / za + rows / 2) | 0;
   // intersection ids at close zoom
   if (m.z <= 2){
@@ -4454,7 +4454,7 @@ function drawMapMode(m){
   // the player, and the trail you should follow
   const px2 = sx(cam.x), py2 = sy(cam.y);
   if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
-    const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
     hudCell(px2, py2, dirCh, H_WHT);
   }
   const qt = questTarget();
@@ -6077,7 +6077,7 @@ function drawMinimap(x0, y0){
     let line = '';
     const ty = cyT + (j - hh) * 2;      // +y runs down-screen, same as the city map
     for (let i = 0; i < MW; i++){
-      const tx = cxT + (i - hw);
+      const tx = cxT - (i - hw);        // east left, like the view
       if (!inMap(tx, ty)){ line += ' '; continue; }
       const t = tType[ty * MAP + tx];
       line += t === T_BLD ? '#' : t === T_WATER ? '~' : t === T_BRIDGE ? '=' :
@@ -6087,7 +6087,7 @@ function drawMinimap(x0, y0){
     hudStr(x0 + 1, y0 + 1 + j, line, H_GRY);
   }
   const plot = (wx, wy, ch, col) => {
-    const i = Math.round(wx - cxT) + hw, j = hh + Math.round((wy - cyT) * 0.5);
+    const i = hw - Math.round(wx - cxT), j = hh + Math.round((wy - cyT) * 0.5);
     if (i >= 0 && i < MW && j >= 0 && j < MH) hudStr(x0 + 1 + i, y0 + 1 + j, ch, col);
   };
   for (const c of cars) if (Math.abs(c.x - cam.x) < hw && Math.abs(c.y - cam.y) < hh * 2) plot(c.x, c.y, 'o', H_YEL);
@@ -6097,7 +6097,7 @@ function drawMinimap(x0, y0){
       plot(a.x, a.y, a.brain === 'hostile' ? 'x' : '@', a.brain === 'hostile' ? H_RED : H_PUR);
   const qm = questTarget();
   if (qm) plot(qm.x, qm.y, '!', H_YEL);
-  const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+  const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
   plot(cam.x, cam.y, dirCh, H_BLU);
 }
 let fps = 60;
@@ -6132,12 +6132,12 @@ function hudPass(){
   const qt = questTarget();
   if (qt && !inside){
     const dx = qt.x - cam.x, dy = qt.y - cam.y, qd = Math.hypot(dx, dy);
-    const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'N' : 'S') : '') +
+    const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'S' : 'N') : '') +
                 (Math.abs(dx) > Math.abs(dy) * 0.5 ? (dx > 0 ? 'E' : 'W') : '');
     hudStr(3, 5, '! ' + qt.q + '  >  ' + qt.name + '  ' + qd.toFixed(0) + ' ' + (dir || 'here'), H_YEL);
   } else if (near && !inside){
     const dx = near.x - cam.x, dy = near.y - cam.y;
-    const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'N' : 'S') : '') +
+    const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'S' : 'N') : '') +
                 (Math.abs(dx) > Math.abs(dy) * 0.5 ? (dx > 0 ? 'E' : 'W') : '');
     hudStr(3, 5, 'nearest  ' + near.name + '  ' + nd.toFixed(0) + ' ' + (dir || 'here'), H_BLU);
   }
@@ -6162,12 +6162,6 @@ function hudPass(){
     hudStr(3, rows - 5, lines[0], H_WHT);
     hudStr(3, rows - 4, lines[1], H_GRN);
     hudStr(3, rows - 3, lines[2], H_DIM);
-  }
-  // ---- transient message ----
-  if (toastT > 0 && toastMsg){
-    const x = Math.max(1, (cols - toastMsg.length - 2) >> 1), y = rows - 7;
-    hudPanel(x, y, toastMsg.length + 2, 1);
-    hudStr(x + 1, y, toastMsg, H_YEL);
   }
   // ---- metro prompt ----
   let mNear = null;
@@ -6258,6 +6252,13 @@ function hudPass(){
     }
   }
   else if (im.draw) im.draw();
+  // ---- transient message: drawn last, above the arms, so nothing hides it ----
+  if (toastT > 0 && toastMsg){
+    const x = Math.max(1, (cols - toastMsg.length - 2) >> 1);
+    const y = Math.max(1, rows - Math.round(rows * 0.46) - 2);
+    hudPanel(x, y, toastMsg.length + 2, 1);
+    hudStr(x + 1, y, toastMsg, H_YEL);
+  }
   // ---- blit ----
   if (GL) return;                    // the GPU path draws panels and glyphs itself
   if (hurtT > 0.01){
