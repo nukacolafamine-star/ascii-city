@@ -4086,9 +4086,9 @@ function drawViewArt(rows, ax, ay, tr, cmap){
   tr = Math.min(tr, ah);                     // never upscale - it goes blocky
   const tc = Math.max(2, Math.round(tr * aw / ah));
   for (let y = 0; y < tr; y++){
-    const sr = rows[(y / tr * ah) | 0];
+    const sr = rows[(y * ah / tr) | 0];
     for (let x = 0; x < tc; x++){
-      const ch = sr[(x / tc * aw) | 0];
+      const ch = sr[(x * aw / tc) | 0];
       if (!ch || ch === ' ') continue;
       hudCell(ax + x, ay + y, ch, cmap[ch] !== undefined ? cmap[ch] : H_DRK);
     }
@@ -4105,14 +4105,14 @@ const CM_GUN = { s: H_SKIN, j: H_JKT, '%': H_GRY, '#': H_DRK };
 
 /* the pistol, held up the right of the frame, barrel toward centre */
 const VM_GUN = [
-  '                    ____',
-  '                ___/%%%/',
-  '             __/%%%%%%/ ',
-  '          __/%%%%%%%/   ',
-  '        _/%%%%%%%%/     ',
-  '       /%%%%%%%%/       ',
-  '      /%%%%%%%/         ',
-  '     /%%%%%%%/          ',
+  '                    ______ ',
+  '                   /%%%%%%/',
+  '                 /%%%%%%/  ',
+  '               /%%%%%%/    ',
+  '             /%%%%%%/      ',
+  '           /%%%%%%/        ',
+  '         /%%%%%%/          ',
+  '       /%%%%%%/            ',
   '     |%%%%%%|           ',
   '     |%%%%%%|_          ',
   '     |%%%%%%|#|         ',
@@ -4184,67 +4184,167 @@ const VM_PUNCH_EXT = [
 ];
 const VM_PUNCH_MID_L = mirrorView(VM_PUNCH_MID);
 const VM_PUNCH_EXT_L = mirrorView(VM_PUNCH_EXT);
-/* consuming, at full scale: cup, can, kit */
+/* consuming, at full body scale: cup, can, kit - same hands as the guard */
 const VANIM = {
-  noodles: { dur: 1.5, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, '~': H_WHT }, frames: [
-    [ '     ~    ~     ',
-      '   ~    ~    ~  ',
-      '   ____________ ',
-      '  |WWWWWWWWWWWW|',
-      '  |WWrrrrrrrrWW|',
-      '  |WWWWWWWWWWWW|',
-      '  (WWWWWWWWWWWW)',
-      '   (WWWWWWWWWW) ',
-      '  ss(________)ss',
-      '  sss|      |sss',
-      '   ss|______|ss ' ],
-    [ '  ~   ~   ~     ',
-      '    ~    ~   ~  ',
-      '    ___________ ',
-      '   (WWWWWWWWWWW\\',
-      '   |WWrrrrrrrWWW|',
-      '   (WWWWWWWWWWW/',
-      '    (WWWWWWWWW) ',
-      '   ss(_______)ss',
-      '   sss|     |sss',
-      '    ss|_____|ss ',
-      '                ' ] ] },
-  soda: { dur: 1.2, cmap: { '#': H_GRY, C: H_BLU, s: H_SKIN, '~': H_WHT }, frames: [
-    [ '    ______    ',
-      '   (######)   ',
-      '   |#CCCC#|   ',
-      '   |#CCCC#|   ',
-      '   |#CCCC#|   ',
-      '   |######|   ',
-      '  ss(____)ss  ',
-      '  sss|  |sss  ',
-      '   ss|__|ss   ' ],
-    [ '      ~ ~     ',
-      '    ___ __    ',
-      '   (##/#/)    ',
-      '   |#C/C#|    ',
-      '   |#CCC#|    ',
-      '   |#####|    ',
-      '  ss(___)ss   ',
-      '  sss| |sss   ',
-      '   ss|_|ss    ' ] ] },
-  medkit: { dur: 1.6, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, '*': H_RED }, frames: [
-    [ '   __________ ',
-      '  |WWWWWWWWWW|',
-      '  |WWWWrrWWWW|',
-      '  |WWrrrrrrWW|',
-      '  |WWWWrrWWWW|',
-      '  |WWWWWWWWWW|',
-      '  ss(______)ss',
-      '  sss|    |sss' ],
-    [ '   *   *   *  ',
-      '  * _______ * ',
-      '   |WWWrrWW|  ',
-      '   |WrrrrrW|  ',
-      '   |WWWrrWW|  ',
-      '  *|WWWWWWW|* ',
-      '  ss(_____)ss ',
-      '   *   *   *  ' ] ] }
+  noodles: { dur: 1.5, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, j: H_JKT, '~': H_WHT }, frames: [
+    [ '      ~     ~    ~      ',
+      '   ~      ~    ~        ',
+      '      ~     ~    ~      ',
+      '     ______________     ',
+      '    |WWWWWWWWWWWWWW|    ',
+      '    |WrrrrrrrrrrrrW|    ',
+      '    |WrrrrrrrrrrrrW|    ',
+      '    |WWWWWWWWWWWWWW|    ',
+      '    |WWWWWWWWWWWWWW|    ',
+      '    (WWWWWWWWWWWWWW)    ',
+      '     (WWWWWWWWWWWW)     ',
+      '      (WWWWWWWWWW)      ',
+      '      |WWWWWWWWWW|      ',
+      '      |WWWWWWWWWW|      ',
+      '   ___|WWWWWWWWWW|___   ',
+      '  (sss|WWWWWWWWWW|sss(  ',
+      ' (ssss|WWWWWWWWWW|ssss( ',
+      ' |ssss(WWWWWWWWWW(ssss| ',
+      ' |sss|WWWWWWWWWWWW|sss| ',
+      ' (sss|WWWWWWWWWWWW|sss( ',
+      '(ssss(WWWWWWWWWWWW)ssss(',
+      '|sssss(WWWWWWWWWW(sssss|',
+      '(jjsssssssssssssssssjj( ',
+      '|jjjjssssssssssssssjjjj|',
+      '|jjjjjjssssssssssjjjjjj|',
+      '(jjjjjjjjjjjjjjjjjjjjjj)' ],
+    [ '        ~    ~          ',
+      '     ______________     ',
+      '    /WWWWWWWWWWWWWW)    ',
+      '    |WrrrrrrrrrrrrW|    ',
+      '    (WWWWWWWWWWWWWW\\    ',
+      '    |WWWWWWWWWWWWWW|    ',
+      '    (WWWWWWWWWWWWWW)    ',
+      '     (WWWWWWWWWWWW)     ',
+      '      (WWWWWWWWWW)      ',
+      '      |WWWWWWWWWW|      ',
+      '      |WWWWWWWWWW|      ',
+      '      |WWWWWWWWWW|      ',
+      '      |WWWWWWWWWW|      ',
+      '      |WWWWWWWWWW|      ',
+      '   ___|WWWWWWWWWW|___   ',
+      '  (sss|WWWWWWWWWW|sss(  ',
+      ' (ssss|WWWWWWWWWW|ssss( ',
+      ' |ssss(WWWWWWWWWW(ssss| ',
+      ' |sss|WWWWWWWWWWWW|sss| ',
+      ' (sss|WWWWWWWWWWWW|sss( ',
+      '(ssss(WWWWWWWWWWWW)ssss(',
+      '|sssss(WWWWWWWWWW(sssss|',
+      '(jjsssssssssssssssssjj( ',
+      '|jjjjssssssssssssssjjjj|',
+      '|jjjjjjssssssssssjjjjjj|',
+      '(jjjjjjjjjjjjjjjjjjjjjj)' ] ] },
+  soda: { dur: 1.2, cmap: { '#': H_GRY, C: H_BLU, s: H_SKIN, j: H_JKT, '~': H_WHT }, frames: [
+    [ '                        ',
+      '                        ',
+      '      __________        ',
+      '      (##########)      ',
+      '      |#CCCCCCCC#|      ',
+      '      |#CCCCCCCC#|      ',
+      '      |#CCCCCCCC#|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      (##########)      ',
+      '   ___|##########|___   ',
+      '  (sss|##########|sss(  ',
+      ' (ssss|##########|ssss( ',
+      ' |ssss(##########(ssss| ',
+      ' |sss|############|sss| ',
+      ' (sss|############|sss( ',
+      '(ssss(############)ssss(',
+      '|sssss(##########(sssss|',
+      '(jjsssssssssssssssssjj( ',
+      '|jjjjssssssssssssssjjjj|',
+      '|jjjjjjssssssssssjjjjjj|',
+      '(jjjjjjjjjjjjjjjjjjjjjj)' ],
+    [ '      ~   ~  ~          ',
+      '    ~   ~  ~   ~        ',
+      '     __________         ',
+      '     (##########)       ',
+      '     |#CCCCCCCC#|       ',
+      '      |#CCCCCCCC#|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      |##########|      ',
+      '      (##########)      ',
+      '   ___|##########|___   ',
+      '  (sss|##########|sss(  ',
+      ' (ssss|##########|ssss( ',
+      ' |ssss(##########(ssss| ',
+      ' |sss|############|sss| ',
+      ' (sss|############|sss( ',
+      '(ssss(############)ssss(',
+      '|sssss(##########(sssss|',
+      '(jjsssssssssssssssssjj( ',
+      '|jjjjssssssssssssssjjjj|',
+      '|jjjjjjssssssssssjjjjjj|',
+      '(jjjjjjjjjjjjjjjjjjjjjj)' ] ] },
+  medkit: { dur: 1.6, cmap: { W: H_WHT, r: H_RED, s: H_SKIN, j: H_JKT, '*': H_RED }, frames: [
+    [ '                        ',
+      '                        ',
+      '    ________________    ',
+      '   |WWWWWWWWWWWWWWWW|   ',
+      '   |WWWWWWWrrWWWWWWW|   ',
+      '   |WWWWWWWrrWWWWWWW|   ',
+      '   |WWWrrrrrrrrrrWWW|   ',
+      '   |WWWrrrrrrrrrrWWW|   ',
+      '   |WWWWWWWrrWWWWWWW|   ',
+      '   |WWWWWWWrrWWWWWWW|   ',
+      '   |WWWWWWWWWWWWWWWW|   ',
+      '   (WWWWWWWWWWWWWWWW)   ',
+      '    (WWWWWWWWWWWWWW)    ',
+      '     (WWWWWWWWWWWW)     ',
+      '   ___|WWWWWWWWWW|___   ',
+      '  (sss|WWWWWWWWWW|sss(  ',
+      ' (ssss|WWWWWWWWWW|ssss( ',
+      ' |ssss(WWWWWWWWWW(ssss| ',
+      ' |sss|WWWWWWWWWWWW|sss| ',
+      ' (sss|WWWWWWWWWWWW|sss( ',
+      '(ssss(WWWWWWWWWWWW)ssss(',
+      '|sssss(WWWWWWWWWW(sssss|',
+      '(jjsssssssssssssssssjj( ',
+      '|jjjjssssssssssssssjjjj|',
+      '|jjjjjjssssssssssjjjjjj|',
+      '(jjjjjjjjjjjjjjjjjjjjjj)' ],
+    [ '   *     *     *    *   ',
+      '      *     *     *     ',
+      '    ________________    ',
+      '   |WWWWWWWWWWWWWWWW|   ',
+      '   |WWWWWWWrrWWWWWWW|   ',
+      '   |WWWrrrrrrrrrrWWW|   ',
+      '   |WWWrrrrrrrrrrWWW|   ',
+      '   |WWWWWWWrrWWWWWWW|   ',
+      '   |WWWWWWWWWWWWWWWW|   ',
+      '  *|WWWWWWWWWWWWWWWW|*  ',
+      '   |WWWWWWWWWWWWWWWW|   ',
+      '   (WWWWWWWWWWWWWWWW)   ',
+      '    (WWWWWWWWWWWWWW)    ',
+      '     (WWWWWWWWWWWW)     ',
+      '   ___|WWWWWWWWWW|___   ',
+      '  (sss|WWWWWWWWWW|sss(  ',
+      ' (ssss|WWWWWWWWWW|ssss( ',
+      ' |ssss(WWWWWWWWWW(ssss| ',
+      ' |sss|WWWWWWWWWWWW|sss| ',
+      ' (sss|WWWWWWWWWWWW|sss( ',
+      '(ssss(WWWWWWWWWWWW)ssss(',
+      '|sssss(WWWWWWWWWW(sssss|',
+      '(jjsssssssssssssssssjj( ',
+      '|jjjjssssssssssssssjjjj|',
+      '|jjjjjjssssssssssjjjjjj|',
+      '(jjjjjjjjjjjjjjjjjjjjjj)' ] ] }
 };
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
@@ -6094,8 +6194,9 @@ function hudPass(){
       if (vAnim){
         const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
                      (vAnim.t / vAnim.d.dur * vAnim.d.frames.length) | 0)];
-        const tr = Math.min(fr.length, Math.round(rows * 0.34));
-        drawViewArt(fr, (cols >> 1) + 6, rows - tr, tr, vAnim.d.cmap);
+        const tr = Math.min(fr.length, Math.round(rows * 0.42));
+        const tw = Math.round(tr * viewW(fr) / fr.length);
+        drawViewArt(fr, (cols - tw) >> 1, rows - tr, tr, vAnim.d.cmap);
       } else if (punchT > 0){
         const e = 0.45 - punchT;
         const ext = e > 0.1 && e < 0.32;
@@ -6103,8 +6204,9 @@ function hudPass(){
                         : (punchLeft ? VM_PUNCH_MID_L : VM_PUNCH_MID);
         const tr = Math.min(art.length, Math.round(rows * 0.4));
         const tw = Math.round(tr * viewW(art) / art.length);
-        const ax = punchLeft ? (ext ? (cols >> 1) - Math.round(tw * 0.8) : 3)
-                             : (ext ? (cols >> 1) - Math.round(tw * 0.2) : cols - tw - 3);
+        const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
+        const ax = punchLeft ? (ext ? (cols >> 1) - Math.round(tw * 0.8) : 3 + ins)
+                             : (ext ? (cols >> 1) - Math.round(tw * 0.2) : cols - tw - 3 - ins);
         drawViewArt(art, ax, rows - tr, tr, CM_ARM);
       } else if (invCount('pistol')){
         const tr = Math.min(VM_GUN.length, Math.round(rows * 0.42));
@@ -6112,13 +6214,14 @@ function hudPass(){
         const gx = cols - tw - 4, gy = rows - tr + bob - (muzzleT > 0 ? 1 : 0);
         drawViewArt(VM_GUN, gx, gy, tr, CM_GUN);
         if (muzzleT > 0)
-          drawViewArt(['\\ | /', '-- --', '/ | \\'], gx + Math.round(tw * 0.72) - 2, gy - 2, 3,
+          drawViewArt(['\\ | /', '-- --', '/ | \\'], gx + Math.round(tw * 0.85) - 2, gy - 2, 3,
                       { '\\': H_YEL, '|': H_YEL, '/': H_YEL, '-': H_YEL });
       } else {
         const tr = Math.min(VM_FIST_R.length, Math.round(rows * 0.26));
         const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
-        drawViewArt(VM_FIST_L, 3, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
-        drawViewArt(VM_FIST_R, cols - tw - 3, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
+        const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
+        drawViewArt(VM_FIST_L, 3 + ins, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
+        drawViewArt(VM_FIST_R, cols - tw - 3 - ins, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
       }
     }
     if (sitting){
