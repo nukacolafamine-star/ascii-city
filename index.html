@@ -2718,7 +2718,7 @@ function moveCam(dx, dy){                     // slide along whichever axis is f
 const keys = Object.create(null);
 addEventListener('keydown', e => {
   audioUnlock();                                        // any gesture arms sound
-  if (!e.repeat || modeStack.length) onPress(e.code);   // menus want key repeat
+  if (!e.repeat || modeStack.length) onPress(e.code, e.key);  // menus want key repeat
   keys[e.code] = 1;
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].indexOf(e.code) >= 0) e.preventDefault();
 });
@@ -2743,10 +2743,11 @@ addEventListener('mousemove', e => {
     cam.pitch = clamp(cam.pitch - e.movementY * 0.10, -R.rows * 0.62, R.rows * 0.62);
   }
 });
-function onPress(code){
+function onPress(code, key){
   const m = topMode();                          // an open mode owns the keyboard
-  if (m){ if (m.onKey) m.onKey(code); return; }
+  if (m){ if (m.onKey) m.onKey(code, key); return; }
   switch (code){
+    case 'Backquote': openDevConsole(); break;
     case 'Escape': openPauseMenu(); break;
     case 'Space':
       if (sitting){ standUp(); break; }
@@ -2760,7 +2761,7 @@ function onPress(code){
     case 'KeyM': openMap(); break;
     case 'KeyG': if (inside){ toast('no metro in here'); break; } useMetro(); break;
     case 'KeyB': bloomOn = !bloomOn; toast('bloom ' + (bloomOn ? 'on' : 'off')); break;
-    case 'KeyV': if (inside){ toast('the sky is outside'); break; } toggleRide(); break;
+    case 'KeyV': if (inside){ toast('no room to ride in here'); break; } toggleRide(); break;
     case 'KeyN': newWorld((Math.random() * 1e9) | 0); break;
     case 'BracketLeft':
     case 'BracketRight':
@@ -2825,20 +2826,13 @@ function toggleRide(){
     }
     cam.riding = null; cam.z = 1.62; return;
   }
-  let best = null, bd = 1e9;
-  for (const c of cars){
-    const d = Math.hypot(c.x - cam.x, c.y - cam.y);
-    if (d < bd){ bd = d; best = c; }
-  }
-  if (best && bd < 90){
-    cam.riding = best; cam.z = best.z + 0.7;
-    skating = false;
-    sfx('metro', { rate: 1.4, vol: 0.5 });
-    toast('boarding air traffic');
-  } else if (!inside && invCount('deck')){       // no car close: kick the deck down
+  // the air traffic is scenery now - the only ride that answers V is the deck
+  if (!inside && invCount('deck')){
     skating = !skating;
     toast(skating ? 'wheels down' : 'deck up');
     sfx('ui_select', { rate: skating ? 1.45 : 0.8, vol: 0.5 });
+  } else if (!inside){
+    toast('nothing to ride - decks sell at tool shops');
   }
 }
 /* ---- the kickdeck: momentum, ollies, and flip tricks -------------------- */
@@ -2848,6 +2842,131 @@ function ollie(){
   if (airT > 0) return;
   airT = 0.55; trickArm = 0;
   sfx('footstep', { vol: 0.8, rate: 1.5 });
+}
+
+/*=========================== DEV CONSOLE ===================================
+  Backquote opens it. Everything the city runs on, poked by hand.
+============================================================================*/
+let devLog = ['ASCII CITY dev console - type help'];
+let godMode = false;
+function devOut(s){ devLog.push(String(s)); if (devLog.length > 220) devLog.splice(0, 60); }
+function devExec(line){
+  devOut('> ' + line);
+  const A = line.trim().split(/\s+/).filter(Boolean);
+  const c = (A[0] || '').toLowerCase();
+  const num = (i, d) => isNaN(+A[i]) ? d : +A[i];
+  switch (c){
+    case '': break;
+    case 'help':
+      devOut('give <id> [n]   drop <id> [n]   items   credits <n>   hp <n>   heal');
+      devOut('corr <n>   quest <id> <n|done|reset>   quests   spawn <razor|enforcer|vendor> [n]');
+      devOut('killall   tp <x> <y>   time <0-24>   day <n>   weather <0-3>');
+      devOut('drug <id>   sober   god   jam   style <n>   seed [n]   whereami   clear');
+      break;
+    case 'items': {
+      const ids = Object.keys(ITEMS);
+      for (let i = 0; i < ids.length; i += 8) devOut(ids.slice(i, i + 8).join('  '));
+      break; }
+    case 'give':
+      if (!ITEMS[A[1]]){ devOut('no such item (try: items)'); break; }
+      invAdd(A[1], num(2, 1));
+      devOut('+ ' + ITEMS[A[1]].name + ' x' + num(2, 1)); break;
+    case 'drop': {
+      if (!ITEMS[A[1]]){ devOut('no such item (try: items)'); break; }
+      const sp = freeSpotNear(cam.x + Math.cos(cam.ang) * 2.5, cam.y + Math.sin(cam.ang) * 2.5);
+      props.push({ x: sp[0], y: sp[1], k: PK_ITEM, s: 0, r: 0, item: A[1], qty: num(2, 1) });
+      indexProps(); indexSpriteProps();
+      devOut('dropped ' + A[1] + ' ahead'); break; }
+    case 'credits': player.credits = Math.max(0, num(1, 0) | 0);
+      devOut('credits = ' + player.credits); break;
+    case 'hp': player.hp = clamp(num(1, player.maxHp) | 0, 1, player.maxHp);
+      devOut('hp = ' + player.hp); break;
+    case 'heal': player.hp = player.maxHp; devOut('healed'); break;
+    case 'corr': player.corruption = clamp(num(1, 0) | 0, 0, 10);
+      devOut('corruption = ' + player.corruption); break;
+    case 'quests':
+      for (const id in QUESTS)
+        devOut(id + ' = ' + (player.quests[id] === undefined ? '(not started)' : player.quests[id]));
+      break;
+    case 'quest':
+      if (!QUESTS[A[1]]){ devOut('quests: ' + Object.keys(QUESTS).join('  ')); break; }
+      if (A[2] === 'reset') delete player.quests[A[1]];
+      else if (A[2] === 'done') player.quests[A[1]] = 'done';
+      else player.quests[A[1]] = num(2, 0);
+      devOut(A[1] + ' = ' + player.quests[A[1]]); break;
+    case 'spawn': {
+      const kind = (A[1] || 'razor').toLowerCase(), n = clamp(num(2, 1) | 0, 1, 10);
+      if (kind !== 'razor' && kind !== 'enforcer' && kind !== 'vendor'){
+        devOut('spawn razor|enforcer|vendor [n]'); break;
+      }
+      for (let i = 0; i < n; i++){
+        const sp = freeSpotNear(cam.x + Math.cos(cam.ang) * 6, cam.y + Math.sin(cam.ang) * 6);
+        if (kind === 'razor')
+          spawnActor('razor', sp[0], sp[1],
+                     { name: 'RAZOR', brain: 'hostile', hp: 26, shirt: C.camRed, skin: C.skinB });
+        else if (kind === 'enforcer')
+          spawnActor('enforcer', sp[0], sp[1],
+                     { name: 'ENFORCER', brain: 'hostile', hp: 40, atk: 9, aggro: 1,
+                       shirt: C.camRed, skin: C.skinB });
+        else spawnActor('vendor', sp[0], sp[1],
+                        { name: 'POP-UP VENDOR', brain: 'still',
+                          dialog: ['Officially, I am not here.'] });
+      }
+      devOut('spawned ' + n + ' ' + kind); break; }
+    case 'killall': {
+      let k = 0;
+      for (let i = actors.length - 1; i >= 0; i--)
+        if (actors[i].brain === 'hostile'){ actors.splice(i, 1); k++; }
+      devOut('removed ' + k + ' hostiles'); break; }
+    case 'tp': {
+      if (inside) exitInterior();
+      const sp = freeSpotNear(clamp(num(1, cam.x), 2, MAP - 3), clamp(num(2, cam.y), 2, MAP - 3));
+      cam.x = sp[0]; cam.y = sp[1]; faceClear(); fade = 1;
+      devOut('tp -> ' + Math.round(cam.x) + ',' + Math.round(cam.y) +
+             '  (' + regionName(cam.x, cam.y) + ')'); break; }
+    case 'time': clock = ((num(1, 12) % 24) + 24) % 24; updateClock(0);
+      devOut('clock = ' + clockStr()); break;
+    case 'day': dayCount = Math.max(0, num(1, 0) | 0); devOut(dateStr()); break;
+    case 'weather': applyWeather(clamp(num(1, 0) | 0, 0, 3));
+      devOut('weather = ' + ['clear', 'rain', 'storm', 'fog'][weather]); break;
+    case 'drug':
+      devOut(takeDrug(A[1]) ? 'riding ' + A[1]
+                            : 'substances: ' + Object.keys(DRUGFX).join('  ')); break;
+    case 'sober': drug = null; bakeKey = -1; devOut('sober'); break;
+    case 'god': godMode = !godMode; devOut('god ' + (godMode ? 'ON' : 'off')); break;
+    case 'jam': jamT = 600; devOut('jammed for ten minutes'); break;
+    case 'style': styleN = Math.max(0, num(1, 0) | 0); devOut('style = ' + styleN); break;
+    case 'seed': newWorld(num(1, (Math.random() * 1e9) | 0)); devOut('new world'); break;
+    case 'whereami':
+      devOut(Math.round(cam.x) + ',' + Math.round(cam.y) + '  ' + regionName(cam.x, cam.y) +
+             '  ' + clockStr() + '  hp ' + player.hp + '  cr ' + player.credits +
+             '  corr ' + player.corruption); break;
+    case 'clear': devLog = []; break;
+    default: devOut('unknown: ' + c + '   (help)');
+  }
+}
+function openDevConsole(){
+  pushMode({
+    name: 'dev', pausesWorld: true, input: '',
+    onKey(code, key){
+      if (code === 'Escape' || code === 'Backquote'){ popMode(); return; }
+      if (code === 'Enter'){ devExec(this.input); this.input = ''; return; }
+      if (code === 'Backspace'){ this.input = this.input.slice(0, -1); return; }
+      if (key && key.length === 1 && this.input.length < 70) this.input += key;
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      const w = Math.min(cols - 4, 96), h = Math.min(rows - 6, 28);
+      const x0 = (cols - w) >> 1, y0 = 2;
+      hudPanel(x0, y0, w, h); hudPanel(x0, y0, w, h);
+      hudBox(x0, y0, w, h, 'DEV CONSOLE');
+      const lines = devLog.slice(-(h - 4));
+      for (let i = 0; i < lines.length; i++)
+        hudStr(x0 + 2, y0 + 1 + i, lines[i].slice(0, w - 4), H_GRN);
+      hudStr(x0 + 2, y0 + h - 2, ('> ' + this.input + '_').slice(0, w - 4), H_WHT);
+    },
+    tap(){ popMode(); }
+  });
 }
 function updateCam(dt){
   if (cam.riding){
@@ -4307,7 +4426,7 @@ function killActor(a){
   toast('the ' + (a.kind === 'enforcer' ? 'enforcer' : 'razor') + ' drops');
 }
 function damagePlayer(d){
-  if (player.hp <= 0) return;
+  if (player.hp <= 0 || godMode) return;
   d *= drugFx('resist', 1);
   player.hp = Math.max(0, player.hp - d);
   hurtT = 1;
@@ -6944,7 +7063,7 @@ function hudPass(){
   if (showHelp){
     const lines = [
       'WASD/arrows move   mouse look (click canvas)   SHIFT run   Q,E turn   R,F look up/down',
-      'SPACE interact / sit   TAB inventory   ESC menu   V board   G metro   M map',
+      'SPACE interact / sit / ollie   TAB inventory   ESC menu   V skate   G metro   M map',
       'B bloom   N new city   P pause   -- time and weather live their own lives now'
     ];
     const w = Math.min(cols - 2, 92);

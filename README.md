@@ -8,8 +8,8 @@ open the file in a browser.
 start index.html
 ```
 
-Click the canvas to capture the mouse. `WASD` walks, `V` boards the air
-traffic, `G` takes the metro, `H` hides the key list.
+Click the canvas to capture the mouse. `WASD` walks, `V` rides the
+kickdeck, `G` takes the metro, `H` hides the key list.
 
 ---
 
@@ -309,7 +309,7 @@ separates from its neighbours inside its own altitude slab, and climbs over
 whatever is ahead, with a lookahead that scales with speed and a hard floor
 clamp applied after the step. Over a 40-second run they stay clear of the
 geometry with at least 2.5 units to spare while climbing past 110 units to
-clear the downtown towers. `V` boards one for the view.
+clear the downtown towers. They are scenery now - watch them, do not chase them.
 
 Retiring ground traffic deleted the lane graph, car-following, kerb negotiation
 and signal obedience — the single most fragile system in the engine, and the
@@ -472,7 +472,7 @@ keep a vendor: the cart cook, the greengrocer, the fixpoint dealer, each
 selling their one or two things through honest conversation, no corpo
 rates applied.
 
-**The kickdeck** (`V`, away from air traffic) rides at more than double
+**The kickdeck** (`V`) rides at more than double
 walking pace: `SPACE` ollies, and a flip input mid-air lands named tricks
 onto a running style counter.
 
@@ -512,7 +512,7 @@ to be replaced with curated sounds under the same names.
 
 What plays is driven by the game state: an ambient bed per district
 (crossfaded as you cross a border), a music track per time of day, rain and
-thunder from the weather system, wind while riding the air traffic, footsteps
+thunder from the weather system, footsteps
 keyed to the walk cycle, and menu blips. Rain, thunder and wind sit on their
 own weather bus with its own volume slider. Music, ambience and weather duck
 to 30% while the world is paused; effects stay crisp.
@@ -538,7 +538,7 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `ESC` | pause menu — settings, volumes, save / load, new city |
 | `SHIFT` | run |
 | `Q` `E` | turn · `R` `F` look up/down |
-| `V` | board the air traffic — or, away from it, kick the deck down |
+| `V` | ride the kickdeck (tool shops sell them) |
 | `G` | metro (at an entrance) |
 | `M` `H` | minimap · key list |
 | `B` | bloom on / off |
