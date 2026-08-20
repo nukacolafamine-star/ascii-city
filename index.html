@@ -1309,7 +1309,8 @@ function buildSigns(){
     const words = b.redlight ? RED_WORDS : D.words;
     // a shop's first sign says what it sells, so trades can be found by eye
     const shopish = INTERIOR_KIND[b.dist] === 'shop' ||
-                    (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3);
+                    (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3) ||
+                    (b.dist === D_DOWN && hash3(b.id, 62, 5) < 0.3);
     let forced = shopish && rnd() < 0.6 ? SHOP_SIGN[shopTypeFor(b)] : null;
     // one bucket per outward direction, so a shop faces every street it fronts
     const faces = [[], [], [], []];
@@ -2224,6 +2225,8 @@ function buildInterior(bld, door, floor){
              : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
   if (floor === 1 && bld.dist === D_IND && hash3(bld.id, 61, 3) < 0.3)
     kind = 'shop';                             // the belt keeps a few counters
+  if (floor === 1 && bld.dist === D_DOWN && hash3(bld.id, 62, 5) < 0.3)
+    kind = 'shop';                             // ground-floor retail downtown
   const trade = kind === 'shop' ? shopTypeFor(bld) : null;
   const F = INT_FLAVOR[kind];
   const TF = trade && SHOP_FLAVOR[trade];
@@ -2292,6 +2295,7 @@ function buildInterior(bld, door, floor){
       if (x === gap) continue;
       caseTile(x, cy);
     }
+    ip.push({ x: IOX + rw - 1.5, y: IOY + 0.6, k: PK_CAM, s: rnd(), r: 0.16 });
     const t1 = IOX + 2, t2 = IOX + rw - 3;            // stock on the counter top
     const stk = SHOP_TYPES[trade].stock.filter(id => ITEMS[id]);
     const d1 = stk[0] || 'noodles', d2 = stk[1] || 'soda';
@@ -2299,14 +2303,21 @@ function buildInterior(bld, door, floor){
     if (t2 !== t1) dropItem(t2 + 0.5, cy + 0.5, 1.1, d2, 1, ITEMS[d2].price);
     // the trade dresses the room
     if (trade === 'clothier'){                      // racks down the middle
+      const ry2 = IOY + Math.min(5, rh - 3) + 0.5;
       for (let x = IOX + 2; x < IOX + rw - 2; x += 3)
-        ip.push({ x: x + 0.5, y: IOY + 5.5, k: PK_RACK, s: rnd(), r: 0.45 });
+        if (Math.abs(x - doorX) > 1)
+          ip.push({ x: x + 0.5, y: ry2, k: PK_RACK, s: rnd(), r: 0.45 });
       if (stk[3]) dropItem(IOX + 1.5, IOY + rh - 2.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
     } else if (trade === 'jeweler'){                // glass cases mid-room
       const cx2 = IOX + (rw >> 1);
-      for (let y = IOY + 4; y < Math.min(IOY + 8, IOY + rh - 3); y++) caseTile(cx2, y);
-      if (stk[2]) dropItem(cx2 + 0.5, IOY + 4.5, 1.1, stk[2], 1, ITEMS[stk[2]].price);
-      if (stk[3]) dropItem(cx2 + 0.5, IOY + 6.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
+      const caseYs = [];
+      for (let y = IOY + 4; y < Math.min(IOY + 8, IOY + rh - 3); y++){
+        caseTile(cx2, y); caseYs.push(y);
+      }
+      if (stk[2] && caseYs[0] !== undefined)
+        dropItem(cx2 + 0.5, caseYs[0] + 0.5, 1.1, stk[2], 1, ITEMS[stk[2]].price);
+      if (stk[3] && caseYs[2] !== undefined)
+        dropItem(cx2 + 0.5, caseYs[2] + 0.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
     } else if (trade === 'armory'){                 // a cage splits the room
       const gy = IOY + 5;
       if (gy < IOY + rh - 2){
@@ -2314,7 +2325,9 @@ function buildInterior(bld, door, floor){
           if (x !== IOX + 2) caseTile(x, gy);
         for (let x = IOX + 3; x < IOX + rw - 2; x += 3)
           if (rnd() < 0.8) ip.push({ x: x + 0.5, y: gy + 1.6, k: PK_BIN, s: rnd(), r: 0.32 });
-      }
+      } else                                        // shallow room: crate wall
+        for (let x = IOX + 1; x < IOX + rw - 1; x += 2)
+          ip.push({ x: x + 0.5, y: IOY + rh - 1.6, k: PK_BIN, s: rnd(), r: 0.32 });
     } else if (trade === 'grocery' || trade === 'bodega'){   // shelf aisles
       for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
         for (const ax of [IOX + 2, IOX + rw - 3])
@@ -2433,7 +2446,7 @@ function enterInterior(door){
              stairs: room.stairs, shop: room.shop, bld: door.b, door, floor: 1 };
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
   if (skating) toast('deck up - no riding indoors');
-  wasSkating = skating; skating = false; airT = 0; skV = 0; grind = null;
+  wasSkating = skating; skating = false; airT = 0; skV = 0; grind = null; skTrick = null;
   viewD = 13; fade = 1;
   buildBackground();
   sfx('door');
@@ -2487,7 +2500,8 @@ function probeInteract(){
         prompt: !p.price ? '[SPACE]  TAKE - ' + ITEMS[p.item].name
               : player.credits >= cost
                 ? '[SPACE]  BUY - ' + ITEMS[p.item].name + ' (' + cost + ' cr)'
-                : '[SPACE]  STEAL - ' + ITEMS[p.item].name + ' (+1 corruption)' });
+                : '[SPACE]  STEAL - ' + ITEMS[p.item].name + ' (+' +
+                  Math.max(1, Math.ceil(cost / 100)) + ' corruption)' });
     }
     else if (p.k === PK_BIN)
       probeConsider(p.x, p.y, { kind: 'bin', prompt: '[SPACE]  TRASH - STREET BIN' });
@@ -2535,6 +2549,8 @@ function tryInteract(){
   } else if (t.kind === 'metro'){
     useMetro();
   } else if (t.kind === 'cut'){                 // the hacksaw versus the flock
+    player.qvar.vandal = (player.qvar.vandal || 0) + 1;
+    if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');   // seen falling
     addFx(t.p.x, t.p.y, 2.4); addFx(t.p.x + 0.2, t.p.y, 1.6); addFx(t.p.x, t.p.y + 0.2, 0.8);
     props.splice(props.indexOf(t.p), 1);
     indexProps(); indexSpriteProps();
@@ -2544,8 +2560,6 @@ function tryInteract(){
     sfx('hit', { vol: 0.4, rate: 1.8 });        // the metal shriek over the thud
     if (t.p.k === PK_CAM){ invAdd('scrap', 1); toast('the flock cam comes down - + scrap'); }
     else toast('the pole is down - one lamp fewer on this block');
-    player.qvar.vandal = (player.qvar.vandal || 0) + 1;
-    if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');
   } else if (t.kind === 'stairs'){
     openFloorMenu();
   } else if (t.kind === 'item'){
@@ -2735,19 +2749,26 @@ function spawnActors(){
     { name: 'GREENGROCER', greet: 'Picked this morning, more or less. The wax is complimentary.',
       a: 'apple', b: 'onigiri' },
     { name: 'FIXPOINT VENDOR', greet: 'Batteries, bangers, whatever fell off the truck this week.',
-      a: 'battery', b: 'firecracker' }
+      a: 'battery', b: 'firecracker' },
+    { name: 'NIGHT CART', greet: 'The mile never eats at home. Warm sake, sweet fish.',
+      a: 'sake', b: 'taiyaki' },
+    { name: 'BELT CANTEEN', greet: 'Shift food. It works or you do not.',
+      a: 'coffee', b: 'kebab' },
+    { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
+      a: 'tee', b: 'boba' }
   ];
   let stallN = 0;
   const vstalls = props.filter(p => p.k === PK_STALL &&
                                     districtAt(p.x | 0, p.y | 0) !== D_RURAL &&
-                                    hash3(p.x | 0, p.y | 0, 44) <= 0.34)
+                                    hash3(p.x | 0, p.y | 0, 44) <= 0.6)
                        .sort((a, b) => hash3(a.x | 0, a.y | 0, 45) - hash3(b.x | 0, b.y | 0, 45));
   for (const p of vstalls){
-    if (stallN >= 60) continue;
+    if (stallN >= 150) continue;
     const dn2 = districtAt(p.x | 0, p.y | 0);
-    const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0
-               : (dn2 === D_RES || dn2 === D_SUB) ? 1 : 2;
-    const V = VEND[(((p.s * 5) | 0) + bias) % 3];
+    const V = dn2 === D_RED ? VEND[((p.s * 2) | 0) ? 3 : 0]
+            : dn2 === D_IND ? VEND[4]
+            : dn2 === D_STRIP ? VEND[(((p.s * 5) | 0) % 2) ? 5 : 0]
+            : VEND[(((p.s * 5) | 0) + 1) % 3];
     const sp2 = freeSpotNear(p.x, p.y);
     if (Math.hypot(sp2[0] - p.x, sp2[1] - p.y) > 2.5) continue;
     spawnActor('vendor', sp2[0], sp2[1], {
@@ -2792,7 +2813,8 @@ function propBlocked(x, y, rad){
   const near = gridQuery(propGrid, x, y, 3, _q1);
   for (let i = 0; i < near.length; i++){
     const p = near[i];
-    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;   // walk-through kinds
+    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;
+    if (grind && (p.k === PK_RAIL || p.k === PK_BENCH)) continue;   // walk-through kinds
     const dx = x - p.x, dy = y - p.y, rr2 = (rad + p.r) * (rad + p.r);
     if (dx * dx + dy * dy < rr2) return true;
   }
@@ -2846,9 +2868,11 @@ function onPress(code, key){
     if (TK[code]){
       const nm = TK[code][0], pts = TK[code][1];
       if (!skTrick) skTrick = { name: nm, pts, t: 0, dur: 0.3 };
-      else if (skTrick.name.indexOf(nm) < 0)    // a late second input compounds
-        skTrick = { name: skTrick.name + ' late ' + nm,
-                    pts: (skTrick.pts + pts) * 2, t: 0, dur: 0.25 };
+      else if (!skTrick.late && skTrick.name.indexOf(nm) < 0){
+        skTrick.name += ' late ' + nm;          // one late add, clock untouched
+        skTrick.pts = (skTrick.pts + pts) * 2;
+        skTrick.late = 1;
+      }
       sfx('ui_move', { rate: 2.0, vol: 0.35 });
       return;
     }
@@ -2942,14 +2966,11 @@ function toggleRide(){
   if (!inside && invCount('deck')){
     skating = !skating;
     if (!skating){
-      skV = 0; airT = 0; grind = null; skTrick = null;
-      if (styleN >= 10){                       // cash the chain out on dismount
-        const pay = Math.floor(styleN / 10);
-        player.credits += pay;
-        toast('deck up - street cred +' + pay + ' cr');
-        styleN = 0; skCombo = 0;
-      } else toast('deck up');
-    } else toast('wheels down');
+      const hadStyle = styleN >= 10;
+      cashOutDeck();
+      skV = 0; airT = 0;
+      if (!hadStyle) toast('deck up');
+    } else { resetSkate(); toast('wheels down'); }
     sfx('ui_select', { rate: skating ? 1.45 : 0.8, vol: 0.5 });
   } else if (!inside){
     toast('nothing to ride - decks sell at tool shops');
@@ -2962,6 +2983,18 @@ let stumbleT = 0, wobbleT = 0, carveT = 0, seamAcc = 0, nearT = 0, skLean = 0;
 let skTrick = null, skCombo = 0, comboT = 0, styleN = 0, styleAcc = 0;
 let grind = null, grindT = 0;
 const skParts = [];
+function resetSkate(){
+  skV = 0; airT = 0; skTrick = null; grind = null;
+  skCombo = 0; comboT = 0; styleN = 0; stumbleT = 0; wobbleT = 0; crouchT = 0;
+}
+function cashOutDeck(){
+  if (styleN >= 10){
+    const pay = Math.floor(styleN / 10);
+    player.credits += pay;
+    toast('street cred +' + pay + ' cr');
+  }
+  styleN = 0; skCombo = 0; comboT = 0; skTrick = null; grind = null;
+}
 function ollie(){
   if (airT > 0 || crouchT > 0 || stumbleT > 0) return;
   if (grind){ endGrind(true); return; }        // pop out of the grind, clean
@@ -3237,9 +3270,9 @@ function skateFrame(dt){
     styleAcc += dt;
     if (styleAcc >= 1){ styleAcc -= 1; styleN += 5; }
     let on = false;
-    for (const p of gridQuery(propGrid, cam.x, cam.y, 2, _q1))
+    for (const p of gridQuery(propGrid, cam.x, cam.y, 3, _q1))
       if ((p.k === PK_RAIL || p.k === PK_BENCH) &&
-          Math.hypot(p.x - cam.x, p.y - cam.y) < 0.95){ on = true; break; }
+          Math.hypot(p.x - cam.x, p.y - cam.y) < 1.35){ on = true; break; }
     if (!on || skV < 1) endGrind(false);
   }
   if (skV > 0){
@@ -3248,7 +3281,10 @@ function skateFrame(dt){
     moveCam(ca * skV * dt, sa * skV * dt);
     const got = Math.hypot(cam.x - ox, cam.y - oy), want = skV * dt;
     if (want > 0.03 && got < want * 0.25 && grounded){
-      if (skV > 5) skBail('the wall wins');
+      const ax2 = (cam.x + Math.cos(cam.ang) * 1.2) | 0;
+      const ay2 = (cam.y + Math.sin(cam.ang) * 1.2) | 0;
+      const wet = inMap(ax2, ay2) && tType[ay2 * MAP + ax2] === T_WATER;
+      if (skV > 5) skBail(wet ? 'wheels do not swim' : 'the wall wins');
       else if (skV > 1){ skV = 0; sfx('footstep', { rate: 0.45, vol: 0.7 }); }
       else skV = 0;
     }
@@ -3257,13 +3293,21 @@ function skateFrame(dt){
     if (skV > 4 && grounded){
       nearT -= dt;
       if (nearT <= 0)
-        for (const p2 of gridQuery(pedGrid, cam.x, cam.y, 2, _q2))
-          if (Math.hypot(p2.x - cam.x, p2.y - cam.y) < 0.9){
+        for (const p2 of gridQuery(pedGrid, cam.x, cam.y, 2, _q2)){
+          const dp = Math.hypot(p2.x - cam.x, p2.y - cam.y);
+          if (dp < 0.38){                        // a shoulder check, both ways
+            nearT = 1.4; skV *= 0.4; wobbleT = 0.4;
+            toast('clipped a shoulder');
+            sfx('hurt', { rate: 1.1, vol: 0.5 });
+            break;
+          }
+          if (dp < 0.9){
             nearT = 1.4; styleN += 5;
             toast('threading  (+5 style)');
             sfx('hurt', { rate: 1.5, vol: 0.25 });
             break;
           }
+        }
     }
   }
   // vertical: speed bob, kick dip, carve lean, crouch, air arc, land, stumble
@@ -4100,6 +4144,7 @@ function openCamJack(){
   cams.sort((a, b) => Math.hypot(a.x - cam.x, a.y - cam.y) -
                       Math.hypot(b.x - cam.x, b.y - cam.y));
   cams.length = Math.min(cams.length, 12);      // the twelve nearest eyes
+  closeMenus();                                 // the feed owns the whole screen
   const save = { x: cam.x, y: cam.y, z: cam.z, ang: cam.ang, pitch: cam.pitch };
   const m = {
     name: 'camjack', pausesWorld: false, cams, i: 0,
@@ -4184,6 +4229,7 @@ const TAG_ART = {
     '....##....']
 };
 function burnTag(){
+  if (inside){ toast('the burner wants open walls'); return false; }
   const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
   for (let d = 0.6; d < 4.2; d += 0.25){
     const x = (cam.x + vx * d) | 0, y = (cam.y + vy * d) | 0;
@@ -4292,12 +4338,15 @@ function openInventory(){
                                 ? '  [' + (player.hotbar.indexOf(st.id) + 1) + ']' : ''),
                  hint: def.cat === 'consumable' ? def.hint + '   (1-3 pins to hotbar)' : def.hint,
                  act(){
+                   const m0 = topMode();
                    if (worn()){                 // selecting the worn piece removes it
                      if (st.id === player.outfit) setOutfit(null);
-                     else player.bling = null;
+                     else { player.bling = null; refreshWear(); }
                      toast('taken off');
                    } else useItem(st.id);
-                   refreshInventory();
+                   // an item may open its own mode (cam-jack): never stack a
+                   // fresh inventory card on top of it
+                   if (topMode() === m0) refreshInventory();
                  } });
   }
   const qids = Object.keys(player.quests || {}).filter(id => QUESTS[id]);
@@ -4441,7 +4490,7 @@ function loadGame(n){
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
   cam.x = s.cam.x; cam.y = s.cam.y; cam.ang = s.cam.ang; cam.pitch = s.cam.pitch;
-  cam.riding = null; cam.z = 1.62; sitting = null; skating = false; airT = 0;
+  cam.riding = null; cam.z = 1.62; sitting = null; skating = false; resetSkate();
   if (!walkG[clamp(cam.y | 0, 0, MAP - 1) * MAP + clamp(cam.x | 0, 0, MAP - 1)]){
     const sp = freeSpotNear(cam.x, cam.y);
     cam.x = sp[0]; cam.y = sp[1]; faceClear();
@@ -4637,14 +4686,14 @@ const SHOP_SIGN = { tools: 'TOOLS', armory: 'ARMS', dispensary: 'DISPENSARY',
                     jeweler: 'GOLD', clothier: 'THREADS', grocery: 'MARKET',
                     bodega: 'BODEGA', general: 'GOODS' };
 const SHOP_FLAVOR = {
-  grocery: { keeper: 'GROCER', floorA: C.walk, floorB: C.deckOld,
+  grocery: { keeper: 'GROCER', floorA: C.walk, floorB: C.deckOld, band: C.leaf,
     greet: 'The apples are synthetic. The prices are real.',
     dripGreet: 'Produce for the well-dressed. Same shelf, better bag.',
     lines: ['Everything is fresh off the metro. That is a schedule, not a promise.',
             'Shelf life is a negotiation. I always win.',
             'The fields grow it, the belt wraps it, I apologize for it.',
             'No refunds on produce. Time only runs the one way.'] },
-  bodega: { keeper: 'COUNTERMAN', floorA: C.walk, floorB: C.deckOld,
+  bodega: { keeper: 'COUNTERMAN', floorA: C.walk, floorB: C.deckOld, band: C.nBlue,
     greet: 'Open all night. The night has never once paid its tab.',
     dripGreet: 'Nice coat for a bodega. The coffee is still just coffee.',
     lines: ['The coffee is hot. That is the entire pitch.',
@@ -4656,35 +4705,35 @@ const SHOP_FLAVOR = {
     dripGreet: 'That kind of money usually shops uptown. Browse anyway.',
     lines: ['General means whatever fell off the metro this week.',
             'If we do not have it, you did not need it.'] },
-  clothier: { keeper: 'TAILOR', floorA: C.deck, floorB: C.deckOld,
+  clothier: { keeper: 'TAILOR', floorA: C.deck, floorB: C.deckOld, band: C.nMag,
     greet: 'It fits. Everything fits once you stop asking questions.',
     dripGreet: 'That piece walks in before you do. Suddenly everything is negotiable.',
     lines: ['The brand is real somewhere. Just not in here.',
             'Wear it out the door and the street does my advertising.',
             'The fourth stripe is confidence. It costs extra.',
             'Mirrors do not lie. That is why I only keep the one.'] },
-  jeweler: { keeper: 'APPRAISER', floorA: C.dataDk, floorB: C.deck,
+  jeweler: { keeper: 'APPRAISER', floorA: C.dataDk, floorB: C.deck, band: C.nCyan,
     greet: 'Everything in the case has a history. Buying erases it.',
     dripGreet: 'Ah - a collector. The good case is the one you are leaning on.',
     lines: ['Gold holds value. Glass holds light. Guess which I stock.',
             'The watch is waterproof. The warranty is not.',
             'Do not tap the glass. The glass reports it.',
             'Bring me metal with a past. I sell it a future.'] },
-  armory: { keeper: 'GUNSMITH', floorA: C.tire, floorB: C.dataDk,
+  armory: { keeper: 'GUNSMITH', floorA: C.tire, floorB: C.dataDk, band: C.camRed,
     greet: 'Rounds are three credits. Where they end up is your ledger.',
     dripGreet: 'Drip does not stop rounds. Rounds are still three credits.',
     lines: ['The pipe never jams. Laugh at it after.',
             'I sell deterrence. Results are aftermarket.',
             'Everything here is legal until the moment it works.',
             'The bat comes with the nails. Removing them costs the same.'] },
-  tools: { keeper: 'MACHINIST', floorA: C.dataDk, floorB: C.tire,
+  tools: { keeper: 'MACHINIST', floorA: C.dataDk, floorB: C.tire, band: C.nAmber,
     greet: 'Every tool on this wall voids a warranty somewhere.',
     dripGreet: 'Careful with the grease, that jacket outprices my shelf.',
     lines: ['The saw is for poles. Officially.',
             'Batteries are by the counter. Everything dies mid-job.',
             'A jammer buys you sixty seconds. Decide what they are worth first.',
             'If it sparks, unplug it. If it keeps sparking, that is a feature now.'] },
-  dispensary: { keeper: 'CHEMIST', floorA: C.deckOld, floorB: C.trunk,
+  dispensary: { keeper: 'CHEMIST', floorA: C.deckOld, floorB: C.trunk, band: C.nGreen,
     greet: 'Doses are on the label. The label is an optimist.',
     dripGreet: 'Designer coat, designer chemistry. You have a type.',
     lines: ['The gummies are legal. The dust is legal-adjacent.',
@@ -5099,7 +5148,8 @@ function playerDown(){
 function respawn(){
   player.credits = Math.ceil(player.credits / 2);
   player.hp = player.maxHp;
-  cam.riding = null; cam.z = 1.62; sitting = null; skating = false; airT = 0;
+  cam.riding = null; cam.z = 1.62; sitting = null; skating = false; resetSkate();
+  drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // you wake up sober
   if (inside) exitInterior();
   let best = null, bd = 1e9;
   for (const m of metroStops){
@@ -5234,6 +5284,7 @@ function wxUpdate(dt){
 /* ---- benches: sit, watch, and wait the clock forward -------------------- */
 let sitting = null;
 function sitDown(p){
+  if (skating){ cashOutDeck(); skating = false; airT = 0; }
   sitting = { x: p.x, y: p.y };
   cam.x = p.x; cam.y = p.y; cam.z = 1.12;
   toast('you sit');
@@ -5456,147 +5507,175 @@ const VM_DECK_LAND = [
   "   `[o]'            `[o]'   "
 ];
 const VM_PIPE_HOLD = [
-  '                 _%%_   ',
-  '                (%%#)   ',
-  '               (%%/     ',
-  '              (%%/      ',
-  '             (%%/       ',
-  '           _(%%/_       ',
-  '        __(n%%nnn)_     ',
-  '       (n@n@##@n@n@n)   ',
-  '       (s)ss)ss)ss)s)   ',
-  '       |s)ss)ss)ss)s|   ',
-  '       (ssss#ssssss~)   ',
-  '       (:ssssssssss:)   ',
-  '       (jj.jjjjjj.jjj)  ',
-  '       |jj/jjj,jjj\jj| ',
-  '       |jjjjj/jjjjjjj|  ',
-  '       |jjjjjjjjjjjjj|  '
+  '                     __%%__   ',
+  '                    (%%%##)   ',
+  '                   (%%%#/     ',
+  '                  (%%%/       ',
+  '                 (%%%/        ',
+  '                (%%%/         ',
+  '               (%%%/          ',
+  '              (%%%/           ',
+  '             (%%%/            ',
+  '            (%%%/             ',
+  '          _(%%%/_             ',
+  '       __(nn%%%nnn)__         ',
+  '      (n@n@n###n@n@n@)        ',
+  '      (s)ss)ss)ss)ss)s)       ',
+  '      |s)ss)ss)ss)ss)s|       ',
+  '      (sssss#ssssssss,s)      ',
+  '       (ssssssssssssss)       ',
+  '      (:sssssssssss:ss)       ',
+  '      (jj.jjjjjjjj.jjjj)      ',
+  '      |jj/jjjj,jjjj\\jjj|     ',
+  '      |jjjjjj/jjjjjjjjj|      ',
+  '      (jjjj,jjjjjjjjjjj)      ',
+  '      |jjjjjjjjjjjjjjjj|      ',
+  '      |jjjjjjjjjjjjjjjj|      '
 ];
 const VM_PIPE_WIND = [
-  '              ___%%%%%%_ ',
-  '          __(n(##%%%%#/  ',
-  '         (n@n@n)ss)      ',
-  '         (s)ss)ss)s)     ',
-  '         |s)ss)ss)s|     ',
-  '          (sssssss~s)    ',
-  '          (:ssssss:ss)   ',
-  '          (j.jjjjjj.jj)  ',
-  '          |j/jjj,jj\jj| ',
-  '          (jjjj/jjjjjj)  ',
-  '          |jjjjjjjjjjj|  '
+  '                 ______%%%%%%%%__ ',
+  '             ___(n(###%%%%%%%%#/  ',
+  '           _(n@n@n@n)ss)          ',
+  '          (s)ss)ss)ss)s)          ',
+  '          |s)ss)ss)ss)s|          ',
+  '           (ssssssss,ss)          ',
+  '           (sssssssssss)          ',
+  '           (:sssssss:ss)          ',
+  '           (j.jjjjjjj.jj)         ',
+  '           |jj/jjj,jj\\jj|        ',
+  '           (jjjjj/jjjjjj)         ',
+  '           |jjjjjjjjjjjj|         ',
+  '           |jjjjjjjjjjjj|         '
 ];
 const VM_PIPE_SMEAR = [
-  '     ---- ---           ',
-  '   ---- ----  __        ',
-  '  --- ---- _(%%_        ',
-  '   ---- _(%%%#/  --     ',
-  '    -- (n@%%/n)  ---    ',
-  '       (s)##)s)   --    ',
-  '       (ssssss~)        ',
-  '        (jjjjjj)_       ',
-  '         (jj,jjjjj)_    ',
-  '          (jjjj/jjjj)_  ',
-  '           (jjjjjjjjjj) ',
-  '           |jjjjjjjjjj| '
+  '     ------ ------            ',
+  '   ------ ------   ___        ',
+  '  ----- ------  __(%%%__      ',
+  '   ------  __(%%%%%%##/  ---  ',
+  '    ---  _(%%%%%%#/   ----    ',
+  '     -- (n@n%%%/n@n)   --     ',
+  '        (s)ss##)ss)s)         ',
+  '        (ssssssssss,s)        ',
+  '         (jjjjjjjjjj)_        ',
+  '          (jjj,jjjjjjj)_      ',
+  '           (jjjjj/jjjjjj)_    ',
+  '            (jjjjjjjjjjjjj)   ',
+  '            |jjjjjjjjjjjjj|   ',
+  '            |jjjjjjjjjjjjj|   '
 ];
 const VM_PIPE_HIT = [
-  '   \   *   /              ',
-  '  * _______________       ',
-  ' =*(#%%%%%%%%%%%%%)----   ',
-  '   * \ *   (n@n@)_       ',
-  '    *      (ssssss)       ',
-  '           (jjjj)_        ',
-  '            (j,jjjj)_     ',
-  '             (jjjjjjj)_   ',
-  '              (jjjjjjjjj)_',
-  '               (jjjj,jjjj)',
-  '               |jjjj/jjjj|',
-  '               |jjjjjjjjj|'
+  '    \\    *    /               ',
+  '   *  ____________________    ',
+  '  =*=(##%%%%%%%%%%%%%%%%%)----',
+  '   *  \\  *  /                 ',
+  '    *    *      _(n@n@n)_     ',
+  '               (sssssssss)    ',
+  '               (ss)ss)ss)s)   ',
+  '               (jjjjjj)_      ',
+  '                (jj,jjjjj)_   ',
+  '                 (jjjjjjjjj)_ ',
+  '                  (jjjj/jjjjj)',
+  '                  (jjjjjjjjjj)',
+  '                  |jjjj,jjjjj|',
+  '                  |jjjjjjjjjj|'
 ];
 const VM_PIPE_REC = [
-  '          ____          ',
-  '       __(nnnn)__       ',
-  '      (n@n@n@n@nn)      ',
-  '      (s)ss)ss)ss)      ',
-  '     _(ssssssss~s)      ',
-  '   _(%%ssssssss:s)      ',
-  '  (%%/j.jjjjjj.jj)      ',
-  ' (%%/ |jj,jjjj\jj|     ',
-  ' (#/  (jjjj/jjjjj)      ',
-  '      |jjjjjjjjjj|      '
+  '             ______           ',
+  '          __(nnnnnn)__        ',
+  '         (n@n@n@n@n@nn)       ',
+  '         (s)ss)ss)ss)ss)      ',
+  '        _(sssssssssss,s)      ',
+  '      _(%%ssssssssss:ss)      ',
+  '    _(%%%/j.jjjjjjjj.jj)      ',
+  '   (%%%/  |jj,jjjjj\\jjj|     ',
+  '  (%%%/   (jjjj/jjjjjjj)      ',
+  ' (%%#/    |jjjjjjjjjjjj|      ',
+  ' (##/     |jjjjjjjjjjjj|      '
 ];
 const VM_BAT_HOLD = [
-  '                __ww__  ',
-  '               (ww##w)  ',
-  '              (wwww/    ',
-  '             (ww#w/     ',
-  '            (wwww/      ',
-  '           (ww#w/       ',
-  '          (wwww/        ',
-  '        _(ww#/_         ',
-  '     __(n##nnn)__       ',
-  '    (n@n@##@n@n@n)      ',
-  '    (s)ss)ss)ss)s)      ',
-  '    (s(s)##(ss)~s)      ',
-  '    (:ssss##ssss:)      ',
-  '    (jj.jjjjjj.jj)      ',
-  '    |jj/jjj,jjj\j|     ',
-  '    |jjjjj/jjjjjj|      '
+  '                    ___ww___   ',
+  '                   (wwww##w)   ',
+  '                  (wwwwww/     ',
+  '                 (ww##ww/      ',
+  '                 (wwwww/       ',
+  '                (ww##w/        ',
+  '                (wwww/         ',
+  '               (ww#w/          ',
+  '              (wwww/           ',
+  '             (www/             ',
+  '            (ww/               ',
+  '          _(ww/_               ',
+  '       __(n#wwnnn)__           ',
+  '      (n@n@####@n@n@n)         ',
+  '      (s)ss)ss)ss)ss)s)        ',
+  '      (s(s)s##(ss)ss,s)        ',
+  '      (:sssss##ssss:ss)        ',
+  '      (ssssss##sssssss)        ',
+  '      (jj.jjjjjjjj.jjj)        ',
+  '      |jj/jjjj,jjj\\jjj|       ',
+  '      |jjjjjj/jjjjjjjj|        ',
+  '      (jjjj,jjjjjjjjjj)        ',
+  '      |jjjjjjjjjjjjjjj|        ',
+  '      |jjjjjjjjjjjjjjj|        '
 ];
 const VM_BAT_WIND = [
-  '            ____wwwwww__ ',
-  '        ___(##wwww##ww#) ',
-  '     __(n(n##)_www/      ',
-  '    (n@n@n)ss)           ',
-  '    (s)ss)ss)s)          ',
-  '    (s(s(ss~ss)          ',
-  '    (:sssssss:s)         ',
-  '    (j.jjjjjjj.jj)       ',
-  '    |jj/jjj,jj\jj|      ',
-  '    (jjjjj/jjjjjj)       ',
-  '    |jjjjjjjjjjjj|       '
+  '              _____wwwwwwwwww___ ',
+  '          ___(###wwww##wwww##ww) ',
+  '        _(n(n###)__wwwww/        ',
+  '       (n@n@n@n)ss)              ',
+  '       (s)ss)ss)ss)              ',
+  '       (s(s(sss,sss)             ',
+  '        (:ssssss:ss)             ',
+  '        (j.jjjjjjj.jj)           ',
+  '        |jj/jjjj,j\\jj|          ',
+  '        (jjjjj/jjjjjj)           ',
+  '        |jjjjjjjjjjjj|           ',
+  '        |jjjjjjjjjjjj|           '
 ];
 const VM_BAT_SMEAR = [
-  '   ----- ------         ',
-  '  ------- -------       ',
-  ' ---- __www__ -----     ',
-  '  -- _(ww#ww/  ----     ',
-  '    (n(www/s)   ---     ',
-  '    (s)##)ss)    --     ',
-  '    (sssssss~)          ',
-  '     (jjjjjjj)_         ',
-  '      (jj,jjjjj)_       ',
-  '       (jjjj/jjjj)_     ',
-  '        (jjjjjjjjjj)    ',
-  '        |jjjjjjjjjj|    '
+  '    ------- --------          ',
+  '  --------- ---------         ',
+  ' ------ ____www____ ------    ',
+  '  --- _(www##wwww#w/  -----   ',
+  '   - (n(wwwwww/@n)s)   ---    ',
+  '     (s)s####)ss)ss)    --    ',
+  '     (sssssssssss,s)          ',
+  '      (jjjjjjjjjjjj)_         ',
+  '       (jjj,jjjjjjjjj)_       ',
+  '        (jjjjj/jjjjjjjj)_     ',
+  '         (jjjjjjjjjjjjjjj)    ',
+  '         |jjjjjj,jjjjjjjj|    ',
+  '         |jjjjjjjjjjjjjjj|    '
 ];
 const VM_BAT_HIT = [
-  ' \\  *  //               ',
-  ' * ___________________    ',
-  '=*(w##wwwwwwww#www#ww)----',
-  ' * \ * /   (n@n@)_       ',
-  '   *       (s)ss)s)       ',
-  '           (ssssss)       ',
-  '           (jjjj)_        ',
-  '            (j,jjjj)_     ',
-  '             (jjjjjjj)_   ',
-  '              (jjjjjjjjj)_',
-  '               (jjjj,jjjj)',
-  '               |jjjj/jjjj|',
-  '               |jjjjjjjjj|'
+  '   \\\\    *    //               ',
+  '  *  ______________________    ',
+  ' =*=(w###wwwwwwww##www##www)---',
+  '  *  \\\\  *   //                ',
+  '   *     *       _(n@n@n)_     ',
+  '    *           (sssssssss)    ',
+  '                (s)ss)ss)s)    ',
+  '                (jjjjjj)_      ',
+  '                 (jj,jjjjj)_   ',
+  '                  (jjjjjjjjj)_ ',
+  '                   (jjjj/jjjjj)',
+  '                   (jjjjjjjjjj)',
+  '                   |jjj,jjjjjj|',
+  '                   |jjjjjjjjjj|'
 ];
 const VM_BAT_REC = [
-  '         ____           ',
-  '      __(nnnn)__        ',
-  '     (n@n@n@n@nn)       ',
-  '     (s)ss)ss)ss)       ',
-  '    _(ssssssss~s)       ',
-  '  _(ww#sssssss:s)       ',
-  ' (www/j.jjjjjj.j)       ',
-  '(ww#/ |jj,jjj\jj|      ',
-  '(w#/  (jjj/jjjjj)       ',
-  '      |jjjjjjjjj|       '
+  '              ______           ',
+  '           __(nnnnnn)__        ',
+  '          (n@n@n@n@n@nn)       ',
+  '          (s)ss)ss)ss)s)       ',
+  '        __(ssssssssss,s)       ',
+  '     __(ww#sssssssss:ss)       ',
+  '   _(wwww/j.jjjjjjjj.jj)       ',
+  '  (www#/  |jj,jjjjj\\jjj|      ',
+  ' (wwww/   (jjjj/jjjjjjj)       ',
+  ' (ww#/    |jjjjjjjjjjjj|       ',
+  ' (ww/     |jjjjjjjjjjjj|       ',
+  ' (#/      |jjjjjjjjjjjj|       '
 ];
 /* consuming, at full body scale - each item its own silhouette and grip:
    squat corrugated cup / slim tilted can / flat latched case */
@@ -5617,7 +5696,7 @@ const VANIM = {
       '|sssss(______________)sssss|',
       ' (ssssssssssssssssssssssss) ',
       ' |jjssssssssssssssssssssjj| ',
-      ' |jjjj=jjjjj~jjjjjj=jjjjjj| ',
+      ' |jjjj.jjjjj,jjjjjj.jjjjjj| ',
       ' (jjjjjj/jjjjjjjj\\jjjjjjj) ' ],
     [ '   ~ ~    ~~    ~ ~    ~    ',
       '  ~    \\ \\  ~~    ~       ',
@@ -5633,7 +5712,7 @@ const VANIM = {
       '|sssss(____________)sssss|  ',
       ' (ssssssssssssssssssssss)   ',
       ' |jjssssssssssssssssssjj|   ',
-      ' |jjjj=jjjj~jjjjj=jjjjjj|   ',
+      ' |jjjj.jjjj,jjjjj.jjjjjj|   ',
       ' (jjjjj/jjjjjjjj\\jjjjjj)   ' ] ] },
   soda: { dur: 1.2, cmap: { '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT,
                             C: H_BLU, '!': H_WHT, "'": H_WHT, '*': H_WHT,
@@ -5652,7 +5731,7 @@ const VANIM = {
       '  (sss(       )sss)    ',
       ' (ssss(_______)ssss)   ',
       ' |ssssssssssssssssss|  ',
-      ' (jjss~ssssssss=sjj)   ',
+      ' (jjss,ssssssss.sjj)   ',
       ' |jjjjjsss/sssjjjjj|   ',
       ' (jjjjjjjjjjjjjjjjj)   ' ],
     [ "        * ' *  '       ",
@@ -5668,7 +5747,7 @@ const VANIM = {
       '  (sss(      )sss)     ',
       ' (ssss(______)ssss)    ',
       ' |ssssssssssssssssss|  ',
-      ' (jjss~ssssssss=sjj)   ',
+      ' (jjss,ssssssss.sjj)   ',
       ' |jjjjjsss/sssjjjjj|   ',
       ' (jjjjjjjjjjjjjjjjj)   ' ] ] },
   medkit: { dur: 1.6, cmap: { W: H_WHT, r: H_RED, '+': H_RED, '=': H_GRY,
@@ -5737,7 +5816,7 @@ const va = (dur, cmap, grip, ...tops) =>
 // a real bowl of ramen: wood chopsticks, patterned band, slurp, put-down
 VANIM.ramen = va(1.7,
   { n: H_YEL, '~': H_WHT, W: H_WHT, r: H_RED, '=': H_WHT, '\\': H_YEL,
-    s: H_SKIN, j: H_JKT },
+    '-': H_YEL, s: H_SKIN, j: H_JKT },
   VG_CUP,
   [ '      ~     ~     ~         ',
     '   ~     ~     ~            ',
@@ -5790,39 +5869,39 @@ VANIM.bao = va(1.1,
 VANIM.onigiri = va(1.1,
   { B: H_WHT, '@': H_DRK, '<': H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
   VG_ONE,
-  [ '             __             ',
+  [ '                            ',
+    '             __             ',
     '           _(BB)_           ',
     '          (BBBBBB)          ',
     '         (BBBBBBBB)         ',
     '        (BB@@@@@@BB)        ',
-    '         (__@@@@__)         ',
-    '                            ' ],
-  [ '             __             ',
+    '         (__@@@@__)         ' ],
+  [ '                            ',
+    '             __             ',
     '           _(BB<            ',
     '          (BBBB<            ',
     '         (BBBBBB<           ',
-    '        (BB@@@@@BB)         ',
-    "         (__@@@@__)  '      ",
-    "                  ' '       " ]);
+    "        (BB@@@@@BB)  '      ",
+    "         (__@@@@__) '       " ]);
 VANIM.taiyaki = va(1.1,
   { B: H_YEL, '@': H_RED, o: H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
   VG_ONE,
-  [ '        ________   _        ',
+  [ '                            ',
+    '                            ',
+    '        ________   _        ',
     '      _(BoBBBBBB)_/ /       ',
     '     (BBB@B@B@BBBB\\ \\_    ',
     '      (BBBBBBBBBB)\\_/      ',
-    '       (________)           ',
+    '       (________)           ' ],
+  [ '                            ',
     '                            ',
-    '                            ' ],
-  [ '        ______              ',
+    '        ______              ',
     '      _(BoBBBB(@@           ',
     '     (BBB@B@BB(@@           ',
-    '      (BBBBBBB(_/           ',
-    "       (______)  '          ",
-    "               ' '          ",
-    '                            ' ]);
+    "      (BBBBBBB(_/  '        ",
+    "       (______)  ' '        " ]);
 VANIM.apple = va(1.1,
-  { B: H_GRN, '@': H_WHT, '.': H_WHT, s: H_SKIN, j: H_JKT },
+  { B: H_GRN, '@': H_WHT, '`': H_WHT, s: H_SKIN, j: H_JKT },
   VG_ONE,
   [ '            _(B)            ',
     '           |/               ',
@@ -5834,9 +5913,9 @@ VANIM.apple = va(1.1,
   [ '            _(B)            ',
     '           |/               ',
     '        _(B@@BB(__          ',
-    '       (BBBBBBB( B)         ',
+    '       (BBBBBBB(            ',
     '       (BBBBBBB(_/          ',
-    '        (BBBBBBBB)  .       ',
+    '        (BBBBBBBB)  `       ',
     '         (_______)          ' ]);
 VANIM.gyoza = va(1.3,                          // six on the tray, honestly
   { G: H_WHT, '.': H_DRK, '=': H_GRY, "'": H_WHT, s: H_SKIN, j: H_JKT },
@@ -5887,7 +5966,7 @@ VANIM.kebab = { dur: 1.2,                      // same stick, vat-meat palette
   cmap: { K: H_RED, '#': H_YEL, "'": H_YEL, s: H_SKIN, j: H_JKT },
   frames: VANIM.skewer.frames };
 VANIM.sake = va(1.3,                           // tokkuri: lift, tip, drain
-  { W: H_WHT, r: H_RED, '~': H_WHT, '.': H_WHT, s: H_SKIN, j: H_JKT },
+  { W: H_WHT, r: H_RED, '~': H_WHT, '`': H_WHT, s: H_SKIN, j: H_JKT },
   VG_ONE,
   [ '                            ',
     '           __               ',
@@ -5898,21 +5977,21 @@ VANIM.sake = va(1.3,                           // tokkuri: lift, tip, drain
     '        (WWWWWW)            ',
     '         (____)             ' ],
   [ '          ~  ~              ',
+    '                            ',
     '            ___             ',
     '            \\WW\\          ',
     '             \\WW\\         ',
     '            (WWWW)          ',
     '            (WrrW)          ',
-    '             (___)          ',
-    '                            ' ],
-  [ '          (__)              ',
+    '             (___)          ' ],
+  [ '                            ',
+    '                            ',
+    '          (__)              ',
     '          /WW/              ',
     '         /WWrr/             ',
     '         /WWWW/             ',
     '          (__)              ',
-    '            .               ',
-    '                            ',
-    '                            ' ]);
+    '            `               ' ]);
 VANIM.boba = va(1.4,                           // the pearls actually travel
   { '!': H_GRY, P: H_PUR, o: H_DRK, W: H_WHT, s: H_SKIN, j: H_JKT },
   VG_CUP,
@@ -5938,9 +6017,9 @@ VANIM.boba = va(1.4,                           // the pearls actually travel
     '              !             ',
     '          ____!___          ',
     '        _(WWWW!WWW)_        ',
-    '       |PPPPPP!PPPPP|       ',
+    '       |      !     |       ',
     '       |P     !    P|       ',
-    '       |  o   !   o |       ',
+    '       | PPo  !  oPP|       ',
     '        (          )        ',
     '         (________)         ' ]);
 // the shelf: each substance is its own object on the same open palm
@@ -6000,16 +6079,16 @@ VANIM.staticd = va(1.1,
     '                            ',
     '                            ' ]);
 VANIM.ghost = va(1.0,                          // a mound of dust, blown
-  { '*': H_WHT, '.': H_WHT, '~': H_WHT, s: H_SKIN, j: H_JKT },
+  { '*': H_WHT, '`': H_WHT, '~': H_WHT, s: H_SKIN, j: H_JKT },
   VG_PALM,
   [ '                            ',
     '                            ',
-    '           .....            ',
+    '           `````            ',
     '         _(*****)_          ',
     '          (*****)           ' ],
-  [ '        . ~ * . ~  *        ',
-    '      ~ * . ~ * .   ~       ',
-    '         . ~ .              ',
+  [ '        ` ~ * ` ~  *        ',
+    '      ~ * ` ~ * `   ~       ',
+    '         ` ~ `              ',
     '                            ',
     '                            ' ]);
 VANIM.rush = va(1.0,                           // the inhaler, puff at the nozzle
@@ -6023,13 +6102,13 @@ VANIM.rush = va(1.0,                           // the inhaler, puff at the nozzl
     '         _|IIII|_           ',
     '        (I======I)          ',
     '         (______)==D        ' ],
-  [ '                    ~ ~     ',
-    '                  ~ ~~ ~    ',
+  [ '                            ',
     '           ____             ',
     '          |IIII|            ',
     '         _|IIII|_           ',
-    '        (I======I)          ',
-    '         (______)==D        ',
+    '        (I======I)  ~ ~~    ',
+    '         (______)==D~~ ~    ',
+    '                     ~      ',
     '                            ' ]);
 {
   const T_INJ1 = [
@@ -6731,7 +6810,8 @@ function ceilingPass(){
       let dd, bb;
       if (ix % 3 === 1 && iy % 3 === 1){
         dd = 0.92;
-        bb = inside && inside.shop === 'dispensary' ? C.nGreen : C.nWhite;
+        bb = inside && inside.shop === 'dispensary' ? C.nGreen
+           : inside && inside.shop === 'armory' ? C.camRed : C.nWhite;
       }
       else {
         dd = 0.22 + hash3(ix, iy, 51) * 0.08; bb = C.screen;
@@ -6757,8 +6837,9 @@ function interiorWall(b, gu, z, side, hitX, hitY){
     if (z > 1.0) _wb = C.worktop;                     // just the rounded lip
     return;
   }
-  if (inside && inside.shop === 'dispensary' && z > 1.2 && z < 1.7){
-    _wb = C.nGreen; _wd = 0.8;                        // the shelf band glows
+  if (inside && inside.shop && SHOP_FLAVOR[inside.shop] &&
+      SHOP_FLAVOR[inside.shop].band !== undefined && z > 1.2 && z < 1.7){
+    _wb = SHOP_FLAVOR[inside.shop].band; _wd = 0.8;   // the trade's shelf band
     return;
   }
   // the way out, clamped to exactly the door tile's inner face
@@ -8130,9 +8211,10 @@ function hudPass(){
         const shift = Math.round(-skLean * 2);  // the board tracks out under a carve
         drawViewArt(dart, (cols >> 1) - (dw >> 1) + shift, rows - 4 - rise, 4, CM_DECK);
         for (const p2 of skParts) hudCell(p2.c, p2.r, p2.ch, p2.col);
-        if (styleN > 0 || skCombo > 1)
-          hudStr(cols - 20, rows - 2,
-                 'STYLE ' + styleN + (skCombo > 1 ? '  x' + skCombo : ''), H_PUR);
+        if (styleN > 0 || skCombo > 1){
+          const stx = 'STYLE ' + styleN + (skCombo > 1 ? ' x' + skCombo : '');
+          hudStr(Math.max(0, cols - stx.length - 2), rows - 2, stx, H_PUR);
+        }
       }
       if (vAnim){
         const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
@@ -8166,7 +8248,7 @@ function hudPass(){
         } else art = punchLeft
           ? [VM_PUNCH_WIND_L, VM_PUNCH_SMEAR_L, VM_PUNCH_HIT_L, VM_PUNCH_REC_L][ph]
           : [VM_PUNCH_WIND, VM_PUNCH_SMEAR, VM_PUNCH_HIT, VM_PUNCH_REC][ph];
-        const tr = Math.min(art.length, Math.round(rows * 0.45));
+        const tr = Math.min(art.length, Math.round(rows * 0.5));
         const tw = Math.round(tr * viewW(art) / art.length);
         let ax;
         if (ph === 2)                       // fist lands beside the reticle
@@ -8192,7 +8274,7 @@ function hudPass(){
         const mw = meleeStats();
         const hold = mw.id === 'bat' ? VM_BAT_HOLD : mw.id === 'pipe' ? VM_PIPE_HOLD : VM_FIST_R;
         const tr = Math.min(VM_FIST_R.length, Math.round(rows * 0.28));
-        const tr2 = Math.min(hold.length, Math.round(rows * (mw.id === 'fist' ? 0.28 : 0.34)));
+        const tr2 = Math.min(hold.length, Math.round(rows * (mw.id === 'fist' ? 0.28 : 0.44)));
         const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
         const tw2 = Math.round(tr2 * viewW(hold) / hold.length);
         const off = Math.round(cols * 0.19);      // a boxer guard, framing the reticle
