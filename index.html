@@ -319,7 +319,8 @@ function buildAtlases(){
       }
       if (warm){ r0 *= 1 + 0.15 * warm; b0 *= 1 - 0.12 * warm; }
       if (hueM){
-        const r1 = r0 + (g0 - r0) * hueM, g1 = g0 + (b0 - g0) * hueM, b1 = b0 + (r0 - b0) * hueM;
+        const hm2 = hueM * (1 + Math.max(0, 1 - T.amb) * 1.2);
+        const r1 = r0 + (g0 - r0) * hm2, g1 = g0 + (b0 - g0) * hm2, b1 = b0 + (r0 - b0) * hm2;
         r0 = r1; g0 = g1; b0 = b1;
       }
       const rC = Math.round(clamp(r0, 0, 255) * (1 - f) + T.fog[0] * f);
@@ -2295,7 +2296,8 @@ function buildInterior(bld, door, floor){
       if (x === gap) continue;
       caseTile(x, cy);
     }
-    ip.push({ x: IOX + rw - 1.5, y: IOY + 0.6, k: PK_CAM, s: rnd(), r: 0.16 });
+    ip.push({ x: IOX + rw - 1.5, y: IOY + 0.6, k: PK_CAM, s: rnd(), r: 0.16,
+              dead: worldDelta.cutIn && worldDelta.cutIn['b' + bld.id] ? 1 : 0 });
     const t1 = IOX + 2, t2 = IOX + rw - 3;            // stock on the counter top
     const stk = SHOP_TYPES[trade].stock.filter(id => ITEMS[id]);
     const d1 = stk[0] || 'noodles', d2 = stk[1] || 'soda';
@@ -2444,6 +2446,10 @@ function enterInterior(door){
   indexProps(); indexSpriteProps();
   inside = { name: door.name, district: bld.dist, exit: room.exit,
              stairs: room.stairs, shop: room.shop, bld: door.b, door, floor: 1 };
+  if (room.shop){                               // the map remembers trades you've seen
+    if (!worldDelta.seen) worldDelta.seen = {};
+    worldDelta.seen[door.b] = room.shop;
+  }
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
   if (skating) toast('deck up - no riding indoors');
   wasSkating = skating; skating = false; airT = 0; skV = 0; grind = null; skTrick = null;
@@ -2507,7 +2513,7 @@ function probeInteract(){
       probeConsider(p.x, p.y, { kind: 'bin', prompt: '[SPACE]  TRASH - STREET BIN' });
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
       probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[SPACE]  SIT - BENCH' });
-    else if ((p.k === PK_CAM || p.k === PK_LAMP) && invCount('saw'))
+    else if ((p.k === PK_CAM || p.k === PK_LAMP) && !p.dead && invCount('saw'))
       probeConsider(p.x, p.y, { kind: 'cut', p,
         prompt: '[SPACE]  CUT DOWN - ' + (p.k === PK_CAM ? 'FLOCK CAM' : 'STREET LIGHT') });
   }
@@ -2550,16 +2556,23 @@ function tryInteract(){
     useMetro();
   } else if (t.kind === 'cut'){                 // the hacksaw versus the flock
     player.qvar.vandal = (player.qvar.vandal || 0) + 1;
-    if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');   // seen falling
+    if (t.p.k === PK_CAM){
+      player.qvar.camCut = (player.qvar.camCut || 0) + 1;
+      crimeEvent(1, 'vandalism');               // a live cam reports its own death
+    } else if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');
     addFx(t.p.x, t.p.y, 2.4); addFx(t.p.x + 0.2, t.p.y, 1.6); addFx(t.p.x, t.p.y + 0.2, 0.8);
-    props.splice(props.indexOf(t.p), 1);
-    indexProps(); indexSpriteProps();
-    if (!worldDelta.cut) worldDelta.cut = {};
-    worldDelta.cut[(t.p.y | 0) * MAP + (t.p.x | 0)] = 1;   // stays down after a load
+    t.p.dead = 1;                               // the stump stays as proof
+    if (inside){
+      if (!worldDelta.cutIn) worldDelta.cutIn = {};
+      worldDelta.cutIn['b' + inside.bld] = 1;   // per-shop key, no collisions
+    } else {
+      if (!worldDelta.cut) worldDelta.cut = {};
+      worldDelta.cut[(t.p.y | 0) * MAP + (t.p.x | 0)] = 1;
+    }
     sfx('hit', { vol: 0.7, rate: 0.5 });
     sfx('hit', { vol: 0.4, rate: 1.8 });        // the metal shriek over the thud
     if (t.p.k === PK_CAM){ invAdd('scrap', 1); toast('the flock cam comes down - + scrap'); }
-    else toast('the pole is down - one lamp fewer on this block');
+    else toast('the pole is dark - one lamp fewer on this block');
   } else if (t.kind === 'stairs'){
     openFloorMenu();
   } else if (t.kind === 'item'){
@@ -2712,7 +2725,7 @@ function spawnActors(){
                { t: 'Leave' }] },
       work: { text: 'The flock over the mile sees too much and forgets nothing. Thin it. Three cameras. There is a tools counter under a TOOLS sign - ask for the hacksaw.',
         opts: [{ t: 'Deal',
-                 do(){ player.qvar.quietBase = player.qvar.vandal || 0; startQuest('quiet'); },
+                 do(){ player.qvar.quietBase = player.qvar.camCut || 0; startQuest('quiet'); },
                  next: 'deal' },
                { t: 'Not my fight' }] },
       deal: { text: 'Cameras first, questions never. The saw pays for itself in scrap anyway.' },
@@ -2888,6 +2901,7 @@ function onPress(code, key){
     case 'Digit1': case 'Digit2': case 'Digit3': {
       const hid = player.hotbar && player.hotbar[+code.slice(5) - 1];
       if (hid && invCount(hid)) useItem(hid);
+      else if (hid) toast('out of ' + ITEMS[hid].name.toLowerCase());
       else toast('nothing pinned - press 1-3 on an item in the inventory');
       break; }
     case 'ControlLeft': case 'ControlRight': fireWeapon(); break;
@@ -3231,10 +3245,11 @@ function skateFrame(dt){
   if (grounded){
     skV = Math.max(0, skV - skV * 0.30 * (rough ? 3.5 : 1) * dt);
     pushCd -= dt;
+    const mx2 = SK_MAX * drugFx('speed', 1);    // the ride rides with you
     if ((keys.KeyW || keys.ArrowUp || TOUCH.f > 0.35) &&
-        skV < SK_MAX * 0.94 && pushCd <= 0 && crouchT <= 0 && stumbleT <= 0){
-      pushCd = 0.55 + 0.35 * skV / SK_MAX;      // kick less often at speed
-      skV = Math.min(SK_MAX, skV + 2.4);
+        skV < mx2 * 0.94 && pushCd <= 0 && crouchT <= 0 && stumbleT <= 0){
+      pushCd = 0.55 + 0.35 * skV / mx2;         // kick less often at speed
+      skV = Math.min(mx2, skV + 2.4 * drugFx('speed', 1));
       pushArtT = 0.2; dipT = 0.15;
       sfx('footstep', { rate: 0.55, vol: 0.75 });
     }
@@ -4044,8 +4059,9 @@ function takeDrug(id){
   const d = DRUGFX[id];
   if (!d) return false;
   if (drug && drug.id === id){                  // re-dose extends, capped at 1.5x
-    drug.dur = Math.min(d.dur * 1.5, drug.dur - drug.t + d.dur);
-    drug.t = 0;
+    const rem = Math.min(d.dur * 1.5, drug.dur - drug.t + d.dur);
+    drug.t = Math.min(drug.t, d.onset || 0.5);  // the high never restarts
+    drug.dur = drug.t + rem;
   } else drug = { id, t: 0, dur: d.dur, fx: d, env: 0 };
   bakeKey = -1;
   flash = Math.max(flash, 0.35);
@@ -4084,8 +4100,9 @@ function drugTick(dt){
   const off = Math.min(1, Math.max(0, (drug.dur - drug.t) / (f.fall || 2)));
   drug.env = on * on * (3 - 2 * on) * off;      // smoothstep in, ease out
   if (f.hpDrain){
-    const late = drug.t > drug.dur - 10 ? 3 : 1;    // the bill arrives at the end
-    player.hp = Math.max(1, player.hp - f.hpDrain * late * drug.env * dt);
+    const late = drug.t > drug.dur - 10;            // the bill arrives at the end
+    player.hp = Math.max(1, player.hp -
+                f.hpDrain * (late ? 3 : drug.env) * dt);
   }
   if (f.regen && drug.env > 0.5)
     player.hp = Math.min(player.maxHp, player.hp + f.regen * dt);
@@ -4094,7 +4111,8 @@ function drugTick(dt){
     if (drug.beatT <= 0){
       drug.beatT = 60 / (90 + 60 * drug.env * f.beat);
       sfx('hit', { vol: 0.16 + 0.1 * drug.env, rate: 0.5 });
-      if (f.hpDrain) hurtT = Math.max(hurtT, 0.14 * drug.env);
+      if (f.hpDrain)
+        hurtT = Math.max(hurtT, drug.t > drug.dur - 10 ? 0.3 : 0.14 * drug.env);
     }
   }
   if (f.machineBlind && drug.env > 0.4) jamT = Math.max(jamT, 0.6);
@@ -4110,7 +4128,10 @@ function drugTick(dt){
 }
 /* ---- pocket anarchy ---- */
 const PED_BANG_BARKS = ['gunshots!', 'not again', 'call the flock!', 'MOVE!'];
+let crackerCd = 0;
 function popFirecracker(){
+  if (worldTime < crackerCd){ toast('your ears are still ringing'); return false; }
+  crackerCd = worldTime + 2;
   panicT = worldTime + 6; panicX = cam.x; panicY = cam.y;
   flash = Math.max(flash, 0.5);
   sfx('shot', { vol: 0.9, rate: 1.6 });
@@ -4139,7 +4160,7 @@ const snifSeen = new Set();
 function openCamJack(){
   const cams = [];
   for (const p of props)
-    if (p.k === PK_CAM && Math.hypot(p.x - cam.x, p.y - cam.y) < 120) cams.push(p);
+    if (p.k === PK_CAM && !p.dead && Math.hypot(p.x - cam.x, p.y - cam.y) < 120) cams.push(p);
   if (!cams.length){ toast('no flock cams in range'); return false; }
   cams.sort((a, b) => Math.hypot(a.x - cam.x, a.y - cam.y) -
                       Math.hypot(b.x - cam.x, b.y - cam.y));
@@ -4238,11 +4259,17 @@ function burnTag(){
       const names = Object.keys(TAG_ART);
       const art = names[(Math.random() * names.length) | 0];
       const axX = Math.abs(vx) >= Math.abs(vy);     // the wall face runs across you
-      const x2 = axX ? x : x + 1, y2 = axX ? y + 1 : y;
-      const ok2 = inMap(x2, y2) && tH[y2 * MAP + x2] > 1.6;
+      // the renderer floors the hit point: approaching from +x/+y the hit
+      // lands in the AIR tile on this side of the wall - key the tag there
+      const kx = axX ? (vx >= 0 ? x : x + 1) : x;
+      const ky = axX ? y : (vy >= 0 ? y : y + 1);
+      // the piece spans along the face; take whichever neighbor has wall
+      const sx2 = axX ? kx : kx + 1, sy2 = axX ? ky + 1 : ky;
+      const wx2 = axX ? x : x + 1,  wy2 = axX ? y + 1 : y;
+      let ok2 = inMap(wx2, wy2) && tH[wy2 * MAP + wx2] > 1.6;
       const spanN = ok2 ? 2 : 1;
-      tags[y * MAP + x] = { art, day: dayCount, seg: 0, spanN };
-      if (ok2) tags[y2 * MAP + x2] = { art, day: dayCount, seg: 1, spanN };
+      tags[ky * MAP + kx] = { art, day: dayCount, seg: 0, spanN };
+      if (ok2) tags[sy2 * MAP + sx2] = { art, day: dayCount, seg: 1, spanN };
       toast('burned in - ' + art.toUpperCase() + ' holds for a few days');
       sfx('ui_select', { rate: 0.6, vol: 0.7 });
       sfx('ui_move', { rate: 0.4, vol: 0.4 });
@@ -4368,7 +4395,10 @@ function openInventory(){
                             const it = m.items[m.cursor];
                             if (!it || !it.id || ITEMS[it.id].cat !== 'consumable') return;
                             if (!player.hotbar) player.hotbar = [null, null, null];
-                            player.hotbar[i] = player.hotbar[i] === it.id ? null : it.id;
+                            const already = player.hotbar[i] === it.id;
+                            for (let k = 0; k < 3; k++)      // an item pins to one slot
+                              if (player.hotbar[k] === it.id) player.hotbar[k] = null;
+                            if (!already) player.hotbar[i] = it.id;
                             sfx('ui_select', { vol: 0.5, rate: 1.3 });
                           },
                           onTab(){ popMode(); sfx('ui_back', { vol: 0.4 }); } }));
@@ -4439,7 +4469,11 @@ function openSlotMenu(kind){
     value: () => slotLabel(s),
     hint: s ? (kind === 'save' ? 'overwrites: ' : '') +
               'hp ' + s.player.hp + '/' + s.player.maxHp +
-              '   cr ' + s.player.credits + '   seed ' + s.seed
+              '   cr ' + s.player.credits + '   ' +
+              (s.player.outfit && ITEMS[s.player.outfit]
+                 ? ITEMS[s.player.outfit].name.split(' ').pop().toLowerCase() : 'no coat') +
+              (s.player.bling && ITEMS[s.player.bling]
+                 ? ' + ' + ITEMS[s.player.bling].name.split(' ').pop().toLowerCase() : '')
             : (kind === 'save' ? 'an empty slot' : 'nothing saved here'),
     act(){
       if (kind === 'save'){ saveGame(i + 1); popMode(); }
@@ -4478,14 +4512,10 @@ function loadGame(n){
   worldDelta = s.delta || { taken: {} };
   applyDeltaToProps();
   tags = s.tags || {};                          // your marks outlive the rewind
-  if (worldDelta.cut){                          // and the cut poles stay down
-    for (let i = props.length - 1; i >= 0; i--){
-      const p = props[i];
+  if (worldDelta.cut)                           // and the cut poles stay dead
+    for (const p of props)
       if ((p.k === PK_CAM || p.k === PK_LAMP) &&
-          worldDelta.cut[(p.y | 0) * MAP + (p.x | 0)]) props.splice(i, 1);
-    }
-    indexProps(); indexSpriteProps();
-  }
+          worldDelta.cut[(p.y | 0) * MAP + (p.x | 0)]) p.dead = 1;
   Object.assign(player, s.player);
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
@@ -4521,6 +4551,20 @@ const QUESTS = {
                   return a && { x: a.x, y: a.y, name: 'THE DRIFTER' }; } }
     ]
   },
+  test: {
+    name: 'PRODUCT TESTING',
+    stages: [
+      { log: 'ride the sample (MIRRORSHADE) near THE SPHERE downtown',
+        target(){ const l = landmarks.find(x => /SPHERE/.test(x.name));
+                  return l && { x: l.x, y: l.y, name: 'THE SPHERE' }; },
+        auto(){ const l = landmarks.find(x => /SPHERE/.test(x.name));
+                return drug && drug.id === 'mirror' && l &&
+                       Math.hypot(l.x - cam.x, l.y - cam.y) < 16; } },
+      { log: 'report back to the CHEMIST at a DISPENSARY',
+        target(){ const a = actors.find(x => x.name === 'CHEMIST');
+                  return a && { x: a.x, y: a.y, name: 'THE CHEMIST' }; } }
+    ]
+  },
   quiet: {
     name: 'QUIET STREETS',
     stages: [
@@ -4537,7 +4581,7 @@ const QUESTS = {
         },
         auto(){ return invCount('saw') > 0; } },
       { log: 'cut 3 flock cams (face one and press SPACE)',
-        auto(){ return (player.qvar.vandal || 0) - (player.qvar.quietBase || 0) >= 3; } },
+        auto(){ return (player.qvar.camCut || 0) - (player.qvar.quietBase || 0) >= 3; } },
       { log: 'collect from the fixer',
         target(){
           const a = actors.find(x => x.name === 'THE FIXER');
@@ -4747,15 +4791,35 @@ function dripScore(){
 }
 function makeShopTree(trade){
   const TF = SHOP_FLAVOR[trade] || SHOP_FLAVOR.general;
-  return {
+  const tree = {
     start: { text: () => (dripScore() >= 200 && TF.dripGreet ? TF.dripGreet : TF.greet),
       opts: [{ t: 'Let me see the stock', do(){ openShopMenu(); }, next: 'start' },
              { t: 'Anything worth knowing?', next: 'talk' },
+             { t: 'Anything need testing?',
+               if: () => trade === 'dispensary' && questStage('test') === undefined,
+               next: 'pitch' },
+             { t: 'Batch nine did... things',
+               if: () => trade === 'dispensary' && questStage('test') === 1,
+               next: 'debrief' },
              { t: 'Leave' }] },
     talk: { text: () => TF.lines[(Math.random() * TF.lines.length) | 0],
       opts: [{ t: 'The stock, then', do(){ openShopMenu(); }, next: 'start' },
              { t: 'Leave' }] }
   };
+  if (trade === 'dispensary'){                  // the CHEMIST runs a trial
+    tree.pitch = { text: 'Batch nine of the mirror. The lab says it is stable. The lab also says the lab is stable. I need eyes that come back - take a comp dose, ride it somewhere with a strong signal. The dome downtown shouts loudest.',
+      opts: [{ t: "I'll ride it", do(){ invAdd('mirror', 1); startQuest('test'); }, next: 'comped' },
+             { t: 'Find another lab rat' }] };
+    tree.comped = { text: 'Dose on the house. Dosing twice is enthusiasm, not science.' };
+    tree.debrief = { text: 'You have the look. Pupils still syncing. What did batch nine show you?',
+      opts: [{ t: 'Everyone glowed. Everyone.',
+               do(){ player.credits += 60; advanceQuest('test'); }, next: 'paid' },
+             { t: 'I saw the dome watching back',
+               do(){ player.credits += 60; advanceQuest('test'); }, next: 'paid2' }] };
+    tree.paid = { text: 'Glow is expected. Everyone is the feature. Sixty credits - the trial continues without you.' };
+    tree.paid2 = { text: 'It does that to repeat customers. Sixty credits. Do not become one.' };
+  }
+  return tree;
 }
 function sellPrice(id){
   let k = 0.4;
@@ -4868,7 +4932,7 @@ function flockSees(){
   // the ledger needs a witness: a live flock cam in range, and no jam
   if (jamT > 0) return false;
   for (const p of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
-    if (p.k === PK_CAM) return true;
+    if (p.k === PK_CAM && !p.dead) return true;
   return false;
 }
 function crimeEvent(n, why){
@@ -4906,9 +4970,11 @@ function corruptionTick(){                    // polled every half second
   camWhisperT -= 0.5;
   if (camWhisperT <= 0){
     camWhisperT = 22 + Math.random() * 30;
-    const near = gridQuery(propGrid, cam.x, cam.y, 7, _q1);
+    const near = gridQuery(propGrid, cam.x, cam.y, 9, _q1);
     for (let i = 0; i < near.length; i++)
-      if (near[i].k === PK_CAM){ toast('a camera swivels to follow you'); break; }
+      if (near[i].k === PK_CAM && !near[i].dead){
+        toast('a camera swivels to follow you'); break;
+      }
   }
   if (player.corruption >= 6){
     enfT -= 0.5;
@@ -5127,7 +5193,7 @@ function damagePlayer(d){
   if (player.hp <= 0 || godMode) return;
   d *= drugFx('resist', 1);
   player.hp = Math.max(0, player.hp - d);
-  if (!(drug && drug.fx.numb)) hurtT = 1;       // numb: the pain never arrives
+  if (!(drug && drug.fx.numb && drug.env > 0.5)) hurtT = 1;   // numb, once it holds
   sfx('hurt', { vol: 0.8, rate: 0.9 + Math.random() * 0.2 });
   if (player.hp <= 0) playerDown();
 }
@@ -5238,7 +5304,8 @@ function updateClock(dt){
     bakeKey = key;
     bgGrad = null;
     if (GL) glBuildPalette();
-    else if (t.u === 0 || performance.now() - lastAtlasT > 1200){
+    else if ((t.u === 0 && !drug) ||
+             performance.now() - lastAtlasT > (drug ? 300 : 1200)){
       lastAtlasT = performance.now(); buildAtlases();
     }
   }
@@ -6320,6 +6387,18 @@ function drawMapMode(m){
       hudStr(x, y, d.name, H_PUR);
     }
   }
+  // shops you have walked into, remembered by trade
+  if (m.z <= 2 && worldDelta.seen){
+    const TAG = { tools: 'T', armory: 'A', dispensary: 'D', jeweler: '$',
+                  clothier: 'C', grocery: 'M', bodega: 'B', general: 'G' };
+    for (const b in worldDelta.seen){
+      const d = doors.find(dd => dd.b === +b);
+      if (!d) continue;
+      const x = sx(d.x), y = sy(d.y);
+      if (x < 1 || x >= cols - 1 || y < 2 || y >= rows - 2) continue;
+      hudCell(x, y, TAG[worldDelta.seen[b]] || 'G', H_GRN);
+    }
+  }
   // landmarks
   if (m.z <= 4)
     for (const l of landmarks){
@@ -7248,7 +7327,7 @@ function spritePass(){
       let def = PROPDEF[o.k];
       let dyn = 0;
       if (o.k === PK_LAMP){
-        dyn = LAMPC[(o.s * LAMPC.length) | 0];
+        dyn = o.dead ? C.tire : LAMPC[(o.s * LAMPC.length) | 0];
       } else if (o.k === PK_STALL){
         // flavour by district: the strip leans ramen, homes lean produce,
         // downtown and the belt lean tech
@@ -7261,7 +7340,8 @@ function spritePass(){
       } else if (o.k === PK_TURBINE){
         dyn = ((worldTime * 0.9 + o.s * 6) % 1) < 0.5 ? C.nWhite : C.rail;
       } else if (o.k === PK_CAM){
-        dyn = jamT > 0                          // jammed cams stutter in a panic
+        dyn = o.dead ? C.tire                   // a stump: dark, blind, honest
+          : jamT > 0                            // jammed cams stutter in a panic
           ? (((worldTime * 7 + o.s * 3) % 1) < 0.3 ? C.nWhite : C.dataDk)
           : ((worldTime * 1.3 + o.s * 7) % 1) < 0.5 ? C.camRed : C.dataDk;
       } else if (o.k === PK_ITEM){
@@ -7637,7 +7717,8 @@ function glBuildPalette(){
       }
       if (warm){ r0 *= 1 + 0.15 * warm; b0 *= 1 - 0.12 * warm; }
       if (hueM){
-        const r1 = r0 + (g0 - r0) * hueM, g1 = g0 + (b0 - g0) * hueM, b1 = b0 + (r0 - b0) * hueM;
+        const hm2 = hueM * (1 + Math.max(0, 1 - T.amb) * 1.2);
+        const r1 = r0 + (g0 - r0) * hm2, g1 = g0 + (b0 - g0) * hm2, b1 = b0 + (r0 - b0) * hm2;
         r0 = r1; g0 = g1; b0 = b1;
       }
       const r = Math.round(clamp(r0, 0, 255) * (1 - f) + T.fog[0] * f);
@@ -8024,7 +8105,7 @@ function drawMinimap(x0, y0){
     if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
       plot(a.x, a.y, a.brain === 'hostile' ? 'x' : '@', a.brain === 'hostile' ? H_RED : H_PUR);
   if (snifferT > 0){                            // the chip pings loose loot
-    for (const p of gridQuery(propGrid, cam.x, cam.y, hw, _q2))
+    for (const p of gridQuery(propGrid, cam.x, cam.y, Math.max(hw, 16), _q2))
       if (p.k === PK_ITEM){
         plot(p.x, p.y, '$', H_YEL);
         if (!snifSeen.has(p)){ snifSeen.add(p); sfx('ui_move', { rate: 2.2, vol: 0.3 }); }
@@ -8073,12 +8154,13 @@ function hudPass(){
       gBuf[idx] = (Math.random() * RMAX) | 0;
       if (Math.random() < 0.4) bBuf[idx] = (Math.random() * NBASE) | 0;
     }
-    const tears = (2 + Math.random() * 4 * e2) | 0;   // scanline shear
+    const tears = (2 + Math.random() * 4 * e2 * R.rows / 20) | 0;  // scanline shear
     for (let t2 = 0; t2 < tears; t2++){
       const r2 = (Math.random() * R.rows) | 0, off = r2 * R.cols;
-      const shift = 1 + ((Math.random() * 3) | 0);
-      const a0 = (Math.random() * Math.max(1, R.cols - 34)) | 0;
-      const a1 = Math.min(R.cols - 1, a0 + 10 + ((Math.random() * 22) | 0));
+      const shift = Math.max(1, (R.cols * 0.03 * Math.random()) | 0);
+      const span = (R.cols * (0.25 + 0.45 * Math.random())) | 0;
+      const a0 = (Math.random() * Math.max(1, R.cols - span - 1)) | 0;
+      const a1 = Math.min(R.cols - 1, a0 + span);
       for (let c2 = a1; c2 >= a0 + shift; c2--){
         gBuf[off + c2] = gBuf[off + c2 - shift];
         bBuf[off + c2] = bBuf[off + c2 - shift];
@@ -8094,21 +8176,34 @@ function hudPass(){
   hudStr(3, 2, dateLine, H_BLU);
   if (player.corruption > 0)
     hudStr(3 + dateLine.length + 3, 2, 'CORRUPT ' + player.corruption, H_RED);
-  // row 3 belongs to gameplay state: the ride bar first, then the chips
-  let fx2 = '';
+  // row 3: the ride bar owns the left, its own color; chips fill the right
+  let rideW = 0;
   if (drug){
     const left = Math.max(0, drug.dur - drug.t);
     const fill = Math.ceil(8 * left / drug.dur);
-    fx2 += 'RIDE ' + drug.id.toUpperCase().slice(0, 9) + ' ' +
-           '#'.repeat(fill) + '-'.repeat(8 - fill) + ' ' +
-           (left / 60 | 0) + ':' + ('' + (Math.ceil(left) % 60)).padStart(2, '0') + '  ';
+    const lsec = Math.ceil(left);
+    const bar = 'RIDE ' + drug.id.toUpperCase().slice(0, 9) + ' ' +
+                '#'.repeat(fill) + '-'.repeat(8 - fill) + ' ' +
+                (lsec / 60 | 0) + ':' + ('' + (lsec % 60)).padStart(2, '0');
+    hudStr(3, 3, bar, drug.dur - drug.t < drug.dur * 0.2 ? H_DIM : H_PUR);
+    rideW = bar.length + 2;
   }
-  if (jamT > 0) fx2 += 'JAM ' + Math.ceil(jamT) + '  ';
-  if (snifferT > 0) fx2 += 'SNIF ' + Math.ceil(snifferT) + '  ';
-  if (godMode) fx2 += 'GOD  ';
-  if (fx2) hudStr(3, 3, fx2.slice(0, 48),
-                  drug && drug.dur - drug.t < drug.dur * 0.2 ? H_DIM : H_PUR);
-  else if (devDebug)
+  const chips = [];                             // shortest-first so none clip
+  if (godMode) chips.push('GOD');
+  if (drug && drug.fx.ghost) chips.push('UNSEEN');
+  if (jamT > 0) chips.push('JAM ' + Math.ceil(jamT));
+  if (snifferT > 0) chips.push('SNIF ' + Math.ceil(snifferT));
+  if (invCount('saw') || invCount('camjack') || invCount('jammer')){
+    let eyes = 0;
+    for (const pe of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
+      if (pe.k === PK_CAM && !pe.dead) eyes++;
+    chips.push('EYES ' + eyes);
+  }
+  if (chips.length){                            // GOD-first, so the cheat flag
+    const line = chips.join(' ');               // survives any truncation
+    hudStr(3 + rideW, 3, line.slice(0, Math.max(0, 48 - rideW)), H_GRN);
+  }
+  if (!drug && !chips.length && devDebug)
     hudStr(3, 3, 'fps ' + fps.toFixed(0).padStart(3) + '  grid ' + cols + 'x' + rows +
                  '  rays ' + statRays + '  glyphs ' + statCells, H_GRN);
   hudStr(3, 4, ((inside ? 'INSIDE: ' + inside.name + (inside.floor > 1 ? '  F' + inside.floor : '')
@@ -8155,14 +8250,14 @@ function hudPass(){
     let hb = '';
     for (let i = 0; i < 3; i++){
       const hid = player.hotbar[i];
-      if (hid) hb += (i + 1) + ' ' + ITEMS[hid].name.split(' ')[0] + ' x' + invCount(hid) + '   ';
+      if (hid) hb += (i + 1) + ' ' + ITEMS[hid].name.slice(0, 8) + ' x' + invCount(hid) + '   ';
     }
     hudStr(3, 8, hb.slice(0, 48), H_DIM);
   }
   // ---- minimap ----
   if (showMap && cols >= MW + 30) drawMinimap(cols - MW - 3, 1);
-  // ---- help ----
-  if (showHelp){
+  // ---- help ---- (suppressed on cramped grids and while skating)
+  if (showHelp && rows >= 24 && !skating){
     const lines = [
       'WASD/arrows move   mouse look (click canvas)   SHIFT run   Q,E turn   R,F look up/down',
       'SPACE interact/ollie   CTRL or LMB swing/fire   1-3 hotbar   TAB inventory   V skate   G metro   M map',
@@ -8171,16 +8266,17 @@ function hudPass(){
     const w = Math.min(cols - 2, 92);
     hudPanel(1, rows - 6, w, 5);
     hudBox(1, rows - 6, w, 5, 'KEYS');
-    hudStr(3, rows - 5, lines[0], H_WHT);
-    hudStr(3, rows - 4, lines[1], H_GRN);
-    hudStr(3, rows - 3, lines[2], H_DIM);
+    hudStr(3, rows - 5, lines[0].slice(0, w - 4), H_WHT);
+    hudStr(3, rows - 4, lines[1].slice(0, w - 4), H_GRN);
+    hudStr(3, rows - 3, lines[2].slice(0, w - 4), H_DIM);
   }
-  // ---- metro prompt ----
+  // ---- metro prompt: one bar. the probe handles it up close (SPACE/ACT);
+  //      the [G] hint only shows when you are near but not facing it ----
   let mNear = null;
   for (let i = 0; i < metroStops.length; i++)
     if (Math.hypot(metroStops[i].x - cam.x, metroStops[i].y - cam.y) < 3.4) mNear = metroStops[i];
-  if (mNear){
-    const msg = '[G]  METRO - ' + mNear.name;
+  if (mNear && !(lookTarget && lookTarget.kind === 'metro') && !inside){
+    const msg = (TOUCH.on ? '[ACT]  METRO - ' : '[G]  METRO - ') + mNear.name;
     const x = Math.max(1, (cols - msg.length - 2) >> 1);
     hudPanel(x, (rows >> 1) + 3, msg.length + 2, 1);
     hudStr(x + 1, (rows >> 1) + 3, msg, H_GRN);
@@ -8552,6 +8648,19 @@ function boot(){
   newWorld(20260818);
   document.getElementById('boot').classList.add('hidden');
   requestAnimationFrame(frame);
+  try {
+    if (!localStorage.getItem('asciiCityMet')){   // a first-run welcome
+      localStorage.setItem('asciiCityMet', '1');
+      setTimeout(() => openDialog('ASCII CITY', [
+        'JAN 13, 2420. You own a coat that is not warm and one hundred twenty ' +
+        'credits that will not last. The kiosks sign their trades - TOOLS, ' +
+        'THREADS, DISPENSARY, ARMS, GOLD. People with names talk back.',
+        'The cameras count you. Stay clean or pay the fixer to forget. ' +
+        'Someone by the stalls looks hungrier than you. Start there. ' +
+        '[SPACE] to reach anything, TAB for your pockets, M for the map.'
+      ]), 700);
+    }
+  } catch (e){}
 }
 boot();
 </script>
