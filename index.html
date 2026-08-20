@@ -307,7 +307,9 @@ function buildAtlases(){
     const dim = 1 - 0.22 * f;
     const sat = (CFG.timeMode === 2 ? 1.5 : 1) * drugFx('sat', 1);
     const hueK = drugFx('hue', 0);              // the ride bends the palette
-    const hueM = hueK ? hueK * (0.5 + 0.5 * Math.sin(worldTime * 0.6)) : 0;
+    const hueM = (hueK ? hueK * (0.25 + 0.75 * (0.5 + 0.5 * Math.sin(worldTime * 0.35))) : 0)
+               + drugFx('hueC', 0);
+    const warm = drugFx('warm', 0);
     for (let b = 0; b < NBASE; b++){            // shells that were cut for night
       const c = BASE[b];
       let r0 = c[0] * dim * T.amb, g0 = c[1] * dim * T.amb, b0 = c[2] * dim * T.amb;
@@ -315,6 +317,7 @@ function buildAtlases(){
         const lum = r0 * 0.3 + g0 * 0.59 + b0 * 0.11;
         r0 = lum + (r0 - lum) * sat; g0 = lum + (g0 - lum) * sat; b0 = lum + (b0 - lum) * sat;
       }
+      if (warm){ r0 *= 1 + 0.15 * warm; b0 *= 1 - 0.12 * warm; }
       if (hueM){
         const r1 = r0 + (g0 - r0) * hueM, g1 = g0 + (b0 - g0) * hueM, b1 = b0 + (r0 - b0) * hueM;
         r0 = r1; g0 = g1; b0 = b1;
@@ -382,7 +385,7 @@ const T_ROAD = 0, T_CROSS = 1, T_WALK = 2, T_LOT = 3, T_BLD = 4,
 const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_RAIL = 5, PK_STALL = 6, PK_BENCH = 7, PK_CAM = 8, PK_PLAY = 9,
       PK_METRO = 10, PK_APPLE = 11, PK_TURBINE = 12, PK_ITEM = 13,
-      PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17;
+      PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17, PK_RACK = 18;
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -1304,6 +1307,10 @@ function buildSigns(){
     if (b.landmark) continue;
     const D = DISTRICT[b.dist];
     const words = b.redlight ? RED_WORDS : D.words;
+    // a shop's first sign says what it sells, so trades can be found by eye
+    const shopish = INTERIOR_KIND[b.dist] === 'shop' ||
+                    (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3);
+    let forced = shopish && rnd() < 0.6 ? SHOP_SIGN[shopTypeFor(b)] : null;
     // one bucket per outward direction, so a shop faces every street it fronts
     const faces = [[], [], [], []];
     for (let y = b.y0; y <= b.y1; y++)
@@ -1323,7 +1330,9 @@ function buildSigns(){
       if (!bucket.length) continue;
       anyFace = bucket;
       if (rnd() > (b.redlight ? 0.98 : D.sign)) continue;
-      mkSign(b, D, bucket[(rnd() * bucket.length) | 0], false, words);
+      mkSign(b, D, bucket[(rnd() * bucket.length) | 0], false,
+             forced ? [forced] : words);
+      forced = null;                            // only the first sign is the trade
     }
     if (anyFace && rnd() < D.signV){
       const tall = anyFace.filter(f => f.h > 13);
@@ -1627,6 +1636,14 @@ const PROPDEF = [
   { art: ART.rock,    w: 1.0, h: 0.7, sl: slots({ X: [C.rail, 0.72], M: [C.dataDk, 0.6] }) },
   { art: ART.stair,   w: 1.4, h: 1.5, sl: slots({ X: [C.worktop, 0.8], M: [C.dataDk, 0.7] }) }
 ];
+ART.rack = parseArt(['MMMMMMMMM',
+                     'S.W.S.P.S',
+                     'S.W.S.P.S',
+                     'S.W.S.P.S',
+                     'M.......M']);
+PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
+                     sl: slots({ M: [C.rail, 0.6], S: [C.nMag, 0.85],
+                                 W: [C.nWhite, 0.8], P: [C.nViolet, 0.8] }) };
 
 /*========================= 10. SPATIAL HASH BUCKETS ========================*/
 const HG = 8, HW = Math.ceil(MAP / HG);
@@ -2203,10 +2220,15 @@ function buildInterior(bld, door, floor){
   S.tType.fill(0); S.tH.fill(0); S.tB.fill(-1); S.walkG.fill(0);
   const keep = rngState;
   srand((((bld.seed ^ 0x51ab) + floor * 2654435761) >>> 0) || 1);
-  const kind = floor === 1 ? INTERIOR_KIND[bld.dist]
+  let kind = floor === 1 ? INTERIOR_KIND[bld.dist]
              : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
+  if (floor === 1 && bld.dist === D_IND && hash3(bld.id, 61, 3) < 0.3)
+    kind = 'shop';                             // the belt keeps a few counters
+  const trade = kind === 'shop' ? shopTypeFor(bld) : null;
   const F = INT_FLAVOR[kind];
-  intFloorA = F.floorA; intFloorB = F.floorB;
+  const TF = trade && SHOP_FLAVOR[trade];
+  intFloorA = TF ? TF.floorA : F.floorA;
+  intFloorB = TF ? TF.floorB : F.floorB;
   const rw = clamp(bld.x1 - bld.x0 + 3, 6, 15);
   const rh = clamp(bld.y1 - bld.y0 + 3, 6, 15);
   const doorX = IOX + (rw >> 1), doorY = IOY + rh;
@@ -2262,20 +2284,56 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + 2.5, 0, 'ammo', 4);   // clear of the stair corner
   } else if (kind === 'shop'){                      // counter across the back
     const cy = IOY + 2, gap = IOX + rw - 2;         // pass-through at the end
-
+    const caseTile = (x, y) => {                    // 1.05m glass over the lip
+      const id = y * MAP + x;
+      S.tType[id] = T_BLD; S.tH[id] = 1.05; S.tB[id] = cRec.id; S.walkG[id] = 0;
+    };
     for (let x = IOX + 1; x <= IOX + rw - 2; x++){
       if (x === gap) continue;
-      const id = cy * MAP + x;
-      S.tType[id] = T_BLD; S.tH[id] = 1.05; S.tB[id] = cRec.id; S.walkG[id] = 0;
+      caseTile(x, cy);
     }
-    for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
-      if (rnd() < 0.75) ip.push({ x: IOX + 0.6, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
-    if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(), r: 0.5 });
     const t1 = IOX + 2, t2 = IOX + rw - 3;            // stock on the counter top
-    const stk = SHOP_TYPES[shopTypeFor(bld)].stock.filter(id => ITEMS[id]);
+    const stk = SHOP_TYPES[trade].stock.filter(id => ITEMS[id]);
     const d1 = stk[0] || 'noodles', d2 = stk[1] || 'soda';
     dropItem(t1 + 0.5, cy + 0.5, 1.1, d1, 1, ITEMS[d1].price);   // displays are priced
     if (t2 !== t1) dropItem(t2 + 0.5, cy + 0.5, 1.1, d2, 1, ITEMS[d2].price);
+    // the trade dresses the room
+    if (trade === 'clothier'){                      // racks down the middle
+      for (let x = IOX + 2; x < IOX + rw - 2; x += 3)
+        ip.push({ x: x + 0.5, y: IOY + 5.5, k: PK_RACK, s: rnd(), r: 0.45 });
+      if (stk[3]) dropItem(IOX + 1.5, IOY + rh - 2.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
+    } else if (trade === 'jeweler'){                // glass cases mid-room
+      const cx2 = IOX + (rw >> 1);
+      for (let y = IOY + 4; y < Math.min(IOY + 8, IOY + rh - 3); y++) caseTile(cx2, y);
+      if (stk[2]) dropItem(cx2 + 0.5, IOY + 4.5, 1.1, stk[2], 1, ITEMS[stk[2]].price);
+      if (stk[3]) dropItem(cx2 + 0.5, IOY + 6.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
+    } else if (trade === 'armory'){                 // a cage splits the room
+      const gy = IOY + 5;
+      if (gy < IOY + rh - 2){
+        for (let x = IOX + 1; x <= IOX + rw - 2; x++)
+          if (x !== IOX + 2) caseTile(x, gy);
+        for (let x = IOX + 3; x < IOX + rw - 2; x += 3)
+          if (rnd() < 0.8) ip.push({ x: x + 0.5, y: gy + 1.6, k: PK_BIN, s: rnd(), r: 0.32 });
+      }
+    } else if (trade === 'grocery' || trade === 'bodega'){   // shelf aisles
+      for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
+        for (const ax of [IOX + 2, IOX + rw - 3])
+          if (rnd() < 0.8) ip.push({ x: ax + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      if (stk[2]) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, stk[2], 1, ITEMS[stk[2]].price);
+    } else if (trade === 'tools'){                  // the workbench and the mess
+      ip.push({ x: IOX + 1.6, y: IOY + rh - 2.5, k: PK_BENCH, s: 0, r: 0.35 });
+      for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
+        if (rnd() < 0.7) ip.push({ x: IOX + rw - 1.4, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      if (rnd() < 0.6) dropItem(IOX + 1.5, IOY + 4.5, 0, 'battery', 2);
+    } else if (trade === 'dispensary'){             // low light, one plant, no rush
+      ip.push({ x: IOX + 1.6, y: IOY + rh - 2.5, k: PK_TREE, s: rnd(), r: 0.4 });
+      if (rnd() < 0.6) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_BIN, s: rnd(), r: 0.3 });
+    } else {                                        // general: crates by the wall
+      for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
+        if (rnd() < 0.75) ip.push({ x: IOX + 0.6, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
+                            r: 0.5, dist: bld.dist });
+    }
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
@@ -2298,9 +2356,10 @@ function buildInterior(bld, door, floor){
   if (rnd() < (kind === 'storage' ? 0.35 : 0.85)){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
     const a = spawnActor('vendor', kx, IOY + 1.4,
-                         { name: F.keeper, brain: 'still', dialog: F.lines });
+                         { name: TF ? TF.keeper : F.keeper, brain: 'still',
+                           dialog: F.lines });
     a.interior = 1;
-    if (kind === 'shop'){ a.tree = SHOP_TREE; a.dialog = null; }
+    if (kind === 'shop'){ a.tree = makeShopTree(trade); a.dialog = null; }
   }
   // stairs, when the building has anywhere else to go
   let stairs = null;
@@ -2373,7 +2432,8 @@ function enterInterior(door){
   inside = { name: door.name, district: bld.dist, exit: room.exit,
              stairs: room.stairs, shop: room.shop, bld: door.b, door, floor: 1 };
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
-  skating = false; airT = 0;
+  if (skating) toast('deck up - no riding indoors');
+  wasSkating = skating; skating = false; airT = 0; skV = 0; grind = null;
   viewD = 13; fade = 1;
   buildBackground();
   sfx('door');
@@ -2386,6 +2446,7 @@ function exitInterior(){
   props = EXT.props; signs = EXT.signs;
   indexProps(); indexSpriteProps();
   cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; cam.pitch = EXT.camPitch;
+  if (wasSkating){ skating = true; wasSkating = false; toast('wheels down'); }
   inside = null; viewD = 30; fade = 1;              // the street eases back out
   buildBackground();
   sfx('door');
@@ -2436,6 +2497,11 @@ function probeInteract(){
       probeConsider(p.x, p.y, { kind: 'cut', p,
         prompt: '[SPACE]  CUT DOWN - ' + (p.k === PK_CAM ? 'FLOCK CAM' : 'STREET LIGHT') });
   }
+  if (!inside)
+    for (let i = 0; i < metroStops.length; i++)
+      if (Math.hypot(metroStops[i].x - cam.x, metroStops[i].y - cam.y) < 3.4)
+        probeConsider(metroStops[i].x, metroStops[i].y,
+          { kind: 'metro', prompt: '[SPACE]  METRO - ' + metroStops[i].name });
   if (inside){
     if (inside.exit)
       probeConsider(inside.exit.x, inside.exit.y,
@@ -2466,12 +2532,18 @@ function tryInteract(){
     openTrashMenu();
   } else if (t.kind === 'bench'){
     sitDown(t.p);
+  } else if (t.kind === 'metro'){
+    useMetro();
   } else if (t.kind === 'cut'){                 // the hacksaw versus the flock
+    addFx(t.p.x, t.p.y, 2.4); addFx(t.p.x + 0.2, t.p.y, 1.6); addFx(t.p.x, t.p.y + 0.2, 0.8);
     props.splice(props.indexOf(t.p), 1);
     indexProps(); indexSpriteProps();
+    if (!worldDelta.cut) worldDelta.cut = {};
+    worldDelta.cut[(t.p.y | 0) * MAP + (t.p.x | 0)] = 1;   // stays down after a load
     sfx('hit', { vol: 0.7, rate: 0.5 });
+    sfx('hit', { vol: 0.4, rate: 1.8 });        // the metal shriek over the thud
     if (t.p.k === PK_CAM){ invAdd('scrap', 1); toast('the flock cam comes down - + scrap'); }
-    else toast('the light goes dark');
+    else toast('the pole is down - one lamp fewer on this block');
     player.qvar.vandal = (player.qvar.vandal || 0) + 1;
     if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');
   } else if (t.kind === 'stairs'){
@@ -2493,7 +2565,7 @@ function tryInteract(){
     if (t.p.price){
       const cost = player.corruption >= 3 ? Math.ceil(t.p.price * 1.25) : t.p.price;
       if (player.credits >= cost){ player.credits -= cost; paid = cost; }
-      else crimeEvent(1, 'theft');           // pocketed in front of the cameras
+      else crimeEvent(Math.max(1, Math.ceil(cost / 100)), 'theft');   // scaled to the take
     }
     invAdd(t.p.item, want);
     if (t.p.key) worldDelta.taken[t.p.key] = 1;   // dropped loot has no key
@@ -2561,11 +2633,14 @@ function spawnActors(){
                { t: 'Good luck with that' }] },
       grateful: { text: 'I walk the same blocks every night. You will find me.' },
       luck: { text: 'Luck is a district. Some of us just live further from it.' },
-      hungry: { text: () => invCount('noodles') > 0
+      hungry: { text: () => invCount('noodles') > 0 || invCount('ramen') > 0
                   ? 'Is that steam I smell? You actually found some.'
                   : 'Still hungry. Still walking.',
         opts: [{ t: 'Hand over cup noodles', if: () => invCount('noodles') > 0,
                  do(){ invTake('noodles', 1); player.credits += 30; advanceQuest('noodles'); },
+                 next: 'fed' },
+               { t: 'Hand over the ramen bowl', if: () => invCount('ramen') > 0,
+                 do(){ invTake('ramen', 1); player.credits += 30; advanceQuest('noodles'); },
                  next: 'fed' },
                { t: 'Not yet' }] },
       fed: { text: 'Hot water is the one thing this city still gives away. Here - thirty credits. I keep my debts smaller than my dinners.' },
@@ -2612,14 +2687,29 @@ function spawnActors(){
   if (fspot) spawnActor('citizen', fspot[0] + 0.5, fspot[1] + 0.5, {
     name: 'THE FIXER', brain: 'still', shirt: C.nPink, skin: C.skinB,
     tree: {
-      entry: () => 'start',
+      entry: () => questStage('quiet') === 2 ? 'collect' : 'start',
       start: { text: () => 'Corruption ' + player.corruption + ' of 10. The system remembers everything - unless somebody pays it to forget. Forty a point.',
         opts: [{ t: 'Pay 40 cr - clean one point',
                  if: () => player.corruption > 0 && player.credits >= 40,
                  do(){ player.credits -= 40; player.corruption--; toast('one entry deleted'); },
                  next: 'start' },
+               { t: 'Any work?', if: () => questStage('quiet') === undefined, next: 'work' },
                { t: 'Who are you?', next: 'who' },
                { t: 'Leave' }] },
+      work: { text: 'The flock over the mile sees too much and forgets nothing. Thin it. Three cameras. There is a tools counter under a TOOLS sign - ask for the hacksaw.',
+        opts: [{ t: 'Deal',
+                 do(){ player.qvar.quietBase = player.qvar.vandal || 0; startQuest('quiet'); },
+                 next: 'deal' },
+               { t: 'Not my fight' }] },
+      deal: { text: 'Cameras first, questions never. The saw pays for itself in scrap anyway.' },
+      collect: { text: 'Three blind corners. Ninety credits - and the vandal flags from the job are mine to eat.',
+        opts: [{ t: 'Take the pay',
+                 do(){ player.credits += 90;
+                       player.corruption = Math.max(0, player.corruption - 1);
+                       advanceQuest('quiet'); toast('+90 cr, one flag eaten'); },
+                 next: 'after' },
+               { t: 'Later' }] },
+      after: { text: 'The mile breathes easier in the dark. So do I.' },
       who: { text: 'A janitor. The mess I clean is in the records.' }
     } });
   // the belt has teeth: razors prowl the industrial district streets
@@ -2648,12 +2738,15 @@ function spawnActors(){
       a: 'battery', b: 'firecracker' }
   ];
   let stallN = 0;
-  for (const p of props){
-    if (p.k !== PK_STALL || stallN >= 60) continue;
-    if (hash3(p.x | 0, p.y | 0, 44) > 0.34) continue;
+  const vstalls = props.filter(p => p.k === PK_STALL &&
+                                    districtAt(p.x | 0, p.y | 0) !== D_RURAL &&
+                                    hash3(p.x | 0, p.y | 0, 44) <= 0.34)
+                       .sort((a, b) => hash3(a.x | 0, a.y | 0, 45) - hash3(b.x | 0, b.y | 0, 45));
+  for (const p of vstalls){
+    if (stallN >= 60) continue;
     const dn2 = districtAt(p.x | 0, p.y | 0);
     const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0
-               : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
+               : (dn2 === D_RES || dn2 === D_SUB) ? 1 : 2;
     const V = VEND[(((p.s * 5) | 0) + bias) % 3];
     const sp2 = freeSpotNear(p.x, p.y);
     if (Math.hypot(sp2[0] - p.x, sp2[1] - p.y) > 2.5) continue;
@@ -2718,6 +2811,7 @@ function moveCam(dx, dy){                     // slide along whichever axis is f
 const keys = Object.create(null);
 addEventListener('keydown', e => {
   audioUnlock();                                        // any gesture arms sound
+  if (e.repeat && e.code === 'Backquote') return;       // held tilde must not toggle
   if (!e.repeat || modeStack.length) onPress(e.code, e.key);  // menus want key repeat
   keys[e.code] = 1;
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].indexOf(e.code) >= 0) e.preventDefault();
@@ -2746,14 +2840,32 @@ addEventListener('mousemove', e => {
 function onPress(code, key){
   const m = topMode();                          // an open mode owns the keyboard
   if (m){ if (m.onKey) m.onKey(code, key); return; }
+  if (skating && airT > 0){                     // mid-air, the keys are trick inputs
+    const TK = { KeyQ: ['kickflip', 10], KeyE: ['heelflip', 10],
+                 KeyW: ['nollie', 12], KeyS: ['shove-it', 8] };
+    if (TK[code]){
+      const nm = TK[code][0], pts = TK[code][1];
+      if (!skTrick) skTrick = { name: nm, pts, t: 0, dur: 0.3 };
+      else if (skTrick.name.indexOf(nm) < 0)    // a late second input compounds
+        skTrick = { name: skTrick.name + ' late ' + nm,
+                    pts: (skTrick.pts + pts) * 2, t: 0, dur: 0.25 };
+      sfx('ui_move', { rate: 2.0, vol: 0.35 });
+      return;
+    }
+  }
   switch (code){
     case 'Backquote': openDevConsole(); break;
     case 'Escape': openPauseMenu(); break;
     case 'Space':
       if (sitting){ standUp(); break; }
-      if (skating && !lookTarget){ ollie(); break; }
+      if (skating && (skV > 1 || grind || !lookTarget)){ ollie(); break; }
       tryInteract(); break;
     case 'KeyW': if (sitting) waitOnBench(); break;
+    case 'Digit1': case 'Digit2': case 'Digit3': {
+      const hid = player.hotbar && player.hotbar[+code.slice(5) - 1];
+      if (hid && invCount(hid)) useItem(hid);
+      else toast('nothing pinned - press 1-3 on an item in the inventory');
+      break; }
     case 'ControlLeft': case 'ControlRight': fireWeapon(); break;
     case 'Tab': openInventory(); break;
     case 'KeyP': paused = !paused; break;
@@ -2829,26 +2941,39 @@ function toggleRide(){
   // the air traffic is scenery now - the only ride that answers V is the deck
   if (!inside && invCount('deck')){
     skating = !skating;
-    toast(skating ? 'wheels down' : 'deck up');
+    if (!skating){
+      skV = 0; airT = 0; grind = null; skTrick = null;
+      if (styleN >= 10){                       // cash the chain out on dismount
+        const pay = Math.floor(styleN / 10);
+        player.credits += pay;
+        toast('deck up - street cred +' + pay + ' cr');
+        styleN = 0; skCombo = 0;
+      } else toast('deck up');
+    } else toast('wheels down');
     sfx('ui_select', { rate: skating ? 1.45 : 0.8, vol: 0.5 });
   } else if (!inside){
     toast('nothing to ride - decks sell at tool shops');
   }
 }
 /* ---- the kickdeck: momentum, ollies, and flip tricks -------------------- */
-let skating = false, airT = 0, trickArm = 0, styleN = 0;
-const TRICKS = ['kickflip', 'heelflip', '360 shove-it', 'varial', 'impossible'];
+let skating = false, wasSkating = false, airT = 0, airDur = 0.5, arcH = 0.9;
+let skV = 0, pushCd = 0, pushArtT = 0, dipT = 0, crouchT = 0, landT = 0;
+let stumbleT = 0, wobbleT = 0, carveT = 0, seamAcc = 0, nearT = 0, skLean = 0;
+let skTrick = null, skCombo = 0, comboT = 0, styleN = 0, styleAcc = 0;
+let grind = null, grindT = 0;
+const skParts = [];
 function ollie(){
-  if (airT > 0) return;
-  airT = 0.55; trickArm = 0;
-  sfx('footstep', { vol: 0.8, rate: 1.5 });
+  if (airT > 0 || crouchT > 0 || stumbleT > 0) return;
+  if (grind){ endGrind(true); return; }        // pop out of the grind, clean
+  crouchT = 0.12;                              // dip first; the pop follows
 }
 
 /*=========================== DEV CONSOLE ===================================
   Backquote opens it. Everything the city runs on, poked by hand.
 ============================================================================*/
 let devLog = ['ASCII CITY dev console - type help'];
-let godMode = false;
+let godMode = false, devDebug = false;
+const devHist = [];
 function devOut(s){ devLog.push(String(s)); if (devLog.length > 220) devLog.splice(0, 60); }
 function devExec(line){
   devOut('> ' + line);
@@ -2934,6 +3059,7 @@ function devExec(line){
                             : 'substances: ' + Object.keys(DRUGFX).join('  ')); break;
     case 'sober': drug = null; bakeKey = -1; devOut('sober'); break;
     case 'god': godMode = !godMode; devOut('god ' + (godMode ? 'ON' : 'off')); break;
+    case 'debug': devDebug = !devDebug; devOut('debug hud ' + (devDebug ? 'ON' : 'off')); break;
     case 'jam': jamT = 600; devOut('jammed for ten minutes'); break;
     case 'style': styleN = Math.max(0, num(1, 0) | 0); devOut('style = ' + styleN); break;
     case 'seed': newWorld(num(1, (Math.random() * 1e9) | 0)); devOut('new world'); break;
@@ -2947,12 +3073,33 @@ function devExec(line){
 }
 function openDevConsole(){
   pushMode({
-    name: 'dev', pausesWorld: true, input: '',
+    name: 'dev', pausesWorld: true, input: '', hi: -1,
     onKey(code, key){
-      if (code === 'Escape' || code === 'Backquote'){ popMode(); return; }
-      if (code === 'Enter'){ devExec(this.input); this.input = ''; return; }
+      if (code === 'Escape' || code === 'Backquote'){
+        if (performance.now() - this.openedT > 150) popMode();
+        return;
+      }
+      if (code === 'Enter'){
+        if (this.input.trim()){ devHist.push(this.input); if (devHist.length > 50) devHist.shift(); }
+        this.hi = -1;
+        devExec(this.input); this.input = ''; return;
+      }
+      if (code === 'ArrowUp'){
+        if (devHist.length){
+          this.hi = this.hi < 0 ? devHist.length - 1 : Math.max(0, this.hi - 1);
+          this.input = devHist[this.hi];
+        }
+        return;
+      }
+      if (code === 'ArrowDown'){
+        if (this.hi >= 0){
+          this.hi = this.hi + 1 >= devHist.length ? -1 : this.hi + 1;
+          this.input = this.hi < 0 ? '' : devHist[this.hi];
+        }
+        return;
+      }
       if (code === 'Backspace'){ this.input = this.input.slice(0, -1); return; }
-      if (key && key.length === 1 && this.input.length < 70) this.input += key;
+      if (key && key.length === 1 && this.input.length < 90) this.input += key;
     },
     draw(){
       const cols = R.cols, rows = R.rows;
@@ -2960,10 +3107,16 @@ function openDevConsole(){
       const x0 = (cols - w) >> 1, y0 = 2;
       hudPanel(x0, y0, w, h); hudPanel(x0, y0, w, h);
       hudBox(x0, y0, w, h, 'DEV CONSOLE');
-      const lines = devLog.slice(-(h - 4));
+      const maxW = w - 4, wrapped = [];
+      for (const L of devLog){                  // wrap long output to the card
+        if (L.length <= maxW) wrapped.push(L);
+        else for (let i = 0; i < L.length; i += maxW) wrapped.push(L.slice(i, i + maxW));
+      }
+      const lines = wrapped.slice(-(h - 4));
       for (let i = 0; i < lines.length; i++)
-        hudStr(x0 + 2, y0 + 1 + i, lines[i].slice(0, w - 4), H_GRN);
-      hudStr(x0 + 2, y0 + h - 2, ('> ' + this.input + '_').slice(0, w - 4), H_WHT);
+        hudStr(x0 + 2, y0 + 1 + i, lines[i], H_GRN);
+      const inp = '> ' + this.input + '_';      // keep the cursor end in view
+      hudStr(x0 + 2, y0 + h - 2, inp.length > maxW ? inp.slice(inp.length - maxW) : inp, H_WHT);
     },
     tap(){ popMode(); }
   });
@@ -2996,8 +3149,10 @@ function updateCam(dt){
     const l = Math.hypot(dx, dy) || 1, step = Math.min(l, 6 * dt);
     cam.x += dx / l * step; cam.y += dy / l * step;
   }
+  if (skating){ skateFrame(dt); return; }
+  airT = 0;
   const run = keys.ShiftLeft || keys.ShiftRight ? 2.2 + 0.1 * player.stats.AGI : 1;
-  const sp = 3.1 * (skating ? 2.3 : run) * drugFx('speed', 1);
+  const sp = 3.1 * run * drugFx('speed', 1);
   let fwd = 0, str = 0;
   if (keys.KeyW || keys.ArrowUp) fwd += 1;
   if (keys.KeyS || keys.ArrowDown) fwd -= 1;
@@ -3026,21 +3181,170 @@ function updateCam(dt){
     }
   }
   cam.z = 1.62 + Math.sin(cam.walkPhase) * (run > 1 ? 0.06 : 0.035) * (ml > 0.001 ? 1 : 0);
-  if (skating){
-    cam.z = 1.62 + Math.sin(worldTime * 6.5) * 0.02;      // wheel hum, not footsteps
-    if (airT > 0){
-      if (keys.KeyQ || keys.KeyE) trickArm = 1;           // flip input mid-air
-      airT -= dt;
-      cam.z = 1.62 + Math.sin(Math.min(1, 1 - airT / 0.55) * Math.PI) * 0.95;
-      if (airT <= 0){
-        sfx('footstep', { vol: 0.9, rate: 0.7 });
-        if (trickArm){
-          styleN++;
-          toast(TRICKS[(Math.random() * TRICKS.length) | 0] + '  (style ' + styleN + ')');
-        }
-      }
+}
+/* the deck is a physics object: pushes surge, friction coasts, carves cost
+   speed, and the pavement seams are the speedometer */
+const SK_MAX = 7.2;
+function skateFrame(dt){
+  if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
+  if (keys.KeyF) cam.pitch = clamp(cam.pitch - 26 * dt, -R.rows * 0.62, R.rows * 0.62);
+  if (comboT > 0){ comboT -= dt; if (comboT <= 0) skCombo = 0; }
+  if (pushArtT > 0) pushArtT -= dt;
+  for (let i = skParts.length - 1; i >= 0; i--)
+    if ((skParts[i].t -= dt) <= 0) skParts.splice(i, 1);
+  const grounded = airT <= 0 && !grind;
+  const tHere = tType[(cam.y | 0) * MAP + (cam.x | 0)];
+  const rough = tHere === T_PATH || tHere === T_LOT;
+  if (grounded){
+    skV = Math.max(0, skV - skV * 0.30 * (rough ? 3.5 : 1) * dt);
+    pushCd -= dt;
+    if ((keys.KeyW || keys.ArrowUp || TOUCH.f > 0.35) &&
+        skV < SK_MAX * 0.94 && pushCd <= 0 && crouchT <= 0 && stumbleT <= 0){
+      pushCd = 0.55 + 0.35 * skV / SK_MAX;      // kick less often at speed
+      skV = Math.min(SK_MAX, skV + 2.4);
+      pushArtT = 0.2; dipT = 0.15;
+      sfx('footstep', { rate: 0.55, vol: 0.75 });
     }
-  } else airT = 0;
+    if (keys.KeyS || keys.ArrowDown){
+      skV = Math.max(0, skV - 6 * dt);
+      if (skV > 3) skidBurst();
+    }
+    let turn = 0;
+    if (keys.KeyA || keys.ArrowLeft || keys.KeyQ) turn += 1;
+    if (keys.KeyD || keys.ArrowRight || keys.KeyE) turn -= 1;
+    turn = clamp(turn - TOUCH.s, -1, 1);
+    if (turn && stumbleT <= 0){
+      cam.ang += turn * (2.6 / (1 + skV / 3.5)) * dt;   // heavy at speed
+      skV *= 1 - 0.25 * Math.abs(turn) * dt;            // carving costs
+      skLean = turn;
+      carveT -= dt;
+      if (skV > 4 && carveT <= 0){
+        carveT = 0.3;
+        sfx('footstep', { rate: 1.8, vol: 0.12 + 0.13 * Math.abs(turn) });
+        skidBurst();
+      }
+    } else skLean *= Math.pow(0.01, dt);
+    if (skV < 0.15) skV = 0;
+  } else if (grind){
+    skV = Math.max(0, skV - skV * 0.15 * dt);
+    grindT -= dt;
+    if (grindT <= 0){
+      grindT = 0.12;
+      sfx('ui_move', { rate: 1.6 + skV * 0.12, vol: 0.3 });
+      skParts.push({ c: (R.cols >> 1) + ((Math.random() * 10) | 0) - 5,
+                     r: R.rows - 2, ch: '*', col: H_YEL, t: 0.25 });
+    }
+    styleAcc += dt;
+    if (styleAcc >= 1){ styleAcc -= 1; styleN += 5; }
+    let on = false;
+    for (const p of gridQuery(propGrid, cam.x, cam.y, 2, _q1))
+      if ((p.k === PK_RAIL || p.k === PK_BENCH) &&
+          Math.hypot(p.x - cam.x, p.y - cam.y) < 0.95){ on = true; break; }
+    if (!on || skV < 1) endGrind(false);
+  }
+  if (skV > 0){
+    const ca = Math.cos(cam.ang), sa = Math.sin(cam.ang);
+    const ox = cam.x, oy = cam.y;
+    moveCam(ca * skV * dt, sa * skV * dt);
+    const got = Math.hypot(cam.x - ox, cam.y - oy), want = skV * dt;
+    if (want > 0.03 && got < want * 0.25 && grounded){
+      if (skV > 5) skBail('the wall wins');
+      else if (skV > 1){ skV = 0; sfx('footstep', { rate: 0.45, vol: 0.7 }); }
+      else skV = 0;
+    }
+    seamAcc += got;                            // pavement joints clack by
+    if (seamAcc >= 1){ seamAcc -= 1; sfx('footstep', { rate: 1.35, vol: 0.18 }); }
+    if (skV > 4 && grounded){
+      nearT -= dt;
+      if (nearT <= 0)
+        for (const p2 of gridQuery(pedGrid, cam.x, cam.y, 2, _q2))
+          if (Math.hypot(p2.x - cam.x, p2.y - cam.y) < 0.9){
+            nearT = 1.4; styleN += 5;
+            toast('threading  (+5 style)');
+            sfx('hurt', { rate: 1.5, vol: 0.25 });
+            break;
+          }
+    }
+  }
+  // vertical: speed bob, kick dip, carve lean, crouch, air arc, land, stumble
+  let z = 1.62 + Math.sin(worldTime * (4 + skV * 1.3)) * (0.015 + 0.012 * skV / SK_MAX);
+  if (dipT > 0){ dipT -= dt; z -= 0.05 * (dipT / 0.15); }
+  z -= 0.06 * Math.abs(skLean);
+  if (crouchT > 0){
+    crouchT -= dt;
+    z -= 0.14 * Math.max(0, crouchT) / 0.12;
+    if (crouchT <= 0){                         // the pop
+      airDur = airT = 0.5;
+      arcH = 0.85 + 0.25 * skV / SK_MAX;
+      sfx('footstep', { rate: 1.9, vol: 0.9 });
+    }
+  }
+  if (airT > 0){
+    airT -= dt;
+    if (skTrick) skTrick.t += dt;
+    z = 1.62 + Math.sin(Math.min(1, 1 - Math.max(0, airT) / airDur) * Math.PI) * arcH;
+    if (airT <= 0) skateLand();
+  }
+  if (grind) z = 1.62 + (grind.k === PK_RAIL ? 0.45 : 0.35);
+  if (landT > 0){ landT -= dt; z -= 0.12 * (landT / 0.18); }
+  if (wobbleT > 0){ wobbleT -= dt; z += Math.sin(worldTime * 30) * 0.05; }
+  if (stumbleT > 0){ stumbleT -= dt; z = 1.22 + Math.random() * 0.05; skV = 0; }
+  cam.z = z;
+}
+function skidBurst(){
+  for (let i = 0; i < 3; i++)
+    skParts.push({ c: (R.cols >> 1) + ((Math.random() * 26) | 0) - 13,
+                   r: R.rows - 1 - ((Math.random() * 2) | 0),
+                   ch: ':·~'[(Math.random() * 3) | 0], col: H_GRY, t: 0.3 });
+}
+function skateLand(){
+  for (const p of gridQuery(propGrid, cam.x, cam.y, 2, _q1))
+    if ((p.k === PK_RAIL || p.k === PK_BENCH) && skV > 2 &&
+        Math.hypot(p.x - cam.x, p.y - cam.y) < 0.6){
+      grind = p; grindT = 0; styleAcc = 0;
+      resolveTrick(true);
+      toast(p.k === PK_RAIL ? 'rail grind' : 'bench grind');
+      sfx('ui_move', { rate: 2.2, vol: 0.45 });
+      return;
+    }
+  landT = 0.18;
+  sfx('footstep', { rate: 0.62, vol: 1.0 });
+  sfx('footstep', { rate: 0.9, vol: 0.4 });
+  resolveTrick(false);
+}
+function resolveTrick(intoGrind){
+  if (!skTrick) return;
+  const frac = Math.min(1, skTrick.t / skTrick.dur);
+  if (frac >= 1 || intoGrind){                 // caught it clean
+    skCombo = Math.min(9, skCombo + 1); comboT = 3;
+    const pts = skTrick.pts * skCombo;
+    styleN += pts;
+    skV = Math.min(SK_MAX, skV + 0.3);
+    toast(skTrick.name + '  +' + pts + (skCombo > 1 ? '  x' + skCombo : ''));
+  } else if (frac >= 0.5){                     // sketchy catch
+    styleN += skTrick.pts >> 1;
+    skV *= 0.7; wobbleT = 0.4;
+    sfx('ui_back', { rate: 0.4, vol: 0.5 });
+    toast('sketchy ' + skTrick.name);
+  } else skBail(skTrick.name);
+  skTrick = null;
+}
+function skBail(why){
+  skV = 0; stumbleT = 0.6; skCombo = 0; comboT = 0;
+  skTrick = null; grind = null;
+  styleN = Math.max(0, styleN - 10);
+  sfx('hit', { rate: 0.55, vol: 0.8 });
+  toast('bailed - ' + why);
+}
+function endGrind(clean){
+  grind = null;
+  if (clean){
+    skCombo = Math.min(9, skCombo + 1); comboT = 3;
+    styleN += 10 * skCombo;
+    toast('grind out  x' + skCombo);
+    airDur = airT = 0.35; arcH = 0.5;
+    sfx('footstep', { rate: 1.9, vol: 0.8 });
+  } else landT = 0.18;
 }
 
 /*========================== 13b. MODES + MENUS =============================
@@ -3108,6 +3412,9 @@ function makeListMenu(def){
           break;
         case 'Tab':
           if (def.onTab) def.onTab();
+          break;
+        case 'Digit1': case 'Digit2': case 'Digit3':
+          if (def.onDigit) def.onDigit(+code.slice(5) - 1, this);
           break;
         case 'Escape': case 'Backspace':
           // the ESC that releases pointer lock can leak through as a keydown
@@ -3487,7 +3794,7 @@ function audioFrame(dt){
   for (let i = 0; i < AMB_BY_DISTRICT.length; i++) loopVol(AMB_BY_DISTRICT[i], i === dn ? ambT : 0);
   for (let i = 0; i < MUSIC_BY_TIME.length; i++) loopVol(MUSIC_BY_TIME[i], i === CFG.timeMode ? 0.9 : 0);
   loopVol('rain_loop', (weather === 2 ? 0.85 : weather === 1 ? 0.45 : 0) * (inside ? 0.3 : 1));
-  loopVol('wind_loop', cam.riding ? 0.8 : 0);
+  loopVol('wind_loop', cam.riding ? 0.8 : skating ? clamp((skV - 4) / 6, 0, 0.5) : 0);
   const K = Math.min(1, dt * 1.3);
   for (const name in audio.loops){
     const L = audio.loops[name];
@@ -3588,10 +3895,10 @@ const ITEMS = {
              hint: 'LMB or CTRL fires; feeds on ammo' },
   ammo:    { name: 'AMMO', pcol: C.tlAmb, stack: 24, cat: 'weapon', price: 3,
              hint: 'rounds for the zip pistol' },
-  pipe:    { name: 'LEAD PIPE', pcol: C.rail, stack: 1, cat: 'weapon', price: 120,
-             hint: 'fast swings, honest dents - fires when out of ammo' },
+  pipe:    { name: 'LEAD PIPE', pcol: C.rail, stack: 1, cat: 'weapon', price: 70,
+             hint: 'fast swings, a shove, a stagger - and quiet' },
   bat:     { name: 'NAIL BAT', pcol: C.trunk, stack: 1, cat: 'weapon', price: 220,
-             hint: 'slow, heavy, unreasonable' },
+             hint: 'slow, heavy, unreasonable - two swings end most things' },
   // ---- drip: bodega to hype ----
   tee:     { name: 'BODEGA TEE', pcol: C.nWhite, stack: 2, cat: 'clothing', price: 8,
              hint: 'three for twenty, one for eight' },
@@ -3667,55 +3974,123 @@ function invTake(id, n){
    glitch, damage resistance, audio pitch - all read through drugFx()      */
 let drug = null;
 const DRUGFX = {
-  sake:      { dur: 25, speed: 0.95, wob: 0.35, aud: 0.95, sat: 1.1,
-               label: 'warm and loose' },
-  chill:     { dur: 60, speed: 0.92, aud: 0.9, sat: 1.45, wob: 0.15,
+  sake:      { dur: 25, onset: 2, fall: 8, speed: 0.95, wob: 0.5, aud: 0.95,
+               warm: 1, regen: 0.4, label: 'warm and loose' },
+  chill:     { dur: 60, onset: 5, fall: 10, speed: 0.94, aud: 0.9, sat: 1.5,
+               wob: 0.15, tScale: 0.85, hurtFast: 2.2,
                label: 'everything is fine, actually' },
-  rush:      { dur: 45, speed: 1.4, shake: 0.5, aud: 1.12, hpDrain: 0.12,
+  rush:      { dur: 45, onset: 2, fall: 8, speed: 1.4, shake: 0.5, aud: 1.12,
+               hpDrain: 0.12, atkSpd: 0.6, beat: 1,
                label: 'the city cannot keep up with you' },
-  haze:      { dur: 50, wob: 0.8, hue: 0.6, sat: 1.5, aud: 0.93,
+  haze:      { dur: 50, onset: 8, fall: 12, wob: 0.9, hue: 0.6, sat: 1.5, aud: 0.93,
                label: 'the neon starts breathing' },
-  numb:      { dur: 60, speed: 0.88, resist: 0.5, sat: 0.4, aud: 0.9,
-               label: 'the edges stop hurting' },
-  ghost:     { dur: 40, ghost: 1, sat: 0.6, aud: 0.8, speed: 0.96,
+  numb:      { dur: 60, onset: 3, fall: 6, speed: 0.88, resist: 0.5, sat: 0.25,
+               aud: 0.9, numb: 1, label: 'the edges stop hurting' },
+  ghost:     { dur: 40, onset: 2, fall: 4, ghost: 1, aud: 0.8, speed: 0.96,
                label: 'nobody sees you. maybe nobody ever did' },
-  overclock: { dur: 16, tScale: 0.45, aud: 0.72, shake: 0.15,
+  overclock: { dur: 16, onset: 0.6, fall: 3, tScale: 0.42, aud: 0.72, shake: 0.15,
                label: 'the world drops into slow motion' },
-  staticd:   { dur: 30, glitch: 0.8, audJit: 0.25,
+  staticd:   { dur: 30, onset: 1.5, fall: 4, glitch: 1, audJit: 0.25, machineBlind: 1,
                label: 'reality drops packets' },
-  mirror:    { dur: 35, hue: 1, sat: 1.2, seeAll: 1, wob: 0.3,
+  mirror:    { dur: 35, onset: 3, fall: 6, hueC: 0.45, sat: 1.2, seeAll: 1,
+               wob: 0.3, beat: 0.7,
                label: 'you can see every heartbeat in the district' }
 };
 function takeDrug(id){
   const d = DRUGFX[id];
   if (!d) return false;
-  drug = { id, t: 0, dur: d.dur, fx: d };
+  if (drug && drug.id === id){                  // re-dose extends, capped at 1.5x
+    drug.dur = Math.min(d.dur * 1.5, drug.dur - drug.t + d.dur);
+    drug.t = 0;
+  } else drug = { id, t: 0, dur: d.dur, fx: d, env: 0 };
   bakeKey = -1;
+  flash = Math.max(flash, 0.35);
+  sfx('ui_move', { rate: id === 'rush' ? 2.0 : 0.55, vol: 0.7 });
   toast(d.label);
   return true;
 }
 function drugFx(k, dflt){
-  return drug && drug.fx[k] !== undefined ? drug.fx[k] : dflt;
+  if (!drug || drug.fx[k] === undefined) return dflt;
+  const e = drug.env === undefined ? 1 : drug.env;   // ride the envelope
+  return dflt + (drug.fx[k] - dflt) * e;
+}
+/* what you wear is what your arms show, in every view art - and the ice
+   gilds the cuff seams and knuckles */
+const OUTFIT_COL = { tee: H_WHT, hoodie: H_PNT, tracksuit: H_BLU,
+                     workjacket: H_YEL, puffer: H_PUR, vest: H_GRN };
+function setOutfit(id){
+  player.outfit = id || null;
+  refreshWear();
+}
+function refreshWear(){
+  const id = player.outfit;
+  const col = (id && OUTFIT_COL[id] !== undefined) ? OUTFIT_COL[id] : H_JKT;
+  CM_ARM.j = CM_GUN.j = CM_MELEE.j = col;
+  for (const k in VANIM)
+    if (VANIM[k] && VANIM[k].cmap && VANIM[k].cmap.j !== undefined) VANIM[k].cmap.j = col;
+  const gold = player.bling === 'chain' || player.bling === 'watch';
+  CM_ARM['='] = CM_MELEE['='] = gold ? H_YEL : H_DRK;
+  CM_ARM['@'] = player.bling === 'ring' ? H_YEL : H_SKIN;
 }
 function drugTick(dt){
   if (!drug) return;
   drug.t += dt;
-  if (drug.fx.hpDrain) player.hp = Math.max(1, player.hp - drug.fx.hpDrain * dt);
+  const f = drug.fx;
+  const on = Math.min(1, drug.t / (f.onset || 0.5));
+  const off = Math.min(1, Math.max(0, (drug.dur - drug.t) / (f.fall || 2)));
+  drug.env = on * on * (3 - 2 * on) * off;      // smoothstep in, ease out
+  if (f.hpDrain){
+    const late = drug.t > drug.dur - 10 ? 3 : 1;    // the bill arrives at the end
+    player.hp = Math.max(1, player.hp - f.hpDrain * late * drug.env * dt);
+  }
+  if (f.regen && drug.env > 0.5)
+    player.hp = Math.min(player.maxHp, player.hp + f.regen * dt);
+  if (f.beat){                                  // a heartbeat under everything
+    drug.beatT = (drug.beatT || 0) - dt;
+    if (drug.beatT <= 0){
+      drug.beatT = 60 / (90 + 60 * drug.env * f.beat);
+      sfx('hit', { vol: 0.16 + 0.1 * drug.env, rate: 0.5 });
+      if (f.hpDrain) hurtT = Math.max(hurtT, 0.14 * drug.env);
+    }
+  }
+  if (f.machineBlind && drug.env > 0.4) jamT = Math.max(jamT, 0.6);
   if (drug.t >= drug.dur){
+    const wasGhost = f.ghost;
     drug = null; bakeKey = -1;
     toast('the ride wears off');
+    if (wasGhost)                               // the world notices you again
+      for (const a of actors)
+        if (a.brain === 'hostile' && Math.hypot(a.x - cam.x, a.y - cam.y) < 12)
+          a.aggro = 1;
   }
 }
 /* ---- pocket anarchy ---- */
+const PED_BANG_BARKS = ['gunshots!', 'not again', 'call the flock!', 'MOVE!'];
 function popFirecracker(){
   panicT = worldTime + 6; panicX = cam.x; panicY = cam.y;
   flash = Math.max(flash, 0.5);
   sfx('shot', { vol: 0.9, rate: 1.6 });
   sfx('shot', { vol: 0.7, rate: 1.9 });
-  toast('the corner clears out fast');
+  for (let i = 0; i < 6; i++)                   // confetti off the pavement
+    addFx(cam.x + Math.random() * 2 - 1, cam.y + Math.random() * 2 - 1,
+          0.3 + Math.random() * 1.2);
+  for (const a of actors)                       // the bang buys you a window
+    if (a.brain === 'hostile' && Math.hypot(a.x - cam.x, a.y - cam.y) < 12){
+      a.aggro = 0;
+      a.atkCool = Math.max(a.atkCool || 0, 2.5);
+      const l = Math.hypot(cam.x - a.x, cam.y - a.y) || 1;
+      a.dx = (cam.x - a.x) / l; a.dy = (cam.y - a.y) / l;   // they turn to look
+    }
+  if (Math.random() < 0.5){
+    const near2 = gridQuery(pedGrid, cam.x, cam.y, 6, _q2);
+    if (near2.length)
+      toast('a ped: "' + PED_BANG_BARKS[(Math.random() * PED_BANG_BARKS.length) | 0] + '"');
+    else toast('the corner clears out fast');
+  } else toast('the corner clears out fast');
   return true;
 }
 let jamT = 0, snifferT = 0;
+const snifSeen = new Set();
 /* ride the flock: hop your eyes into any camera in range */
 function openCamJack(){
   const cams = [];
@@ -3724,6 +4099,7 @@ function openCamJack(){
   if (!cams.length){ toast('no flock cams in range'); return false; }
   cams.sort((a, b) => Math.hypot(a.x - cam.x, a.y - cam.y) -
                       Math.hypot(b.x - cam.x, b.y - cam.y));
+  cams.length = Math.min(cams.length, 12);      // the twelve nearest eyes
   const save = { x: cam.x, y: cam.y, z: cam.z, ang: cam.ang, pitch: cam.pitch };
   const m = {
     name: 'camjack', pausesWorld: false, cams, i: 0,
@@ -3745,10 +4121,20 @@ function openCamJack(){
       }
     },
     draw(){
-      const s = ' FLOCK CAM ' + (this.i + 1) + '/' + this.cams.length +
-                '   [A/D] hop   [Q/E] pan   [ESC] unplug ';
+      const c = this.cams[this.i];
+      const dx = c.x - save.x, dy = c.y - save.y, dd = Math.hypot(dx, dy);
+      const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'S' : 'N') : '') +
+                  (Math.abs(dx) > Math.abs(dy) * 0.5 ? (dx > 0 ? 'E' : 'W') : '');
+      const s = ' FLOCK CAM ' + (this.i + 1) + '/' + this.cams.length + ' - ' +
+                regionName(c.x, c.y) + ', ' + dd.toFixed(0) + 'm ' + (dir || 'here') + ' ';
       hudPanel(Math.max(0, (R.cols - s.length) >> 1), 2, s.length, 1);
       hudStr(Math.max(0, (R.cols - s.length) >> 1), 2, s, H_RED);
+      const f = TOUCH.on ? ' tap: next cam   MENU: unplug '
+                         : ' [A/D] hop   [Q/E] pan   [ESC] unplug ';
+      hudPanel(Math.max(0, (R.cols - f.length) >> 1), R.rows - 2, f.length, 1);
+      hudStr(Math.max(0, (R.cols - f.length) >> 1), R.rows - 2, f, H_DIM);
+      const rec = ((worldTime * 1.5) | 0) & 1 ? 'REC *' : 'REC  ';
+      hudStr(R.cols - 8, 2, rec, H_RED);
     },
     tap(){ this.onKey('KeyD'); }
   };
@@ -3756,19 +4142,64 @@ function openCamJack(){
   m.jump();
   return true;
 }
-/* digital graffiti: burned onto the wall you face, gone in a few days */
+/* digital graffiti: two-tile stencil pieces burned onto walls, fading in days.
+   every piece is mirror-symmetric, so the view's E-W flip cannot break it */
 let tags = {};
-const TAG_SYMS = ['A', 'X', '!', '0', 'H'];    // chirality-proof glyphs
+const TAG_ART = {
+  skull: [
+    '..######..',
+    '.########.',
+    '##.####.##',
+    '##.####.##',
+    '.########.',
+    '..##..##..',
+    '.#.#..#.#.',
+    '..........'],
+  crown: [
+    '..........',
+    '#...##...#',
+    '##..##..##',
+    '#.######.#',
+    '##########',
+    '.########.',
+    '.#+#++#+#.',
+    '..........'],
+  ex: [
+    '##......##',
+    '.##....##.',
+    '..##..##..',
+    '...####...',
+    '...####...',
+    '..##..##..',
+    '.##....##.',
+    '##......##'],
+  halo: [
+    '..######..',
+    '.##....##.',
+    '##..++..##',
+    '##..++..##',
+    '.##....##.',
+    '..######..',
+    '....##....',
+    '....##....']
+};
 function burnTag(){
   const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
   for (let d = 0.6; d < 4.2; d += 0.25){
     const x = (cam.x + vx * d) | 0, y = (cam.y + vy * d) | 0;
     if (!inMap(x, y)) break;
     if (tH[y * MAP + x] > 1.6){
-      tags[y * MAP + x] = { sym: TAG_SYMS[(Math.random() * TAG_SYMS.length) | 0],
-                            day: dayCount };
-      toast('burned in - it will hold a few days');
+      const names = Object.keys(TAG_ART);
+      const art = names[(Math.random() * names.length) | 0];
+      const axX = Math.abs(vx) >= Math.abs(vy);     // the wall face runs across you
+      const x2 = axX ? x : x + 1, y2 = axX ? y + 1 : y;
+      const ok2 = inMap(x2, y2) && tH[y2 * MAP + x2] > 1.6;
+      const spanN = ok2 ? 2 : 1;
+      tags[y * MAP + x] = { art, day: dayCount, seg: 0, spanN };
+      if (ok2) tags[y2 * MAP + x2] = { art, day: dayCount, seg: 1, spanN };
+      toast('burned in - ' + art.toUpperCase() + ' holds for a few days');
       sfx('ui_select', { rate: 0.6, vol: 0.7 });
+      sfx('ui_move', { rate: 0.4, vol: 0.4 });
       player.qvar.vandal = (player.qvar.vandal || 0) + 1;
       if (player.qvar.vandal % 3 === 0) crimeEvent(1, 'vandalism');
       return true;
@@ -3789,8 +4220,16 @@ function useItem(id){
   const st = player.inv.find(s => s.id === id);
   if (!st) return;
   const def = ITEMS[id];
-  if (def.cat === 'clothing' || def.cat === 'accessory'){
-    player.outfit = id;                       // drip is its own reward
+  if (def.cat === 'clothing'){
+    setOutfit(id);                            // your own arms wear it
+    toast('wearing ' + def.name.toLowerCase() +
+          (def.price >= 200 ? ' - the street notices' : ''));
+    sfx('ui_select', { vol: 0.5 });
+    return;
+  }
+  if (def.cat === 'accessory'){
+    player.bling = id;
+    refreshWear();
     toast('wearing ' + def.name.toLowerCase() +
           (def.price >= 200 ? ' - the street notices' : ''));
     sfx('ui_select', { vol: 0.5 });
@@ -3813,8 +4252,9 @@ function resetPlayer(){
   player.inv = [];
   player.quests = {}; player.qvar = {}; player.track = null;
   player.corruption = 0;
-  player.outfit = null;
-  drug = null; jamT = 0; snifferT = 0; tags = {};
+  setOutfit(null); player.bling = null;
+  player.hotbar = [null, null, null];
+  drug = null; jamT = 0; snifferT = 0; tags = {}; bakeKey = -1;
 }
 // what a thing costs YOU: the flagged pay corpo prices
 function priceOf(id){
@@ -3835,6 +4275,8 @@ function openInventory(){
   const items = [
     { info: 'HP ' + player.hp + '/' + player.maxHp + '    CREDITS ' + player.credits +
             '    VIT ' + player.stats.VIT + '  AGI ' + player.stats.AGI + '  TECH ' + player.stats.TECH },
+    { info: 'WEARING ' + (player.outfit ? ITEMS[player.outfit].name : 'NOTHING') +
+            (player.bling ? '  +  ' + ITEMS[player.bling].name : '') },
     { sep: true },
     { info: tabLine },
     { sep: true }
@@ -3843,8 +4285,20 @@ function openInventory(){
   if (!shown.length) items.push({ info: 'nothing in this tab' });
   for (const st of shown){
     const def = ITEMS[st.id];
-    items.push({ label: def.name, value: () => 'x' + st.qty, hint: def.hint,
-                 act(){ useItem(st.id); refreshInventory(); } });
+    const worn = () => st.id === player.outfit || st.id === player.bling;
+    items.push({ label: def.name, id: st.id,
+                 value: () => (worn() ? 'WORN  ' : '') + 'x' + st.qty +
+                              (player.hotbar && player.hotbar.indexOf(st.id) >= 0
+                                ? '  [' + (player.hotbar.indexOf(st.id) + 1) + ']' : ''),
+                 hint: def.cat === 'consumable' ? def.hint + '   (1-3 pins to hotbar)' : def.hint,
+                 act(){
+                   if (worn()){                 // selecting the worn piece removes it
+                     if (st.id === player.outfit) setOutfit(null);
+                     else player.bling = null;
+                     toast('taken off');
+                   } else useItem(st.id);
+                   refreshInventory();
+                 } });
   }
   const qids = Object.keys(player.quests || {}).filter(id => QUESTS[id]);
   if (qids.length){
@@ -3861,6 +4315,13 @@ function openInventory(){
   pushMode(makeListMenu({ name: 'inventory', title: 'INVENTORY', items,
                           onLR(d){ invTab = (invTab + d + INV_TABS.length) % INV_TABS.length;
                                    popMode(); openInventory(); },
+                          onDigit(i, m){
+                            const it = m.items[m.cursor];
+                            if (!it || !it.id || ITEMS[it.id].cat !== 'consumable') return;
+                            if (!player.hotbar) player.hotbar = [null, null, null];
+                            player.hotbar[i] = player.hotbar[i] === it.id ? null : it.id;
+                            sfx('ui_select', { vol: 0.5, rate: 1.3 });
+                          },
                           onTab(){ popMode(); sfx('ui_back', { vol: 0.4 }); } }));
 }
 function refreshInventory(){
@@ -3948,7 +4409,7 @@ function saveGame(n){
     : { x: cam.x, y: cam.y, ang: cam.ang, pitch: cam.pitch };
   const s = { v: 1, at: Date.now(), seed: worldSeed, timeMode: CFG.timeMode, weather,
               clock, dayCount, fogLevel,
-              cam: pos, player, delta: worldDelta };
+              cam: pos, player, delta: worldDelta, tags };
   try {
     localStorage.setItem(saveKey(n), JSON.stringify(s));
     sfx('ui_select', { vol: 0.5 });
@@ -3967,6 +4428,15 @@ function loadGame(n){
   newWorld(s.seed);                          // deterministic rebuild, fresh delta
   worldDelta = s.delta || { taken: {} };
   applyDeltaToProps();
+  tags = s.tags || {};                          // your marks outlive the rewind
+  if (worldDelta.cut){                          // and the cut poles stay down
+    for (let i = props.length - 1; i >= 0; i--){
+      const p = props[i];
+      if ((p.k === PK_CAM || p.k === PK_LAMP) &&
+          worldDelta.cut[(p.y | 0) * MAP + (p.x | 0)]) props.splice(i, 1);
+    }
+    indexProps(); indexSpriteProps();
+  }
   Object.assign(player, s.player);
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
@@ -3976,6 +4446,9 @@ function loadGame(n){
     const sp = freeSpotNear(cam.x, cam.y);
     cam.x = sp[0]; cam.y = sp[1]; faceClear();
   }
+  setOutfit(player.outfit);                   // the arms wear what was saved
+  if (!player.hotbar) player.hotbar = [null, null, null];
+  drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // no ride survives a rewind
   if (GL) glBuildPalette(); else buildAtlases();
   bgGrad = null; buildBackground();
   fade = 1;
@@ -3997,6 +4470,30 @@ const QUESTS = {
         target(){ if (invCount('noodles') === 0) return null;
                   const a = actors.find(x => x.name === 'DRIFTER');
                   return a && { x: a.x, y: a.y, name: 'THE DRIFTER' }; } }
+    ]
+  },
+  quiet: {
+    name: 'QUIET STREETS',
+    stages: [
+      { log: 'buy a HACKSAW - find a counter signed TOOLS',
+        target(){
+          let best = null, bd = 1e9;
+          for (const d of doors){
+            const B = buildings[d.b];
+            if (!B || INTERIOR_KIND[B.dist] !== 'shop' || shopTypeFor(B) !== 'tools') continue;
+            const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
+            if (dd < bd){ bd = dd; best = d; }
+          }
+          return best && { x: best.x, y: best.y, name: 'TOOLS & TRINKETS' };
+        },
+        auto(){ return invCount('saw') > 0; } },
+      { log: 'cut 3 flock cams (face one and press SPACE)',
+        auto(){ return (player.qvar.vandal || 0) - (player.qvar.quietBase || 0) >= 3; } },
+      { log: 'collect from the fixer',
+        target(){
+          const a = actors.find(x => x.name === 'THE FIXER');
+          return a && { x: a.x, y: a.y, name: 'THE FIXER' };
+        } }
     ]
   },
   scrap: {
@@ -4063,9 +4560,29 @@ function questTarget(){
   const t = st.target();
   return t ? { x: t.x, y: t.y, name: t.name, q: QUESTS[id].name } : null;
 }
-let qAcc = 0;
+let qAcc = 0, quipT = 30;
+function quipTick(){                            // the street has opinions
+  quipT -= 0.5;
+  if (quipT > 0 || inside || topMode()) return;
+  if (!gridQuery(pedGrid, cam.x, cam.y, 5, _q2).length) return;
+  let line = null;
+  if (drug && (drug.fx.wob || drug.fx.hue || drug.fx.glitch))
+    line = '"look at this one - orbiting"';
+  else if (skating && skV > 4) line = '"wheels on the walkway - typical"';
+  else if (meleeStats().id !== 'fist') line = '"keep that thing down, friend"';
+  else if (dripScore() >= 200)
+    line = ['"that ice real? bad block for it"',
+            '"nice piece. borrowed, or brave?"',
+            '"a kid points: fake. his friend: real fake."'][(Math.random() * 3) | 0];
+  else if ((player.qvar.vandal || 0) >= 10)
+    line = '"seen your work. the whole block has."';
+  if (!line) return;
+  quipT = 25 + Math.random() * 20;
+  toast('a passerby: ' + line);
+}
 function checkQuests(){
   corruptionTick();
+  quipTick();
   for (const id in player.quests){
     const s = player.quests[id];
     if (typeof s !== 'number') continue;
@@ -4115,7 +4632,89 @@ function shopStock(){
   const t = SHOP_TYPES[(inside && inside.shop) || 'general'];
   return { name: t.name, stock: t.stock.filter(id => ITEMS[id]) };
 }
-function sellPrice(id){ return Math.max(1, Math.floor((ITEMS[id].price || 0) * 0.4)); }
+/* every trade keeps its own person behind the counter */
+const SHOP_SIGN = { tools: 'TOOLS', armory: 'ARMS', dispensary: 'DISPENSARY',
+                    jeweler: 'GOLD', clothier: 'THREADS', grocery: 'MARKET',
+                    bodega: 'BODEGA', general: 'GOODS' };
+const SHOP_FLAVOR = {
+  grocery: { keeper: 'GROCER', floorA: C.walk, floorB: C.deckOld,
+    greet: 'The apples are synthetic. The prices are real.',
+    dripGreet: 'Produce for the well-dressed. Same shelf, better bag.',
+    lines: ['Everything is fresh off the metro. That is a schedule, not a promise.',
+            'Shelf life is a negotiation. I always win.',
+            'The fields grow it, the belt wraps it, I apologize for it.',
+            'No refunds on produce. Time only runs the one way.'] },
+  bodega: { keeper: 'COUNTERMAN', floorA: C.walk, floorB: C.deckOld,
+    greet: 'Open all night. The night has never once paid its tab.',
+    dripGreet: 'Nice coat for a bodega. The coffee is still just coffee.',
+    lines: ['The coffee is hot. That is the entire pitch.',
+            'Cameras watch the shelf. I watch the cameras. Nobody watches me.',
+            'Break it and the ledger remembers you.',
+            'Everything under this roof costs less than the roof.'] },
+  general: { keeper: 'SHOPKEEP', floorA: C.walk, floorB: C.deckOld,
+    greet: 'Browse all you like. The cameras browse you back.',
+    dripGreet: 'That kind of money usually shops uptown. Browse anyway.',
+    lines: ['General means whatever fell off the metro this week.',
+            'If we do not have it, you did not need it.'] },
+  clothier: { keeper: 'TAILOR', floorA: C.deck, floorB: C.deckOld,
+    greet: 'It fits. Everything fits once you stop asking questions.',
+    dripGreet: 'That piece walks in before you do. Suddenly everything is negotiable.',
+    lines: ['The brand is real somewhere. Just not in here.',
+            'Wear it out the door and the street does my advertising.',
+            'The fourth stripe is confidence. It costs extra.',
+            'Mirrors do not lie. That is why I only keep the one.'] },
+  jeweler: { keeper: 'APPRAISER', floorA: C.dataDk, floorB: C.deck,
+    greet: 'Everything in the case has a history. Buying erases it.',
+    dripGreet: 'Ah - a collector. The good case is the one you are leaning on.',
+    lines: ['Gold holds value. Glass holds light. Guess which I stock.',
+            'The watch is waterproof. The warranty is not.',
+            'Do not tap the glass. The glass reports it.',
+            'Bring me metal with a past. I sell it a future.'] },
+  armory: { keeper: 'GUNSMITH', floorA: C.tire, floorB: C.dataDk,
+    greet: 'Rounds are three credits. Where they end up is your ledger.',
+    dripGreet: 'Drip does not stop rounds. Rounds are still three credits.',
+    lines: ['The pipe never jams. Laugh at it after.',
+            'I sell deterrence. Results are aftermarket.',
+            'Everything here is legal until the moment it works.',
+            'The bat comes with the nails. Removing them costs the same.'] },
+  tools: { keeper: 'MACHINIST', floorA: C.dataDk, floorB: C.tire,
+    greet: 'Every tool on this wall voids a warranty somewhere.',
+    dripGreet: 'Careful with the grease, that jacket outprices my shelf.',
+    lines: ['The saw is for poles. Officially.',
+            'Batteries are by the counter. Everything dies mid-job.',
+            'A jammer buys you sixty seconds. Decide what they are worth first.',
+            'If it sparks, unplug it. If it keeps sparking, that is a feature now.'] },
+  dispensary: { keeper: 'CHEMIST', floorA: C.deckOld, floorB: C.trunk,
+    greet: 'Doses are on the label. The label is an optimist.',
+    dripGreet: 'Designer coat, designer chemistry. You have a type.',
+    lines: ['The gummies are legal. The dust is legal-adjacent.',
+            'Do not mix the green ones with the pink ones. Or do. Report back.',
+            'Everything in here wears off. That is the business model.',
+            'The first one calms you down. The rest are curiosity.'] }
+};
+function dripScore(){
+  return (player.outfit && ITEMS[player.outfit] ? ITEMS[player.outfit].price : 0) +
+         (player.bling && ITEMS[player.bling] ? ITEMS[player.bling].price : 0);
+}
+function makeShopTree(trade){
+  const TF = SHOP_FLAVOR[trade] || SHOP_FLAVOR.general;
+  return {
+    start: { text: () => (dripScore() >= 200 && TF.dripGreet ? TF.dripGreet : TF.greet),
+      opts: [{ t: 'Let me see the stock', do(){ openShopMenu(); }, next: 'start' },
+             { t: 'Anything worth knowing?', next: 'talk' },
+             { t: 'Leave' }] },
+    talk: { text: () => TF.lines[(Math.random() * TF.lines.length) | 0],
+      opts: [{ t: 'The stock, then', do(){ openShopMenu(); }, next: 'start' },
+             { t: 'Leave' }] }
+  };
+}
+function sellPrice(id){
+  let k = 0.4;
+  if (inside && inside.shop === 'jeweler' &&
+      (ITEMS[id].cat === 'accessory' || id === 'scrap')) k = 0.6;   // GOLD pays for metal
+  if (dripScore() >= 200) k += 0.04;            // they take you seriously
+  return Math.max(1, Math.floor((ITEMS[id].price || 0) * k));
+}
 function openShopMenu(){
   const SS = shopStock();
   const items = [{ info: 'CREDITS ' + player.credits }, { sep: true }, { info: 'BUY' }];
@@ -4140,7 +4739,12 @@ function openShopMenu(){
       value: () => 'x' + st.qty + '   +' + sellPrice(st.id) + ' cr',
       hint: 'sells one',
       act(){
-        invTake(st.id, 1); player.credits += sellPrice(st.id);
+        player.credits += sellPrice(st.id);     // price locked before the take
+        invTake(st.id, 1);
+        if (!invCount(st.id)){                  // sold the one you were wearing
+          if (player.outfit === st.id) setOutfit(null);
+          if (player.bling === st.id){ player.bling = null; refreshWear(); }
+        }
         sfx('ui_select', { vol: 0.5, rate: 1.2 }); refreshShop();
       } });
   }
@@ -4211,7 +4815,18 @@ let fxs = [];                                 // short-lived impact sparks
    1-2: the cameras notice you. 3-5: prices up a quarter, a third of doors
    refuse you. 6+: enforcers come looking. Ped-sourced corruption caps at 2
    (assault three different people = +1; killing = +1 each, into the cap). */
+function flockSees(){
+  // the ledger needs a witness: a live flock cam in range, and no jam
+  if (jamT > 0) return false;
+  for (const p of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
+    if (p.k === PK_CAM) return true;
+  return false;
+}
 function crimeEvent(n, why){
+  if (!flockSees()){                            // no witness, no record
+    toast('no cameras saw that');
+    return;
+  }
   if (n <= 0) return;
   player.corruption = Math.min(10, player.corruption + n);
   player.qvar.lastCrimeDay = dayCount;
@@ -4354,46 +4969,80 @@ function characterInSights(maxD, halfW){
 // bare knuckles: half a pistol round, arm's reach, a forgiving swing arc
 let punchT = 0;
 function meleeStats(){                        // the best bludgeon you carry
-  if (invCount('bat')) return { d: 14, r: 6, reach: 2.2, cool: 0.8, id: 'bat' };
-  if (invCount('pipe')) return { d: 9, r: 4, reach: 2.0, cool: 0.55, id: 'pipe' };
-  return { d: 5, r: 3, reach: 1.7, cool: 0.45, id: 'fist' };
+  if (invCount('bat'))                        // slow, heavy, unreasonable
+    return { d: 21, r: 7, reach: 2.2, cool: 0.85, kb: 0.9, stun: 0.4,
+             beats: [0.20, 0.27, 0.55], id: 'bat' };
+  if (invCount('pipe'))                       // fast swings, honest dents
+    return { d: 9, r: 4, reach: 2.0, cool: 0.50, kb: 0.45, stun: 0.25,
+             beats: [0.10, 0.16, 0.34], id: 'pipe' };
+  return { d: 5, r: 3, reach: 1.7, cool: 0.40, kb: 0.25, stun: 0,
+           beats: [0.08, 0.13, 0.30], id: 'fist' };
 }
-let punchDur = 0.45;
+let punchDur = 0.45, strikeAt = 0, strikeArmed = false, hitStopT = 0;
 function punch(){
   if (punchT > 0) return;                     // still mid-swing
   const m = meleeStats();
-  punchT = punchDur = m.cool;
+  punchT = punchDur = m.cool * drugFx('atkSpd', 1);   // rush swings faster
+  strikeAt = m.beats[1] * (punchDur / m.cool);        // contact lands mid-swing
+  strikeArmed = true;
   if (m.id === 'fist') punchLeft = !punchLeft;   // fists alternate; a weapon
   else punchLeft = false;                        // stays in the right hand
-  const hit = characterInSights(m.reach, 0.7);
-  const dmg = m.d + ((Math.random() * m.r) | 0);
-  if (hit && hit.ped){
-    damagePed(hit.a, dmg);
-  } else if (hit){
-    const a = hit.a;
-    a.hp -= dmg;
-    a.aggro = 1; a.hitT = 0.15;
-    addFx(a.x, a.y, 1.25);
-    sfx('hit', { vol: 0.6, rate: m.id === 'fist' ? 1.2 : 0.85 });
-    if (a.hp <= 0) killActor(a);
-  } else sfx('ui_move', { vol: 0.25, rate: m.id === 'fist' ? 0.5 : 0.4 });
+  // the whoosh: whiff sound plays up front, the crunch waits for contact
+  if (m.id === 'fist') sfx('ui_move', { vol: 0.25, rate: 0.5 });
+  else sfx('ui_back', { vol: m.id === 'bat' ? 0.4 : 0.3,
+                        rate: m.id === 'bat' ? 0.22 : 0.32 });
 }
-let unarmedT = 0;
+function strikeLand(){
+  const m = meleeStats();
+  const hit = characterInSights(m.reach, 0.7);
+  if (!hit) return;
+  const a = hit.a;
+  const dmg = m.d + ((Math.random() * m.r) | 0);
+  const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+  const nx = a.x + vx * m.kb, ny = a.y + vy * m.kb;   // the shove
+  if (inMap(nx | 0, ny | 0) && walkG[(ny | 0) * MAP + (nx | 0)]){ a.x = nx; a.y = ny; }
+  hitStopT = m.id === 'bat' ? 0.11 : m.id === 'pipe' ? 0.07 : 0.04;
+  cam.pitch -= m.id === 'bat' ? 0.6 : m.id === 'pipe' ? 0.4 : 0.3;
+  if (m.id !== 'fist') cam.ang -= 0.015;
+  const jit = () => 1 + (Math.random() * 0.16 - 0.08);
+  if (m.id === 'bat'){
+    sfx('hit', { rate: 0.6 * jit(), vol: 0.85 });
+    sfx('door', { rate: 2.0 * jit(), vol: 0.3 });     // the wood knock
+  } else if (m.id === 'pipe'){
+    sfx('hit', { rate: 0.95 * jit(), vol: 0.6 });
+    sfx('hit', { rate: 1.9 * jit(), vol: 0.25 });     // the ring overtone
+  } else sfx('hit', { rate: 1.2 * jit(), vol: 0.6 });
+  addFx(a.x, a.y, 1.25);
+  if (hit.ped){ damagePed(a, dmg); return; }
+  a.stunT = Math.max(a.stunT || 0, m.stun);
+  a.hp -= dmg;
+  a.aggro = 1; a.hitT = 0.15;
+  if (a.hp <= 0){
+    hitStopT += 0.05;                          // the kill beat holds a moment
+    cam.pitch -= 0.4;
+    addFx(a.x, a.y, 0.8); addFx(a.x, a.y, 0.4);
+    sfx('hurt', { rate: 0.5, vol: 0.45 });
+    killActor(a);
+  }
+}
+let unarmedT = 0, shotCool = 0;
 function fireWeapon(){
   if (topMode() || worldFrozen()) return;
   if (cam.riding){ toast('not from up here'); return; }
   if (sitting){ toast('not from the bench'); return; }
+  if (shotCool > 0) return;                   // the zip pistol is not a minigun
   const armed = invCount('pistol') > 0;
   if (!armed || invCount('ammo') === 0){
     if (!armed && worldTime > unarmedT && meleeStats().id === 'fist'){
       unarmedT = worldTime + 12;
-      toast('bare knuckles - the watcher sells something better');
+      toast('bare knuckles - counters signed ARMS sell heavier');
     }
     if (armed) sfx('ui_back', { vol: 0.5, rate: 0.55 });   // dry click, then swing
     punch();
     return;
   }
   invTake('ammo', 1);
+  shotCool = 0.35;
   muzzleT = 0.09;
   cam.pitch = clamp(cam.pitch + 1.3, -R.rows * 0.62, R.rows * 0.62);
   sfx('shot', { vol: 0.8, rate: 0.95 + Math.random() * 0.1 });
@@ -4429,7 +5078,7 @@ function damagePlayer(d){
   if (player.hp <= 0 || godMode) return;
   d *= drugFx('resist', 1);
   player.hp = Math.max(0, player.hp - d);
-  hurtT = 1;
+  if (!(drug && drug.fx.numb)) hurtT = 1;       // numb: the pain never arrives
   sfx('hurt', { vol: 0.8, rate: 0.9 + Math.random() * 0.2 });
   if (player.hp <= 0) playerDown();
 }
@@ -4466,6 +5115,7 @@ function respawn(){
   toast('you wake on the platform, lighter');
 }
 function hostileBrain(a, dt){
+  if (a.stunT > 0){ a.stunT -= dt; return; }   // rattled by the last hit
   a.atkCool = (a.atkCool || 0) - dt;
   const tm0 = topMode();
   if ((drug && drug.fx.ghost) || jamT > 0 ||
@@ -4532,8 +5182,8 @@ function updateClock(dt){
       b.litP = clamp(curTime().lit * (0.45 + hash3(b.id, 3, 9)), 0.05, 0.95);
   }
   const key = t.a * 1000 + t.b * 100 + ((t.u * 24) | 0)
-            + (drug && (drug.fx.hue || drug.fx.sat)
-                 ? 100000 + (drug.fx.hue ? ((worldTime * 2) | 0) % 89 : 1) * 101 : 0);
+            + (drug && (drug.fx.hue || drug.fx.hueC || drug.fx.sat || drug.fx.warm)
+                 ? 100000 + (((worldTime * 20) | 0) % 997) * 101 : 0);
   if (key !== bakeKey){                     // the palette chases the blend
     bakeKey = key;
     bgGrad = null;
@@ -4758,87 +5408,195 @@ const VM_PUNCH_HIT_L = mirrorView(VM_PUNCH_HIT);
 const VM_PUNCH_REC_L = mirrorView(VM_PUNCH_REC);
 /* bludgeons ride in the right hand: a rest pose and a full swing each */
 const CM_MELEE = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT,
-                   '%': H_GRY, '#': H_DRK, w: H_YEL };
-/* the kickdeck, seen past your feet */
-const CM_DECK = { '=': H_DRK, '%': H_PUR, o: H_GRY };
-const VM_DECK = [
-  '      ________________      ',
-  '    _(================)_    ',
-  '   (=%=%=          =%=%=)   ',
+                   '%': H_GRY, '#': H_DRK, w: H_YEL, '-': H_GRY, '*': H_YEL };
+/* the kickdeck, seen past your feet - one frame per thing your body does */
+const CM_DECK = { '=': H_DRK, '%': H_PUR, o: H_GRY, x: H_JKT, '<': H_GRY,
+                  '>': H_GRY, "'": H_GRY, '`': H_GRY, '*': H_YEL,
+                  '\\': H_GRY, '/': H_GRY, '-': H_GRY };
+const VM_DECK_FLAT = [
+  '      xxx          xxx      ',
+  '    _(%%%)========(%%%)_    ',
+  '   (====================)   ',
   '    [o]              [o]    '
 ];
+const VM_DECK_PUSH = [
+  '      xxx                   ',
+  '    _(%%%)========(%%%)_    ',
+  '   (====================)   ',
+  '    [o]              [o]  x '
+];
+const VM_DECK_CROUCH = [
+  '     xxxx          xxxx     ',
+  '   _(%%%%)========(%%%%)_   ',
+  '  (=====================\\  ',
+  '    [o]              [o]>   '
+];
+const VM_DECK_AIR = [
+  '       xxx        xxx       ',
+  '     _(%%%)======(%%%)_     ',
+  '    (==================)    ',
+  '     <o>============<o>     '
+];
+const VM_DECK_FLIP_A = [
+  '       xxx        xxx       ',
+  '      \\  \\        /  /    ',
+  '   -==================-     ',
+  '      /  /        \\  \\    '
+];
+const VM_DECK_FLIP_B = [
+  '       xxx        xxx       ',
+  '     _(====)====(====)_     ',
+  '    (o================o)    ',
+  '                            '
+];
+const VM_DECK_LAND = [
+  '      xxx          xxx      ',
+  '    _(%%%)========(%%%)_    ',
+  '   (====================)   ',
+  "   `[o]'            `[o]'   "
+];
 const VM_PIPE_HOLD = [
-  '        |%%|        ',
-  '        |%%|        ',
-  '        |%%|        ',
-  '        |%%|        ',
-  '       _|%%|__      ',
-  '    __(nn%%nnn)_    ',
-  '   (n@n@%%@n@n@n)   ',
-  '  (s)ss)%%)ss)ss)   ',
-  '  |s)ss)%%)ss)ss|   ',
-  '  (sssss%%ssss~)    ',
-  '   (sss~%%ssss~s)   ',
-  '  (:ssss##ssss:s)   ',
-  '  (jj=jjjjjj=jjj)   ',
-  '  |jj/jjj~jjj\\jj|  ',
-  '  |jjjjj/jjjjjjj|   ',
-  '  |jjjjjjjjjjjjj|   '
+  '                 _%%_   ',
+  '                (%%#)   ',
+  '               (%%/     ',
+  '              (%%/      ',
+  '             (%%/       ',
+  '           _(%%/_       ',
+  '        __(n%%nnn)_     ',
+  '       (n@n@##@n@n@n)   ',
+  '       (s)ss)ss)ss)s)   ',
+  '       |s)ss)ss)ss)s|   ',
+  '       (ssss#ssssss~)   ',
+  '       (:ssssssssss:)   ',
+  '       (jj.jjjjjj.jjj)  ',
+  '       |jj/jjj,jjj\jj| ',
+  '       |jjjjj/jjjjjjj|  ',
+  '       |jjjjjjjjjjjjj|  '
+];
+const VM_PIPE_WIND = [
+  '              ___%%%%%%_ ',
+  '          __(n(##%%%%#/  ',
+  '         (n@n@n)ss)      ',
+  '         (s)ss)ss)s)     ',
+  '         |s)ss)ss)s|     ',
+  '          (sssssss~s)    ',
+  '          (:ssssss:ss)   ',
+  '          (j.jjjjjj.jj)  ',
+  '          |j/jjj,jj\jj| ',
+  '          (jjjj/jjjjjj)  ',
+  '          |jjjjjjjjjjj|  '
+];
+const VM_PIPE_SMEAR = [
+  '     ---- ---           ',
+  '   ---- ----  __        ',
+  '  --- ---- _(%%_        ',
+  '   ---- _(%%%#/  --     ',
+  '    -- (n@%%/n)  ---    ',
+  '       (s)##)s)   --    ',
+  '       (ssssss~)        ',
+  '        (jjjjjj)_       ',
+  '         (jj,jjjjj)_    ',
+  '          (jjjj/jjjj)_  ',
+  '           (jjjjjjjjjj) ',
+  '           |jjjjjjjjjj| '
 ];
 const VM_PIPE_HIT = [
-  ' \\  *  /               ',
-  '  *__ *                 ',
-  '  |%%|_                 ',
-  '   |%%|_                ',
-  '    |%%|_               ',
-  '     |%%|_              ',
-  '      (n@n@)_           ',
-  '      (ssssss)          ',
-  '      (jjjj)_           ',
-  '       (j~jjjj)_        ',
-  '        (jjjjjjj)_      ',
-  '         (jjjj/jjj)_    ',
-  '          (jjjjjjjjj)_  ',
-  '           (jjjj~jjjjj) ',
-  '           |jjjj/jjjjj| ',
-  '           |jjjjjjjjjj| '
+  '   \   *   /              ',
+  '  * _______________       ',
+  ' =*(#%%%%%%%%%%%%%)----   ',
+  '   * \ *   (n@n@)_       ',
+  '    *      (ssssss)       ',
+  '           (jjjj)_        ',
+  '            (j,jjjj)_     ',
+  '             (jjjjjjj)_   ',
+  '              (jjjjjjjjj)_',
+  '               (jjjj,jjjj)',
+  '               |jjjj/jjjj|',
+  '               |jjjjjjjjj|'
+];
+const VM_PIPE_REC = [
+  '          ____          ',
+  '       __(nnnn)__       ',
+  '      (n@n@n@n@nn)      ',
+  '      (s)ss)ss)ss)      ',
+  '     _(ssssssss~s)      ',
+  '   _(%%ssssssss:s)      ',
+  '  (%%/j.jjjjjj.jj)      ',
+  ' (%%/ |jj,jjjj\jj|     ',
+  ' (#/  (jjjj/jjjjj)      ',
+  '      |jjjjjjjjjj|      '
 ];
 const VM_BAT_HOLD = [
-  '       _____        ',
-  '      (wwwww)       ',
-  '      |ww#ww|       ',
-  '      |wwwww|       ',
-  '      |ww#ww|       ',
-  '      (wwww)        ',
-  '       |www|        ',
-  '       _|ww|__      ',
-  '    __(nnwwnnn)_    ',
-  '   (n@n@ww@n@n@n)   ',
-  '  (s)ss)ww)ss)ss)   ',
-  '  (sssssswwsss~)    ',
-  '   (sss~wwssss~s)   ',
-  '  (:ssssswwsss:s)   ',
-  '  (jj=jjjjjj=jjj)   ',
-  '  |jj/jjj~jjj\\jj|  ',
-  '  |jjjjjjjjjjjjj|   '
+  '                __ww__  ',
+  '               (ww##w)  ',
+  '              (wwww/    ',
+  '             (ww#w/     ',
+  '            (wwww/      ',
+  '           (ww#w/       ',
+  '          (wwww/        ',
+  '        _(ww#/_         ',
+  '     __(n##nnn)__       ',
+  '    (n@n@##@n@n@n)      ',
+  '    (s)ss)ss)ss)s)      ',
+  '    (s(s)##(ss)~s)      ',
+  '    (:ssss##ssss:)      ',
+  '    (jj.jjjjjj.jj)      ',
+  '    |jj/jjj,jjj\j|     ',
+  '    |jjjjj/jjjjjj|      '
+];
+const VM_BAT_WIND = [
+  '            ____wwwwww__ ',
+  '        ___(##wwww##ww#) ',
+  '     __(n(n##)_www/      ',
+  '    (n@n@n)ss)           ',
+  '    (s)ss)ss)s)          ',
+  '    (s(s(ss~ss)          ',
+  '    (:sssssss:s)         ',
+  '    (j.jjjjjjj.jj)       ',
+  '    |jj/jjj,jj\jj|      ',
+  '    (jjjjj/jjjjjj)       ',
+  '    |jjjjjjjjjjjj|       '
+];
+const VM_BAT_SMEAR = [
+  '   ----- ------         ',
+  '  ------- -------       ',
+  ' ---- __www__ -----     ',
+  '  -- _(ww#ww/  ----     ',
+  '    (n(www/s)   ---     ',
+  '    (s)##)ss)    --     ',
+  '    (sssssss~)          ',
+  '     (jjjjjjj)_         ',
+  '      (jj,jjjjj)_       ',
+  '       (jjjj/jjjj)_     ',
+  '        (jjjjjjjjjj)    ',
+  '        |jjjjjjjjjj|    '
 ];
 const VM_BAT_HIT = [
-  ' \\   *   /             ',
-  '  _____ *               ',
-  ' (wwwww)_               ',
-  '  (ww#www)_             ',
-  '   (wwwww#w)_           ',
-  '     (wwwwww)_          ',
-  '      (www)             ',
-  '      (n@n@)_           ',
-  '      (ssssss)          ',
-  '      (jjjj)_           ',
-  '       (j~jjjj)_        ',
-  '        (jjjjjjj)_      ',
-  '         (jjjj/jjj)_    ',
-  '          (jjjjjjjjj)_  ',
-  '           (jjjj~jjjjj) ',
-  '           |jjjjjjjjjj| '
+  ' \\  *  //               ',
+  ' * ___________________    ',
+  '=*(w##wwwwwwww#www#ww)----',
+  ' * \ * /   (n@n@)_       ',
+  '   *       (s)ss)s)       ',
+  '           (ssssss)       ',
+  '           (jjjj)_        ',
+  '            (j,jjjj)_     ',
+  '             (jjjjjjj)_   ',
+  '              (jjjjjjjjj)_',
+  '               (jjjj,jjjj)',
+  '               |jjjj/jjjj|',
+  '               |jjjjjjjjj|'
+];
+const VM_BAT_REC = [
+  '         ____           ',
+  '      __(nnnn)__        ',
+  '     (n@n@n@n@nn)       ',
+  '     (s)ss)ss)ss)       ',
+  '    _(ssssssss~s)       ',
+  '  _(ww#sssssss:s)       ',
+  ' (www/j.jjjjjj.j)       ',
+  '(ww#/ |jj,jjj\jj|      ',
+  '(w#/  (jjj/jjjjj)       ',
+  '      |jjjjjjjjj|       '
 ];
 /* consuming, at full body scale - each item its own silhouette and grip:
    squat corrugated cup / slim tilted can / flat latched case */
@@ -4944,32 +5702,43 @@ const VANIM = {
       '  |jj/j|          |j=jj|     ',
       '  (jjjj)          (jjjj)     ' ] ] }
 };
-/* ---- the new rituals: shared grips, per-item tops and palettes ---------- */
+/* ---- the new rituals: shared grips, per-item tops and palettes.
+   grip folds use , and . (glyphs no item cmap touches), so the same coat
+   renders the same under every ritual ------------------------------------- */
 const VG_CUP = [                              // both palms under, arms merging
   '   ___(______________)___   ',
   '  (sss(              )sss)  ',
   ' (ssssssssssssssssssssssss) ',
   ' |jjssssssssssssssssssssjj| ',
-  ' |jjjj=jjjjj~jjjjjj=jjjjjj| ',
-  ' (jjjjjj/jjjjjjjj\\jjjjjjj) ' ];
+  ' |jjjj.jjjjj,jjjjjj.jjjjjj| ',
+  ' (jjjjjj,jjjjjjjj,jjjjjjj)  ' ];
 const VG_ONE = [                              // one hand, forearm off right
   '        _(sss(sss)_         ',
   '       (sssssssssss)        ',
-  '        (sss~ssssss)_       ',
-  '        |jj=jjjjjjjjj)_     ',
-  '         (jjjj/jjjjjjjj)_   ',
-  '          (jjjjjjj~jjjjjj)  ',
+  '        (sss,ssssss)_       ',
+  '        |jj.jjjjjjjjj)_     ',
+  '         (jjjj,jjjjjjjj)_   ',
+  '          (jjjjjjj,jjjjjj)  ',
   '           (jjjjjjjjjjjjj)  ' ];
 const VG_ARM = [                              // the left forearm, presented
   '  ______________________    ',
   ' (ssssssssssssssssssssss)__ ',
-  ' (jj=jjjjjjjjj~jjjjjjjjjjjj)',
-  ' (jjjjjjjj/jjjjjjjjj=jjjjjj)' ];
-const va = (dur, cmap, t1, t2, grip) =>
-  ({ dur, cmap, frames: [t1.concat(grip), t2.concat(grip)] });
-// a real bowl of ramen: chopsticks, patterned band, a proper slurp
+  ' (jj.jjjjjjjjj,jjjjjjjjjjjj)',
+  ' (jjjjjjjj,jjjjjjjjj.jjjjjj)' ];
+const VG_PALM = [                             // an open hand, fingers apart
+  '     _(ssss(s(s(ss)_        ',
+  '    (sss,sssssssssss)       ',
+  '     (sss,sssssssss)        ',
+  '     |jj.jjjjjjj.jj|        ',
+  '      (jjjj,jjjjjj)         ',
+  '      |jjjjjjjjjjj|         ' ];
+const va = (dur, cmap, grip, ...tops) =>
+  ({ dur, cmap, frames: tops.map(t => t.concat(grip)) });
+// a real bowl of ramen: wood chopsticks, patterned band, slurp, put-down
 VANIM.ramen = va(1.7,
-  { n: H_YEL, '~': H_WHT, W: H_WHT, r: H_RED, '=': H_WHT, s: H_SKIN, j: H_JKT },
+  { n: H_YEL, '~': H_WHT, W: H_WHT, r: H_RED, '=': H_WHT, '\\': H_YEL,
+    s: H_SKIN, j: H_JKT },
+  VG_CUP,
   [ '      ~     ~     ~         ',
     '   ~     ~     ~            ',
     '              \\ \\         ',
@@ -4989,67 +5758,137 @@ VANIM.ramen = va(1.7,
     '  |rWrWrWrWrWrWrWrWrWrWr|   ',
     '   (WWWWWWWWWWWWWWWWWWW)    ',
     '     (=)=)=)=)=)=)=)=/      ',
-    '      (_____________)       ' ], VG_CUP);
-// handheld snacks: same bite, four palettes
-const T_SNACK1 = [
-  '                            ',
-  '                            ',
-  '          ________          ',
-  '        _(BBBBBBBB)_        ',
-  '       (BBBB@@BBBBBB)       ',
-  '       (BB@BBBB@BBBB)       ',
-  '        (BBBBBBBBBB)        ',
-  '         (________)         ' ];
-const T_SNACK2 = [
-  "            '   '           ",
-  "          '   '             ",
-  '          ______            ',
-  '        _(BBBBB(__          ',
-  '       (BBBB@@B(  )         ',
-  '       (BB@BBBB(_)          ',
-  '        (BBBBBBBBB)         ',
-  '         (________)         ' ];
-const SNACK = (bcol, acol) => va(1.1,
-  { B: bcol, '@': acol, "'": H_WHT, s: H_SKIN, j: H_JKT }, T_SNACK1, T_SNACK2, VG_ONE);
-VANIM.bao     = SNACK(H_WHT, H_RED);
-VANIM.onigiri = SNACK(H_WHT, H_DRK);
-VANIM.taiyaki = SNACK(H_YEL, H_RED);
-VANIM.apple   = SNACK(H_GRN, H_WHT);
-VANIM.gyoza = va(1.3,                          // six on a tray, one at a time
-  { G: H_WHT, '=': H_GRY, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  [ '                            ',
+    '      (_____________)       ' ],
+  [ '            ~               ',
+    '        ~       ~           ',
     '                            ',
-    '    __  __  __  __  __      ',
-    '   (GG)(GG)(GG)(GG)(GG)     ',
-    '  [====================]    ',
-    '  (____________________)    ' ],
+    '                            ',
+    '   _____--------________    ',
+    '  (nn~nnnnnnnnnnnnn~nnn)    ',
+    '  |rWrWrWrWrWrWrWrWrWrW|    ',
+    '   (WWWWWWWWWWWWWWWWWW)     ',
+    '     (=)=)=)=)=)=)=)/       ',
+    '      (____________)        ' ]);
+// handheld snacks: four real silhouettes, bites that fall down
+VANIM.bao = va(1.1,
+  { B: H_WHT, '@': H_RED, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '                            ',
+    '           __/|\\__         ',
+    '         _(BB\\|/BB)_       ',
+    '        (BBBBBBBBBBBB)      ',
+    '        (BB@@BBBB@@BB)      ',
+    '         (BBBBBBBBBB)       ',
+    '          (________)        ' ],
+  [ '          __/|\\__          ',
+    '        _(BB\\|/B(__        ',
+    '        (BBBBBBB(@@)        ',
+    '        (BB@@BBB(_/         ',
+    '         (BBBBBBBB)         ',
+    "               '  '         ",
+    '          (________)        ' ]);
+VANIM.onigiri = va(1.1,
+  { B: H_WHT, '@': H_DRK, '<': H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '             __             ',
+    '           _(BB)_           ',
+    '          (BBBBBB)          ',
+    '         (BBBBBBBB)         ',
+    '        (BB@@@@@@BB)        ',
+    '         (__@@@@__)         ',
+    '                            ' ],
+  [ '             __             ',
+    '           _(BB<            ',
+    '          (BBBB<            ',
+    '         (BBBBBB<           ',
+    '        (BB@@@@@BB)         ',
+    "         (__@@@@__)  '      ",
+    "                  ' '       " ]);
+VANIM.taiyaki = va(1.1,
+  { B: H_YEL, '@': H_RED, o: H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '        ________   _        ',
+    '      _(BoBBBBBB)_/ /       ',
+    '     (BBB@B@B@BBBB\\ \\_    ',
+    '      (BBBBBBBBBB)\\_/      ',
+    '       (________)           ',
+    '                            ',
+    '                            ' ],
+  [ '        ______              ',
+    '      _(BoBBBB(@@           ',
+    '     (BBB@B@BB(@@           ',
+    '      (BBBBBBB(_/           ',
+    "       (______)  '          ",
+    "               ' '          ",
+    '                            ' ]);
+VANIM.apple = va(1.1,
+  { B: H_GRN, '@': H_WHT, '.': H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '            _(B)            ',
+    '           |/               ',
+    '        _(B@@BBBB)_         ',
+    '       (BBBBBBBBBBB)        ',
+    '       (BBBBBBBBBBB)        ',
+    '        (BBBBBBBBB)         ',
+    '         (_______)          ' ],
+  [ '            _(B)            ',
+    '           |/               ',
+    '        _(B@@BB(__          ',
+    '       (BBBBBBB( B)         ',
+    '       (BBBBBBB(_/          ',
+    '        (BBBBBBBB)  .       ',
+    '         (_______)          ' ]);
+VANIM.gyoza = va(1.3,                          // six on the tray, honestly
+  { G: H_WHT, '.': H_DRK, '=': H_GRY, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  VG_CUP,
+  [ '                            ',
+    '    __  __  __  __  __  __  ',
+    '   (G.)(G.)(G.)(G.)(G.)(G.)',
+    '  [======================]  ',
+    '  (______________________)  ' ],
   [ "        '    '              ",
-    "     '     '                ",
-    '    __  __      __          ',
-    '   (GG)(GG)     (GG)        ',
-    '  [====================]    ',
-    '  (____________________)    ' ], VG_CUP);
-VANIM.skewer = va(1.2,                         // cubes on a stick, eaten down
-  { K: H_GRN, '*': H_WHT, s: H_SKIN, j: H_JKT },
-  [ '                 __         ',
-    '                (KK)_       ',
-    '               (KKK)/       ',
-    '              _(KK)/        ',
-    '             (KKK)/         ',
-    '              (K)/          ',
-    '              /             ' ],
-  [ '           *   *            ',
-    '            *               ',
-    '               __/          ',
-    '             _(KK)_         ',
-    '            (KKKK)/         ',
-    '             (KK)/          ',
-    '              /             ' ], VG_ONE);
-VANIM.kebab = va(1.2,
-  { K: H_RED, '*': H_YEL, s: H_SKIN, j: H_JKT },
-  VANIM.skewer.frames[0].slice(0, 7), VANIM.skewer.frames[1].slice(0, 7), VG_ONE);
-VANIM.sake = va(1.3,                           // ceramic flask, tipped back
-  { W: H_WHT, r: H_RED, '~': H_WHT, s: H_SKIN, j: H_JKT },
+    '    __  __      __  __      ',
+    '   (G.)(G.)    (G.)(G.)     ',
+    '  [======================]  ',
+    '  (______________________)  ' ],
+  [ "       '   '    '           ",
+    '                __          ',
+    '               (G.)         ',
+    '  [======================]  ',
+    '  (______________________)  ' ]);
+VANIM.skewer = va(1.2,                         // one stick, eaten down it
+  { K: H_GRN, '#': H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '              __/           ',
+    '            _(K#)           ',
+    '           (KK#)/           ',
+    '           _(#K)/           ',
+    '          (K#K)/            ',
+    '           (K)/             ',
+    '            /               ',
+    '           /                ' ],
+  [ "        '    '              ",
+    '              __/           ',
+    '            _(K#)           ',
+    '           (KK#)/           ',
+    '             /              ',
+    '            /               ',
+    '           /                ',
+    '          /                 ' ],
+  [ "       '   '                ",
+    '              /             ',
+    '             /              ',
+    '            /               ',
+    '           /                ',
+    '          /                 ',
+    '         /                  ',
+    '        /                   ' ]);
+VANIM.kebab = { dur: 1.2,                      // same stick, vat-meat palette
+  cmap: { K: H_RED, '#': H_YEL, "'": H_YEL, s: H_SKIN, j: H_JKT },
+  frames: VANIM.skewer.frames };
+VANIM.sake = va(1.3,                           // tokkuri: lift, tip, drain
+  { W: H_WHT, r: H_RED, '~': H_WHT, '.': H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
   [ '                            ',
     '           __               ',
     '          (WW)              ',
@@ -5058,92 +5897,140 @@ VANIM.sake = va(1.3,                           // ceramic flask, tipped back
     '        (WWrrWW)            ',
     '        (WWWWWW)            ',
     '         (____)             ' ],
-  [ '        ~  ~                ',
-    '        ___                 ',
-    '       /WW/                 ',
-    '      /WW/                  ',
-    '     (WWWW)                 ',
-    '     (WWrrW)                ',
-    '     (WWWWW)                ',
-    '      (____)                ' ], VG_ONE);
-VANIM.boba = va(1.4,                           // dome lid, straw, pearls
-  { P: H_PUR, o: H_DRK, '|': H_GRY, W: H_WHT, s: H_SKIN, j: H_JKT },
-  [ '              |             ',
-    '              |             ',
-    '          ____|___          ',
-    '        _(WWWW|WWW)_        ',
-    '       |PPPPPP|PPPPP|       ',
-    '       |PPPPPP|PPPPP|       ',
-    '       |PoPoPo|oPoPo|       ',
+  [ '          ~  ~              ',
+    '            ___             ',
+    '            \\WW\\          ',
+    '             \\WW\\         ',
+    '            (WWWW)          ',
+    '            (WrrW)          ',
+    '             (___)          ',
+    '                            ' ],
+  [ '          (__)              ',
+    '          /WW/              ',
+    '         /WWrr/             ',
+    '         /WWWW/             ',
+    '          (__)              ',
+    '            .               ',
+    '                            ',
+    '                            ' ]);
+VANIM.boba = va(1.4,                           // the pearls actually travel
+  { '!': H_GRY, P: H_PUR, o: H_DRK, W: H_WHT, s: H_SKIN, j: H_JKT },
+  VG_CUP,
+  [ '              !             ',
+    '              !             ',
+    '          ____!___          ',
+    '        _(WWWW!WWW)_        ',
+    '       |PPPPPP!PPPPP|       ',
+    '       |PPPPPP!PPPPP|       ',
+    '       |PoPoPo!oPoPo|       ',
     '        (oooooooooo)        ',
     '         (________)         ' ],
-  [ '              |             ',
-    '           ___|____         ',
-    '        _(WWWW|WWW)_        ',
-    '       |PPPPPP|PPPPP|       ',
-    '       |PPPPPP|PPPPP|       ',
-    '       |PPPPPP|PPPPP|       ',
-    '       |Po_oPo|oP_oo|       ',
-    '        (o_______o)         ',
-    '         (________)         ' ], VG_CUP);
-VANIM.chill = VANIM.haze = VANIM.staticd = null;   // set just below with palettes
-{
-  const T_PILL1 = [
+  [ '              !             ',
+    '              o             ',
+    '          ____!___          ',
+    '        _(WWWW!WWW)_        ',
+    '       |PPPPPP!PPPPP|       ',
+    '       |PPPPPP!PPPPP|       ',
+    '       |Po oPo!oP oo|       ',
+    '        (o       o)         ',
+    '         (________)         ' ],
+  [ '              !             ',
+    '              !             ',
+    '          ____!___          ',
+    '        _(WWWW!WWW)_        ',
+    '       |PPPPPP!PPPPP|       ',
+    '       |P     !    P|       ',
+    '       |  o   !   o |       ',
+    '        (          )        ',
+    '         (________)         ' ]);
+// the shelf: each substance is its own object on the same open palm
+VANIM.chill = va(1.1,
+  { G: H_GRN, o: H_GRN, '*': H_GRN, "'": H_WHT, s: H_SKIN, j: H_JKT },
+  VG_PALM,
+  [ '                            ',
+    '          _     _           ',
+    '         (o)   (o)          ',
+    '         (GGGGGGG)          ',
+    '          (GG GG)           ' ],
+  [ '           *                ',
+    '          (G)               ',
+    "         '   '              ",
+    '                            ',
+    '                            ' ],
+  [ '       *   *    *           ',
+    '     *    *   *             ',
     '                            ',
     '                            ',
-    '        __      __          ',
-    '     __(PP)____(PP)__       ',
-    '    (sss(PP)ss(PP)sss)      ',
-    '   (sssssssssssssssss)      ',
-    '    (sss~sssssss~sss)       ',
-    '     |jj=jjjjjjj=jj|        ',
-    '      (jjjj/jjjjjj)         ',
-    '      |jjjjjjjjjjj|         ' ];
-  const T_PILL2 = [
-    '          *    *            ',
-    '       *          *         ',
-    '        ____________        ',
-    '     __(ssssssssssss)_      ',
-    '    (ssssssssssssssss)      ',
-    '   (ssss~sssssss~ssss)      ',
-    '    (sssssssssssssss)       ',
-    '     |jj=jjjjjjj=jj|        ',
-    '      (jjjj/jjjjjj)         ',
-    '      |jjjjjjjjjjj|         ' ];
-  const PILL = (pcol, scol) => ({ dur: 1.1,
-    cmap: { P: pcol, '*': scol, s: H_SKIN, j: H_JKT },
-    frames: [T_PILL1, T_PILL2] });
-  VANIM.chill  = PILL(H_GRN, H_GRN);
-  VANIM.haze   = PILL(H_PUR, H_PUR);
-  VANIM.staticd = PILL(H_WHT, H_PUR);
-}
-VANIM.rush = VANIM.ghost = null;
-{
-  const T_INH1 = [
+    '                            ' ]);
+VANIM.haze = va(1.1,
+  { H: H_PUR, '*': H_PUR, '[': H_DRK, ']': H_DRK, s: H_SKIN, j: H_JKT },
+  VG_PALM,
+  [ '                            ',
     '                            ',
+    '          ______            ',
+    '         [HHHHHH]           ',
+    '         [HHHHHH]           ' ],
+  [ '            *               ',
+    '          [HH]              ',
+    '         *    *             ',
+    '                            ',
+    '                            ' ],
+  [ '       *   *    *           ',
+    '     *    *   *             ',
+    '                            ',
+    '                            ',
+    '                            ' ]);
+VANIM.staticd = va(1.1,
+  { H: H_WHT, '#': H_PUR, '*': H_PUR, '[': H_DRK, ']': H_DRK,
+    s: H_SKIN, j: H_JKT },
+  VG_PALM,
+  [ '                            ',
+    '                            ',
+    '          ______            ',
+    '         [HH#HHH]           ',
+    '         [HHHH#H]           ' ],
+  [ '            #               ',
+    '          [H#]              ',
+    '         *    #             ',
+    '                            ',
+    '                            ' ],
+  [ '       #   *    #           ',
+    '     *    #   *             ',
+    '                            ',
+    '                            ',
+    '                            ' ]);
+VANIM.ghost = va(1.0,                          // a mound of dust, blown
+  { '*': H_WHT, '.': H_WHT, '~': H_WHT, s: H_SKIN, j: H_JKT },
+  VG_PALM,
+  [ '                            ',
+    '                            ',
+    '           .....            ',
+    '         _(*****)_          ',
+    '          (*****)           ' ],
+  [ '        . ~ * . ~  *        ',
+    '      ~ * . ~ * .   ~       ',
+    '         . ~ .              ',
+    '                            ',
+    '                            ' ]);
+VANIM.rush = va(1.0,                           // the inhaler, puff at the nozzle
+  { I: H_RED, '=': H_GRY, D: H_GRY, '~': H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '                            ',
     '                            ',
     '           ____             ',
     '          |IIII|            ',
     '          |IIII|            ',
     '         _|IIII|_           ',
     '        (I======I)          ',
-    '         (______)==D        ' ];
-  const T_INH2 = [
-    '       ~  ~~  ~   ~         ',
-    '     ~   ~~~~   ~           ',
+    '         (______)==D        ' ],
+  [ '                    ~ ~     ',
+    '                  ~ ~~ ~    ',
     '           ____             ',
     '          |IIII|            ',
     '         _|IIII|_           ',
     '        (I======I)          ',
     '         (______)==D        ',
-    '                            ' ];
-  const INH = (icol) => va(1.0,
-    { I: icol, '=': H_GRY, D: H_GRY, '~': H_WHT, s: H_SKIN, j: H_JKT },
-    T_INH1, T_INH2, VG_ONE);
-  VANIM.rush  = INH(H_RED);
-  VANIM.ghost = INH(H_WHT);
-}
-VANIM.overclock = VANIM.mirror = null;
+    '                            ' ]);
 {
   const T_INJ1 = [
     '            __              ',
@@ -5161,32 +6048,61 @@ VANIM.overclock = VANIM.mirror = null;
     '           |##|             ',
     '           \\##/            ',
     '            \\/             ' ];
+  const T_INJ3 = [
+    '            __              ',
+    '           |  |             ',
+    '           |  |             ',
+    '          [====]            ',
+    '           |  |             ',
+    '           \\ /             ',
+    '            \\/             ' ];
   const INJ = (icol) => va(1.2,
     { I: icol, '*': icol, '|': icol, '=': H_GRY, '#': H_DRK,
-      s: H_SKIN, j: H_JKT }, T_INJ1, T_INJ2, VG_ARM);
+      s: H_SKIN, j: H_JKT }, VG_ARM, T_INJ1, T_INJ2, T_INJ3);
   VANIM.overclock = INJ(H_BLU);
   VANIM.mirror    = INJ(H_PUR);
 }
-VANIM.numb = va(1.4,                            // a patch pressed onto the arm
+VANIM.numb = va(1.4,                            // carry, press, adhered
   { N: H_BLU, '+': H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ARM,
   [ '                            ',
     '         ________           ',
-    '        |NNNNNNNN|          ',
-    '        |NN+NN+NN|          ',
-    '        |NNNNNNNN|          ',
-    '         (ssssss)           ',
-    '        (ssssssss)          ' ],
+    '      __|NNNNNNNN|__        ',
+    '     (ss|NN+NN+NN|ss)       ',
+    '      (s|NNNNNNNN|s)        ',
+    '       (ssssssssss)         ' ],
+  [ '                            ',
+    '                            ',
+    '        __________          ',
+    '      _(ssssssssss)_        ',
+    '     (ssssssssssssss)       ',
+    '     |NN(ssssssss)NN|       ' ],
   [ '       +    +    +          ',
-    '         ________           ',
+    '     +   ________   +       ',
     '        |NNNNNNNN|          ',
     '        |NN+NN+NN|          ',
     '        |NNNNNNNN|          ',
-    '            +    +          ',
-    '                            ' ], VG_ARM);
-VANIM.coffee = { dur: 1.0, frames: null,        // the soda ritual, re-poured
-  cmap: { '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT, C: H_YEL,
-          '!': H_WHT, "'": H_WHT, '*': H_WHT, s: H_SKIN, j: H_JKT } };
-VANIM.coffee.frames = VANIM.soda.frames;
+    '                            ' ]);
+VANIM.coffee = va(1.0,                          // squat can, steam not fizz
+  { C: H_YEL, '#': H_DRK, '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT,
+    '~': H_WHT, s: H_SKIN, j: H_JKT },
+  VG_ONE,
+  [ '        ~   ~               ',
+    '      ~   ~                 ',
+    '       ______               ',
+    '      (=[o]==)              ',
+    '      |CCCCCC|              ',
+    '      |C####C|              ',
+    '      |CCCCCC|              ',
+    '      (______)              ' ],
+  [ '          ~  ~              ',
+    '        ~                   ',
+    '         ____               ',
+    '       _(=[o]=)             ',
+    '       /CCCCC/              ',
+    '      /C####/               ',
+    '      /CCCC/                ',
+    '      (____)                ' ]);
 
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
@@ -5486,7 +6402,13 @@ function buildTouchUI(){
                      () => { if (!topMode()) fireWeapon(); }, true, true);
   const act = mkBtn('ACT', 'right:104px;bottom:calc(40px + env(safe-area-inset-bottom));' +
                     'width:62px;height:62px;',
-                    () => { if (topMode()) return; if (sitting) standUp(); else tryInteract(); },
+                    () => { if (topMode()) return;
+                            if (sitting) standUp();
+                            else if (skating && airT > 0){        // mid-air tap = trick
+                              onPress(['KeyQ', 'KeyE', 'KeyS'][(Math.random() * 3) | 0]);
+                            }
+                            else if (skating && (skV > 1 || grind || !lookTarget)) ollie();
+                            else tryInteract(); },
                     false, true);
   const wait = mkBtn('WAIT', 'right:30px;bottom:calc(104px + env(safe-area-inset-bottom));' +
                      'width:56px;height:56px;',
@@ -5501,7 +6423,7 @@ function buildTouchUI(){
     if (m && m.name === 'map') m.onKey('Escape');
     else if (!m) openMap();
   });
-  util('FLY', 55, () => { if (topMode()) return; if (inside){ toast('the sky is outside'); return; } toggleRide(); });
+  util('DECK', 55, () => { if (topMode()) return; if (inside){ toast('no room to ride in here'); return; } toggleRide(); });
   document.body.appendChild(root);
   touchUI = root;
   // context: ACT glows when something answers the probe; WAIT only when seated
@@ -5511,7 +6433,7 @@ function buildTouchUI(){
     if (menuUp && stickId !== null) stickReset();   // no walking under a card
     fire.style.opacity = act.style.opacity = menuUp ? 0.25 : 1;
     act.style.borderColor = (!menuUp && (lookTarget || sitting)) ? '#ffd166' : 'rgba(143,240,192,.5)';
-    act.textContent = sitting ? 'STAND' : 'ACT';
+    act.textContent = sitting ? 'STAND' : skating ? 'OLLIE' : 'ACT';
     wait.style.display = (!menuUp && sitting) ? 'flex' : 'none';
   }, 150);
 }
@@ -5807,7 +6729,10 @@ function ceilingPass(){
       const ix = wx | 0, iy = wy | 0;
       if (wx < 0 || wy < 0 || ix >= MAP || iy >= MAP) continue;
       let dd, bb;
-      if (ix % 3 === 1 && iy % 3 === 1){ dd = 0.92; bb = C.nWhite; }
+      if (ix % 3 === 1 && iy % 3 === 1){
+        dd = 0.92;
+        bb = inside && inside.shop === 'dispensary' ? C.nGreen : C.nWhite;
+      }
       else {
         dd = 0.22 + hash3(ix, iy, 51) * 0.08; bb = C.screen;
         if (wx - ix < 0.06 || wy - iy < 0.06) dd = 0.32;   // panel joints
@@ -5830,6 +6755,10 @@ function interiorWall(b, gu, z, side, hitX, hitY){
     _wb = b.col;
     _wd = z > 1.0 ? 0.85 : 0.60 + hash3((gu * 3) | 0, 3, b.seed) * 0.1;
     if (z > 1.0) _wb = C.worktop;                     // just the rounded lip
+    return;
+  }
+  if (inside && inside.shop === 'dispensary' && z > 1.2 && z < 1.7){
+    _wb = C.nGreen; _wd = 0.8;                        // the shelf band glows
     return;
   }
   // the way out, clamped to exactly the door tile's inner face
@@ -5864,15 +6793,21 @@ function facade(b, gu, z, side, hh, hitX, hitY){
   _wg = -1;
   if (b.dome){ domeSurface(b, z, hitX, hitY); return; }
   if (b.interior){ interiorWall(b, gu, z, side, hitX, hitY); return; }
-  // burned graffiti: a bright stencil holding on the wall for a few days
+  // burned graffiti: a bright stencil piece holding on the wall for a few days
   const tg = tags[(hitY | 0) * MAP + (hitX | 0)];
-  if (tg && z > 0.9 && z < 2.5){
-    const fu = (side === 0 ? hitY : hitX) % 1;
-    const gc = ((fu - 0.2) * 5) | 0, gr = ((2.5 - z) / 1.6 * 5) | 0;
-    const gl = MINIFONT[tg.sym];
-    if (gc >= 0 && gc < 3 && gr >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
-      _wb = C.nMag; _wd = 1;
-      return;
+  if (tg && z > 0.8 && z < 2.4){
+    const art = TAG_ART[tg.art];
+    if (art){
+      const fu = (side === 0 ? hitY : hitX) % 1;
+      const gc = Math.min(9, (((tg.seg + fu) / tg.spanN) * 10) | 0);
+      const gr = Math.min(7, ((2.4 - z) / 1.6 * 8) | 0);
+      const chq = art[gr][gc];
+      if (chq !== '.'){
+        const age = dayCount - tg.day;
+        _wb = chq === '+' ? C.nCyan : C.nMag;
+        _wd = age >= 2 ? 0.55 : 1;              // old pieces fade before they go
+        return;
+      }
     }
   }
   // the entrance, drawn where the interact point is - clamped to exactly the
@@ -6236,7 +7171,7 @@ function spritePass(){
       } else if (o.k === PK_STALL){
         // flavour by district: the strip leans ramen, homes lean produce,
         // downtown and the belt lean tech
-        const dn2 = districtAt(o.x | 0, o.y | 0);
+        const dn2 = o.dist !== undefined ? o.dist : districtAt(o.x | 0, o.y | 0);
         const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0 : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
         def = STALL_VARIANTS[(((o.s * 5) | 0) + bias) % 3];
         dyn = NEONC[(o.s * NEONC.length) | 0];
@@ -6245,7 +7180,9 @@ function spritePass(){
       } else if (o.k === PK_TURBINE){
         dyn = ((worldTime * 0.9 + o.s * 6) % 1) < 0.5 ? C.nWhite : C.rail;
       } else if (o.k === PK_CAM){
-        dyn = ((worldTime * 1.3 + o.s * 7) % 1) < 0.5 ? C.camRed : C.dataDk;
+        dyn = jamT > 0                          // jammed cams stutter in a panic
+          ? (((worldTime * 7 + o.s * 3) % 1) < 0.3 ? C.nWhite : C.dataDk)
+          : ((worldTime * 1.3 + o.s * 7) % 1) < 0.5 ? C.camRed : C.dataDk;
       } else if (o.k === PK_ITEM){
         dyn = ITEMS[o.item].pcol;
       }
@@ -6609,12 +7546,15 @@ function glBuildPalette(){
       const dim = 1 - 0.22 * f;
       const sat = (CFG.timeMode === 2 ? 1.5 : 1) * drugFx('sat', 1);
       const hueK = drugFx('hue', 0);
-      const hueM = hueK ? hueK * (0.5 + 0.5 * Math.sin(worldTime * 0.6)) : 0;
+      const hueM = (hueK ? hueK * (0.25 + 0.75 * (0.5 + 0.5 * Math.sin(worldTime * 0.35))) : 0)
+                 + drugFx('hueC', 0);
+      const warm = drugFx('warm', 0);
       let r0 = c[0] * dim * T.amb, g0 = c[1] * dim * T.amb, b0 = c[2] * dim * T.amb;
       if (sat !== 1){
         const lum = r0 * 0.3 + g0 * 0.59 + b0 * 0.11;
         r0 = lum + (r0 - lum) * sat; g0 = lum + (g0 - lum) * sat; b0 = lum + (b0 - lum) * sat;
       }
+      if (warm){ r0 *= 1 + 0.15 * warm; b0 *= 1 - 0.12 * warm; }
       if (hueM){
         const r1 = r0 + (g0 - r0) * hueM, g1 = g0 + (b0 - g0) * hueM, b1 = b0 + (r0 - b0) * hueM;
         r0 = r1; g0 = g1; b0 = b1;
@@ -6862,6 +7802,14 @@ function hudStr(col, row, s, ci){
 const hudRects = [];
 function hudPanel(x, y, w, h){
   hudRects.push(R.ox + x * R.cellW, R.oy + y * R.cellH, w * R.cellW, h * R.cellH);
+  // a panel owns its cells: clear whatever the HUD drew under it
+  const x1 = Math.min(R.cols, x + w), y1 = Math.min(R.rows, y + h);
+  for (let r = Math.max(0, y); r < y1; r++){
+    const off = r * R.cols;
+    for (let c = Math.max(0, x); c < x1; c++){ hGlyph[off + c] = 0; }
+  }
+  if (y < hudR0) hudR0 = Math.max(0, y);
+  if (y1 - 1 > hudR1) hudR1 = y1 - 1;
 }
 function hudBox(x, y, w, h, title){
   hudStr(x, y, '+' + '-'.repeat(Math.max(0, w - 2)) + '+', H_DIM);
@@ -6994,13 +7942,28 @@ function drawMinimap(x0, y0){
   for (const a of actors)
     if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
       plot(a.x, a.y, a.brain === 'hostile' ? 'x' : '@', a.brain === 'hostile' ? H_RED : H_PUR);
-  if (snifferT > 0)                             // the chip pings loose loot
+  if (snifferT > 0){                            // the chip pings loose loot
     for (const p of gridQuery(propGrid, cam.x, cam.y, hw, _q2))
-      if (p.k === PK_ITEM) plot(p.x, p.y, '$', H_YEL);
+      if (p.k === PK_ITEM){
+        plot(p.x, p.y, '$', H_YEL);
+        if (!snifSeen.has(p)){ snifSeen.add(p); sfx('ui_move', { rate: 2.2, vol: 0.3 }); }
+      }
+  }
+  if (drug && drug.fx.seeAll){                  // mirrorshade: every heartbeat
+    const pulse = ((worldTime * 2.2) | 0) & 1;
+    for (const p of peds)
+      if (Math.abs(p.x - cam.x) < hw && Math.abs(p.y - cam.y) < hh * 2)
+        plot(p.x, p.y, pulse ? 'o' : '@', H_RED);
+    for (const a of actors)
+      if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
+        plot(a.x, a.y, pulse ? '@' : 'o', H_RED);
+  }
   const qm = questTarget();
   if (qm) plot(qm.x, qm.y, '!', H_YEL);
-  const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
-  plot(cam.x, cam.y, dirCh, H_BLU);
+  if (!(drug && drug.fx.ghost)){                // a ghost is not on the grid
+    const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    plot(cam.x, cam.y, dirCh, H_BLU);
+  }
 }
 let fps = 60;
 function hudPass(){
@@ -7008,32 +7971,71 @@ function hudPass(){
   hudRects.length = 0;
   hudR0 = 1e9; hudR1 = -1;
   const rows = R.rows, cols = R.cols;
+  const cjm = topMode();
+  if (cjm && cjm.name === 'camjack'){   // borrowed eyes get a CRT treatment
+    const n3 = (gBuf.length * 0.004) | 0;
+    for (let i = 0; i < n3; i++){
+      const idx = (Math.random() * gBuf.length) | 0;
+      gBuf[idx] = (Math.random() * RMAX) | 0;
+    }
+    for (let r3 = ((worldTime * 9) | 0) % 4; r3 < R.rows; r3 += 4){
+      const off3 = r3 * R.cols;
+      for (let c3 = 0; c3 < R.cols; c3 += 2)
+        if (gBuf[off3 + c3]) gBuf[off3 + c3] = Math.max(1, gBuf[off3 + c3] - 3);
+    }
+  }
   if (drug && drug.fx.glitch){          // static: the frame drops packets
-    const n = (drug.fx.glitch * 240) | 0;
+    const e2 = drug.env === undefined ? 1 : drug.env;
+    const n = (gBuf.length * 0.02 * e2) | 0;
     for (let i = 0; i < n; i++){
       const idx = (Math.random() * gBuf.length) | 0;
       gBuf[idx] = (Math.random() * RMAX) | 0;
       if (Math.random() < 0.4) bBuf[idx] = (Math.random() * NBASE) | 0;
     }
+    const tears = (2 + Math.random() * 4 * e2) | 0;   // scanline shear
+    for (let t2 = 0; t2 < tears; t2++){
+      const r2 = (Math.random() * R.rows) | 0, off = r2 * R.cols;
+      const shift = 1 + ((Math.random() * 3) | 0);
+      const a0 = (Math.random() * Math.max(1, R.cols - 34)) | 0;
+      const a1 = Math.min(R.cols - 1, a0 + 10 + ((Math.random() * 22) | 0));
+      for (let c2 = a1; c2 >= a0 + shift; c2--){
+        gBuf[off + c2] = gBuf[off + c2 - shift];
+        bBuf[off + c2] = bBuf[off + c2 - shift];
+      }
+    }
   }
   // ---- status ----
   hudPanel(1, 1, 52, 7);
   hudBox(1, 1, 52, 7, 'ASCII CITY');
-  const mode = cam.riding ? 'RIDING' : sitting ? 'SEATED' : 'ON FOOT';
+  const mode = cam.riding ? 'RIDING' : sitting ? 'SEATED' : skating ? 'SKATING' : 'ON FOOT';
   const dateLine = dateStr() + '   ' + clockStr() + '   ' +
                    ['CLEAR', 'RAIN', 'STORM', 'FOG'][weather];
   hudStr(3, 2, dateLine, H_BLU);
   if (player.corruption > 0)
     hudStr(3 + dateLine.length + 3, 2, 'CORRUPT ' + player.corruption, H_RED);
-  hudStr(3, 3, 'fps ' + fps.toFixed(0).padStart(3) + '  grid ' + cols + 'x' + rows +
-               '  rays ' + statRays + '  glyphs ' + statCells, H_GRN);
-  hudStr(3, 4, (inside ? 'INSIDE: ' + inside.name + (inside.floor > 1 ? '  F' + inside.floor : '')
+  // row 3 belongs to gameplay state: the ride bar first, then the chips
+  let fx2 = '';
+  if (drug){
+    const left = Math.max(0, drug.dur - drug.t);
+    const fill = Math.ceil(8 * left / drug.dur);
+    fx2 += 'RIDE ' + drug.id.toUpperCase().slice(0, 9) + ' ' +
+           '#'.repeat(fill) + '-'.repeat(8 - fill) + ' ' +
+           (left / 60 | 0) + ':' + ('' + (Math.ceil(left) % 60)).padStart(2, '0') + '  ';
+  }
+  if (jamT > 0) fx2 += 'JAM ' + Math.ceil(jamT) + '  ';
+  if (snifferT > 0) fx2 += 'SNIF ' + Math.ceil(snifferT) + '  ';
+  if (godMode) fx2 += 'GOD  ';
+  if (fx2) hudStr(3, 3, fx2.slice(0, 48),
+                  drug && drug.dur - drug.t < drug.dur * 0.2 ? H_DIM : H_PUR);
+  else if (devDebug)
+    hudStr(3, 3, 'fps ' + fps.toFixed(0).padStart(3) + '  grid ' + cols + 'x' + rows +
+                 '  rays ' + statRays + '  glyphs ' + statCells, H_GRN);
+  hudStr(3, 4, ((inside ? 'INSIDE: ' + inside.name + (inside.floor > 1 ? '  F' + inside.floor : '')
                        : regionName(cam.x, cam.y)) + '  ' +
                cam.x.toFixed(0) + ',' + cam.y.toFixed(0) +
-               '  cars ' + cars.length + '  peds ' + peds.length +
+               (devDebug ? '  cars ' + cars.length + '  peds ' + peds.length : '') +
                '  ' + mode + (!inside && inFields(cam.x, cam.y) ? '  [open ground]' : '') +
-               (CFG.manualRes ? '  [grid:manual]' : autoRes ? '  [auto-res]' : '') +
-               (paused ? '  [PAUSED]' : ''), H_DIM);
+               (paused ? '  [PAUSED]' : '')).slice(0, 48), H_DIM);
   let near = null, nd = 1e9;
   for (let i = 0; i < landmarks.length; i++){
     const d = Math.hypot(landmarks[i].x - cam.x, landmarks[i].y - cam.y);
@@ -7044,7 +8046,17 @@ function hudPass(){
     const dx = qt.x - cam.x, dy = qt.y - cam.y, qd = Math.hypot(dx, dy);
     const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'S' : 'N') : '') +
                 (Math.abs(dx) > Math.abs(dy) * 0.5 ? (dx > 0 ? 'E' : 'W') : '');
-    hudStr(3, 5, '! ' + qt.q + '  >  ' + qt.name + '  ' + qd.toFixed(0) + ' ' + (dir || 'here'), H_YEL);
+    hudStr(3, 5, ('! ' + qt.q + '  >  ' + qt.name + '  ' + qd.toFixed(0) + ' ' + (dir || 'here')).slice(0, 48), H_YEL);
+  } else if (!inside && (() => {               // an active quest with no target yet
+    for (const qid in player.quests || {}){
+      const s = player.quests[qid];
+      if (QUESTS[qid] && s !== 'done' && QUESTS[qid].stages[s]){
+        hudStr(3, 5, ('! ' + QUESTS[qid].name + ': ' + QUESTS[qid].stages[s].log).slice(0, 48), H_YEL);
+        return true;
+      }
+    }
+    return false;
+  })()){
   } else if (near && !inside){
     const dx = near.x - cam.x, dy = near.y - cam.y;
     const dir = (Math.abs(dy) > Math.abs(dx) ? (dy > 0 ? 'S' : 'N') : '') +
@@ -7055,15 +8067,24 @@ function hudPass(){
   const hpn = clamp(Math.round(player.hp / player.maxHp * 10), 0, 10);
   hudStr(3, 6, 'hp ', H_DIM);
   hudStr(6, 6, '#'.repeat(hpn) + '.'.repeat(10 - hpn), player.hp < 30 ? H_RED : H_GRN);
-  hudStr(16, 6, ' ' + player.hp + '/' + player.maxHp + '   cr ' + player.credits +
+  hudStr(16, 6, ' ' + (drug && drug.fx.numb ? '??' : player.hp) + '/' + player.maxHp + '   cr ' + player.credits +
                 (invCount('pistol') ? '   ammo ' + invCount('ammo') : '   TAB inventory'), H_DIM);
+  // ---- hotbar: the pinned three, under the status box ----
+  if (player.hotbar && player.hotbar.some(h => h)){
+    let hb = '';
+    for (let i = 0; i < 3; i++){
+      const hid = player.hotbar[i];
+      if (hid) hb += (i + 1) + ' ' + ITEMS[hid].name.split(' ')[0] + ' x' + invCount(hid) + '   ';
+    }
+    hudStr(3, 8, hb.slice(0, 48), H_DIM);
+  }
   // ---- minimap ----
   if (showMap && cols >= MW + 30) drawMinimap(cols - MW - 3, 1);
   // ---- help ----
   if (showHelp){
     const lines = [
       'WASD/arrows move   mouse look (click canvas)   SHIFT run   Q,E turn   R,F look up/down',
-      'SPACE interact / sit / ollie   TAB inventory   ESC menu   V skate   G metro   M map',
+      'SPACE interact/ollie   CTRL or LMB swing/fire   1-3 hotbar   TAB inventory   V skate   G metro   M map',
       'B bloom   N new city   P pause   -- time and weather live their own lives now'
     ];
     const w = Math.min(cols - 2, 92);
@@ -7097,13 +8118,26 @@ function hudPass(){
     if (!cam.riding){
       const bob = Math.round(cam.walkPhase) & 1;
       if (skating){                             // the deck under your feet
-        const dw = Math.round(4 * viewW(VM_DECK) / VM_DECK.length);
-        drawViewArt(VM_DECK, (cols >> 1) - (dw >> 1), rows - 4, 4, CM_DECK);
+        let dart = VM_DECK_FLAT;
+        if (skTrick && airT > 0) dart = ((worldTime * 16) | 0) & 1 ? VM_DECK_FLIP_A : VM_DECK_FLIP_B;
+        else if (airT > 0) dart = VM_DECK_AIR;
+        else if (crouchT > 0) dart = VM_DECK_CROUCH;
+        else if (landT > 0) dart = VM_DECK_LAND;
+        else if (pushArtT > 0) dart = VM_DECK_PUSH;
+        const dw = Math.round(4 * viewW(dart) / dart.length);
+        const rise = airT > 0
+          ? Math.round(Math.sin(Math.min(1, 1 - Math.max(0, airT) / airDur) * Math.PI) * 3) : 0;
+        const shift = Math.round(-skLean * 2);  // the board tracks out under a carve
+        drawViewArt(dart, (cols >> 1) - (dw >> 1) + shift, rows - 4 - rise, 4, CM_DECK);
+        for (const p2 of skParts) hudCell(p2.c, p2.r, p2.ch, p2.col);
+        if (styleN > 0 || skCombo > 1)
+          hudStr(cols - 20, rows - 2,
+                 'STYLE ' + styleN + (skCombo > 1 ? '  x' + skCombo : ''), H_PUR);
       }
       if (vAnim){
         const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
                      (vAnim.t / vAnim.d.dur * vAnim.d.frames.length) | 0)];
-        const tr = Math.min(fr.length, Math.round(rows * 0.42));
+        const tr = Math.min(fr.length, Math.round(rows * 0.52));
         const tw = Math.round(tr * viewW(fr) / fr.length);
         drawViewArt(fr, (cols - tw) >> 1, rows - tr, tr, vAnim.d.cmap);
       } else if (punchT > 0){
@@ -7115,20 +8149,23 @@ function hudPass(){
           if (punchLeft) drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - gt + 2, gt, CM_ARM);
           else drawViewArt(VM_FIST_L, (cols >> 1) - off - gw, rows - gt + 2, gt, CM_ARM);
         }
-        // four beats on the swing (weapon cooldown stretches them): wind,
-        // smear, hit, recover
-        const e = punchDur - punchT, kk = punchDur / 0.45;
-        const ph = e < 0.08 * kk ? 0 : e < 0.13 * kk ? 1 : e < 0.30 * kk ? 2 : 3;
+        // four beats on the swing, timed per weapon: coil, smear, impact, spend
         const mw = meleeStats();
-        let art = punchLeft
+        const sc = punchDur / mw.cool;
+        const e = punchDur - punchT;
+        const ph = e < mw.beats[0] * sc ? 0
+                 : e < mw.beats[1] * sc ? 1
+                 : e < mw.beats[2] * sc ? 2 : 3;
+        let art, cmA = CM_ARM;
+        if (mw.id === 'bat'){
+          cmA = CM_MELEE;
+          art = [VM_BAT_WIND, VM_BAT_SMEAR, VM_BAT_HIT, VM_BAT_REC][ph];
+        } else if (mw.id === 'pipe'){
+          cmA = CM_MELEE;
+          art = [VM_PIPE_WIND, VM_PIPE_SMEAR, VM_PIPE_HIT, VM_PIPE_REC][ph];
+        } else art = punchLeft
           ? [VM_PUNCH_WIND_L, VM_PUNCH_SMEAR_L, VM_PUNCH_HIT_L, VM_PUNCH_REC_L][ph]
           : [VM_PUNCH_WIND, VM_PUNCH_SMEAR, VM_PUNCH_HIT, VM_PUNCH_REC][ph];
-        let cmA = CM_ARM;
-        if (mw.id !== 'fist'){                  // the weapon rides the swing
-          cmA = CM_MELEE;
-          if (ph === 2) art = mw.id === 'bat' ? VM_BAT_HIT : VM_PIPE_HIT;
-          else if (ph !== 1) art = mw.id === 'bat' ? VM_BAT_HOLD : VM_PIPE_HOLD;
-        }
         const tr = Math.min(art.length, Math.round(rows * 0.45));
         const tw = Math.round(tr * viewW(art) / art.length);
         let ax;
@@ -7172,13 +8209,21 @@ function hudPass(){
     }
     const aim = cam.riding ? null : hostileInSights(30);
     const rr0 = (rows >> 1) + Math.round(cam.pitch);
-    hudStr(cols >> 1, rr0, aim ? 'x' : '+', aim ? H_RED : H_GRN);
+    hudStr(cols >> 1, rr0, aim ? 'x' : '+',
+           aim ? H_RED : player.bling === 'shades' ? H_PUR : H_GRN);
     if (aim){
       const tag = aim.a.name + ' ' + aim.a.hp + '/' + aim.a.maxHp;
       hudStr((cols - tag.length) >> 1, rr0 - 2, tag, H_RED);
     }
   }
   else if (im.draw) im.draw();
+  if (drug && drug.fx.glitch){                  // even the UI drops packets
+    const n2 = (R.cols * R.rows * 0.003 * (drug.env || 1)) | 0;
+    for (let i = 0; i < n2; i++){
+      const idx = (Math.random() * hGlyph.length) | 0;
+      if (hGlyph[idx] > 0) hGlyph[idx] = 1 + ((Math.random() * 90) | 0);
+    }
+  }
   // ---- transient message: drawn last, above the arms, so nothing hides it ----
   if (toastT > 0 && toastMsg){
     const x = Math.max(1, (cols - toastMsg.length - 2) >> 1);
@@ -7336,11 +8381,19 @@ function frame(now){
   let dt = (now - lastT) / 1000; lastT = now;
   if (dt > 0.1) dt = 0.1;
   if (dt < 0) dt = 0;
+  if (hitStopT > 0){ hitStopT -= dt; dt *= 0.08; }   // impact holds the world
   const w0 = performance.now();
   if (!worldFrozen()){
     drugTick(dt);
     if (jamT > 0) jamT -= dt;
-    if (snifferT > 0) snifferT -= dt;
+    if (snifferT > 0){
+      snifferT -= dt;
+      if (snifferT <= 0){
+        snifSeen.clear();
+        toast('the chip goes quiet');
+        sfx('ui_back', { rate: 0.5, vol: 0.4 });
+      }
+    }
     const ts = drugFx('tScale', 1);       // overclock: the world runs slow, you do not
     worldTime += dt * ts; simulate(dt * ts);
     updateClock(dt * ts);
@@ -7360,8 +8413,16 @@ function frame(now){
   }
   fade *= Math.pow(0.02, dt);
   muzzleT = Math.max(0, muzzleT - dt);
-  punchT = Math.max(0, punchT - dt);
-  hurtT = Math.max(0, hurtT - dt * 2.2);
+  shotCool = Math.max(0, shotCool - dt);
+  if (punchT > 0){
+    const eOld = punchDur - punchT;
+    punchT = Math.max(0, punchT - dt);
+    if (strikeArmed && eOld < strikeAt && punchDur - punchT >= strikeAt){
+      strikeArmed = false;
+      strikeLand();                            // damage lands at contact, not click
+    }
+  }
+  hurtT = Math.max(0, hurtT - dt * 2.2 * drugFx('hurtFast', 1));
   if (!topMode() && vAnim){
     vAnim.t += dt;
     if (vAnim.t > vAnim.d.dur) vAnim = null;
