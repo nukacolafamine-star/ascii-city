@@ -5093,24 +5093,25 @@ function meleeStats(){                        // the best bludgeon you carry
   return { d: 5, r: 3, reach: 1.7, cool: 0.40, kb: 0.25, stun: 0,
            beats: [0.08, 0.13, 0.30], id: 'fist' };
 }
-let punchDur = 0.45, strikeAt = 0, strikeArmed = false, hitStopT = 0;
+let punchDur = 0.45, strikeAt = 0, strikeArmed = false, hitStopT = 0, whiffT = 0;
 function punch(){
-  if (punchT > 0) return;                     // still mid-swing
+  // locked only until contact; the follow-through is cancelable into the next
+  if (punchT > 0 && strikeArmed) return;
   const m = meleeStats();
   punchT = punchDur = m.cool * drugFx('atkSpd', 1);   // rush swings faster
   strikeAt = m.beats[1] * (punchDur / m.cool);        // contact lands mid-swing
   strikeArmed = true;
+  whiffT = 0;
   if (m.id === 'fist') punchLeft = !punchLeft;   // fists alternate; a weapon
   else punchLeft = false;                        // stays in the right hand
-  // the whoosh: whiff sound plays up front, the crunch waits for contact
-  if (m.id === 'fist') sfx('ui_move', { vol: 0.25, rate: 0.5 });
-  else sfx('ui_back', { vol: m.id === 'bat' ? 0.4 : 0.3,
-                        rate: m.id === 'bat' ? 0.22 : 0.32 });
+  // an air-pass whoosh, distinct from the menu register, escalating by weight
+  sfx('footstep', { vol: m.id === 'bat' ? 0.35 : m.id === 'pipe' ? 0.28 : 0.2,
+                    rate: m.id === 'bat' ? 1.9 : m.id === 'pipe' ? 2.1 : 2.4 });
 }
 function strikeLand(){
   const m = meleeStats();
   const hit = characterInSights(m.reach, 0.7);
-  if (!hit) return;
+  if (!hit){ sfx('ui_back', { vol: 0.18, rate: 1.6 }); return; }   // an airy miss
   const a = hit.a;
   const dmg = m.d + ((Math.random() * m.r) | 0);
   const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
@@ -5231,7 +5232,7 @@ function respawn(){
   toast('you wake on the platform, lighter');
 }
 function hostileBrain(a, dt){
-  if (a.stunT > 0){ a.stunT -= dt; return; }   // rattled by the last hit
+  if (a.stunT > 0){ a.stunT -= dt; a.windup = 0; return; }   // a hit interrupts the swing
   a.atkCool = (a.atkCool || 0) - dt;
   const tm0 = topMode();
   if ((drug && drug.fx.ghost) || jamT > 0 ||
@@ -5250,9 +5251,17 @@ function hostileBrain(a, dt){
     if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(a.x | 0, 0, MAP - 1)]) a.y = ny;
     a.phase += a.spd * dt * 3.4;
     a.moving = 1;
+  } else if (a.windup > 0){                    // committed - the blow lands at 0
+    a.windup -= dt;
+    if (a.windup <= 0 && player.hp > 0 && pr <= 1.6){
+      damagePlayer(a.pendAtk || 5);
+      a.windup = 0;
+    }
   } else if (a.atkCool <= 0 && player.hp > 0){
-    a.atkCool = 1.1;
-    damagePlayer((a.atk || 5) + ((Math.random() * 6) | 0));
+    a.atkCool = 1.1;                           // telegraph, then strike
+    a.windup = 0.25;
+    a.pendAtk = (a.atk || 5) + ((Math.random() * 6) | 0);
+    sfx('ui_move', { rate: 0.35, vol: 0.35 });
   }
 }
 let punchLeft = false;                       // the swing alternates arms
@@ -7253,6 +7262,8 @@ function visibleProps(){
   return _vis;
 }
 const drawList = [];
+const HIT_SB = new Int16Array(NROLE).fill(C.nWhite);   // struck: white silhouette
+const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
 function spritePass(){
   drawList.length = 0;
   const MD = viewD;
@@ -7314,11 +7325,13 @@ function spritePass(){
       }
     } else if (it.k === 1){
       const mir = (o.dx * planeX + o.dy * planeY) > 0;
+      // a struck body flashes white; a body winding up to hit you glows red
+      const sbUse = o.hitT > 0 ? HIT_SB : (o.windup > 0 ? WIND_SB : o.sb);
       if (o.sit){
-        drawSprite(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, o.sb, o.sd, mir, 0);
+        drawSprite(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, mir, 0);
       } else {
         const fr = o.moving && ((o.phase | 0) & 1) ? 1 : 0;
-        drawSprite(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], o.sb, o.sd, mir, 0);
+        drawSprite(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, mir, 0);
       }
     } else if (it.k === 3){
       drawSprite(o.x, o.y, o.z, 0.36, 0.32, ART.spark,
