@@ -11697,8 +11697,8 @@ function openMap(){
       }
       this.cx = clamp(this.cx, 0, MAP); this.cy = clamp(this.cy, 0, MAP);
     },
-    drag(dx, dy){
-      this.cx = clamp(this.cx + dx / R.cellW * this.z, 0, MAP);
+    drag(dx, dy){                              // grab the paper and pull it
+      this.cx = clamp(this.cx - dx / R.cellW * this.z, 0, MAP);
       this.cy = clamp(this.cy - dy / R.cellH * this.z * 1.8, 0, MAP);
     },
     tap(cx, cy){
@@ -11860,7 +11860,8 @@ function drawMapMode(m){
       const rx2 = px2 + dx2, ry2 = py2 + dy2;
       if (rx2 >= 0 && rx2 < cols && ry2 >= 1 && ry2 < rows - 1) hudCell(rx2, ry2, ch2, pc2);
     }
-    const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    // ang 0 is +x, which is EAST, which is now screen right
+    const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
     hudCell(px2, py2, dirCh, pc2);
   }
 
@@ -13362,10 +13363,12 @@ function drawSignPlane(sg){
     let u = (hitB - sg.a0) * invLen;
     if (u < 0 || u >= 1) continue;
     // a0 is always the lower world coordinate, so which way the lettering
-    // runs across the screen depends on which way you are facing it. Signs
-    // are culled to their front face, so orienting to the view always
-    // reads forwards - it used to be a coin flip per sign.
-    if (sg.axis === 0 ? dirX < 0 : dirY > 0) u = 0.9999 - u;
+    // runs across the screen depends on which side of the panel you stand.
+    // That is the sign's own normal, which is fixed for its lifetime. Keying
+    // it to the camera's heading gives the same answer in every view a sign
+    // is actually drawn in - the front-face cull guarantees it - but it is
+    // true by luck rather than by construction, so read the invariant.
+    if (sg.axis === 0 ? sg.n > 0 : sg.n < 0) u = 0.9999 - u;
     const ur = projRows / t;
     const rowB = horizon + (cam.z - sg.z) * ur;
     const rowT = rowB - sg.hm * ur;
@@ -14183,7 +14186,8 @@ function drawMinimap(x0, y0){
     plot(cam.x, cam.y - 2, '-', pc2); plot(cam.x, cam.y + 2, '-', pc2);
     plot(cam.x - 1, cam.y - 2, '.', pc2); plot(cam.x + 1, cam.y - 2, '.', pc2);
     plot(cam.x - 1, cam.y + 2, '.', pc2); plot(cam.x + 1, cam.y + 2, '.', pc2);
-    const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    // ang 0 is +x, which is EAST, which is now screen right
+    const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
     plot(cam.x, cam.y, dirCh, pc2);
   }
 }
