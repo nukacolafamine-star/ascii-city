@@ -15262,19 +15262,6 @@ function hudPass(){
   let mNear = null;
   for (let i = 0; i < metroStops.length; i++)
     if (Math.hypot(metroStops[i].x - cam.x, metroStops[i].y - cam.y) < 3.4) mNear = metroStops[i];
-  if (mNear && !(lookTarget && lookTarget.kind === 'metro') && !inside){
-    const msg = (TOUCH.on ? '[ACT]  METRO - ' : '[G]  METRO - ') + mNear.name;
-    const x = Math.max(1, (cols - msg.length - 2) >> 1);
-    hudPanel(x, (rows >> 1) + 3, msg.length + 2, 1);
-    hudStr(x + 1, (rows >> 1) + 3, msg, H_GRN);
-  }
-  // ---- interaction prompt ----
-  if (!topMode() && lookTarget){
-    const msg = lookTarget.prompt;
-    const x = Math.max(1, (cols - msg.length - 2) >> 1);
-    hudPanel(x, (rows >> 1) + 5, msg.length + 2, 1);
-    hudStr(x + 1, (rows >> 1) + 5, msg, H_GRN);
-  }
   // ---- held weapon, reticle, or whichever mode owns the screen ----
   const im = topMode();
   if (!im){
@@ -15436,6 +15423,23 @@ function hudPass(){
       hb = hb.trim();
       hudStr(Math.max(1, (cols - hb.length) >> 1), rows - 4, hb.slice(0, cols - 2), H_DIM);
     }
+  }
+  /* ---- prompts: drawn AFTER the arms, for the same reason the toast is.
+     Both of these sit around two thirds of the way down the screen, which is
+     the middle of whatever you are holding - with a pistol up, eight of the
+     twenty-three characters of "[E] ACTIVATE" survived. The toast already
+     knew to come last; these did not. ---- */
+  if (mNear && !(lookTarget && lookTarget.kind === 'metro') && !inside && !topMode()){
+    const msg = (TOUCH.on ? '[ACT]  METRO - ' : '[G]  METRO - ') + mNear.name;
+    const x = Math.max(1, (cols - msg.length - 2) >> 1);
+    hudPanel(x, (rows >> 1) + 3, msg.length + 2, 1);
+    hudStr(x + 1, (rows >> 1) + 3, msg, H_GRN);
+  }
+  if (!topMode() && lookTarget){
+    const msg = lookTarget.prompt;
+    const x = Math.max(1, (cols - msg.length - 2) >> 1);
+    hudPanel(x, (rows >> 1) + 5, msg.length + 2, 1);
+    hudStr(x + 1, (rows >> 1) + 5, msg, H_GRN);
   }
   // ---- transient message: drawn last, above the arms, so nothing hides it ----
   if (toastT > 0 && toastMsg){
