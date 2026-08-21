@@ -1226,6 +1226,7 @@ function buildCity(seed){
   placeWeaponCaches();
   initHomes();
   initDealership();
+  initMainQuest();
   clearWaypoint(true);
   myCar = null;                                 // respawned lazily from the save
   bakeSolidProps();
@@ -4275,7 +4276,10 @@ function spawnActors(){
                  do(){ player.credits -= 20; invAdd('ammo', 8); toast('+ 8 ROUNDS'); }, next: 'job' },
                { t: 'Still working on it' }] },
       after: { text: 'The belt never runs dry, and neither do I. Scrap is still twenty-five.',
-        opts: [{ t: 'Sell scrap - 25 cr', if: () => invCount('scrap') > 0,
+        opts: [{ t: 'You mentioned work that MEANS something',
+                 if: () => player.quests.mq1 === undefined,
+                 do(){ mqStart('mq1'); }, next: 'handoff' },
+               { t: 'Sell scrap - 25 cr', if: () => invCount('scrap') > 0,
                  do(){ sellScrap(); }, next: 'after' },
                { t: 'Buy zip pistol - 90 cr', if: () => player.credits >= 90 && !invCount('pistol'),
                  do(){ player.credits -= 90; invAdd('pistol', 1); toast('+ ZIP PISTOL'); }, next: 'armed' },
@@ -4284,7 +4288,12 @@ function spawnActors(){
                            invCount('ammo') <= ITEMS.ammo.stack - 8,
                  do(){ player.credits -= 20; invAdd('ammo', 8); toast('+ 8 ROUNDS'); }, next: 'after' },
                { t: 'Leave' }] },
-      paid: { text: 'That makes three. Seventy-five credits, counted and cleared. The belt keeps shedding - if you keep hauling, the price stands.' },
+      paid: { text: 'That makes three. You have the look of somebody who does not want to haul scrap forever. There are people who could use hands that do not flinch. Interested in work that MEANS something?',
+        opts: [{ t: 'What kind of work', next: 'handoff',
+                 do(){ if (player.quests.mq1 === undefined) mqStart('mq1'); } },
+               { t: 'Scrap pays fine', }] },
+      handoff: { text: 'A cell on the red mile. They call the one in charge ROOK. Tell them the watcher sent you. Do not tell me how it goes - I sleep better not knowing.',
+        opts: [{ t: 'The red mile. Got it' }] },
       armed: { text: 'Procurement goes both ways. It jams if you think too loudly, but the razors do not know that. Rounds are twenty for eight.' }
     } });
   const d = randWalkNear(cam.x, cam.y, 8, 16);
@@ -4410,6 +4419,13 @@ function spawnActors(){
     { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
       a: 'tee', b: 'boba' }
   ];
+  if (HIDEOUT){
+    const rk = spawnActor('citizen', HIDEOUT.x, HIDEOUT.y, {
+      name: 'ROOK', brain: 'still', shirt: C.carC, skin: C.dataDk, tree: rookTree() });
+    rk.range = 2;
+    spawnActor('citizen', HIDEOUT.x + 1.2, HIDEOUT.y, {
+      name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: vesperTree() });
+  }
   if (DEALER){
     const v = spawnActor('citizen', DEALER.lot.x, DEALER.lot.y, {
       name: 'VANCE', brain: 'still', shirt: C.tlAmb, tree: vanceTree() });
@@ -6126,6 +6142,231 @@ function myCarFrame(f, dt){
     f.z += (2.2 + Math.max(0, heightAt(f.x | 0, f.y | 0)) - f.z) * Math.min(1, dt * 2);
   }
 }
+/*========================= 13m. THE MAIN QUEST =============================
+  Thirty jobs in four acts. The watcher points you at an anarchist cell that
+  means to shut the city's power off - the people already live in rolling
+  blackouts, the corporations never do, so the reasoning goes that the towers
+  will break first. You run with ROOK, who leads, and get close to VESPER,
+  who is softer than the work. It does not end kindly. The whole line hangs
+  off ACT and STEP counters plus a bag of flags in player.qvar, so it rides
+  the save with everything else.
+============================================================================*/
+let HIDEOUT = null;
+function initMainQuest(){
+  HIDEOUT = null;
+  // a corner of the red mile, backed against a wall, off the main drag
+  const near = (dist, salt) => {
+    for (let t = 0; t < 500; t++){
+      const x = (hash3(worldSeed, salt, t) * MAP) | 0;
+      const y = (hash3(worldSeed, salt + 1, t) * MAP) | 0;
+      if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
+      if (districtAt(x, y) !== dist) continue;
+      return { x: x + 0.5, y: y + 0.5 };
+    }
+    return null;
+  };
+  HIDEOUT = near(D_RED, 601) || near(D_IND, 611) || { x: cam.x + 12, y: cam.y + 12 };
+  landmarks.push({ name: 'THE HIDEOUT', x: HIDEOUT.x, y: HIDEOUT.y, hidden: 1 });
+}
+function mqAct(){ return player.qvar.act || 0; }
+function mqStep(){ return player.qvar.mstep || 0; }
+function mqLive(id){ return player.quests[id] === 0 || player.quests[id] === 1; }
+/* start the next job in the line and track it */
+function mqStart(id){
+  startQuest(id);
+  player.track = id;
+}
+/* a job is done: bump the step, and if it closes an act, bump the act */
+function mqDone(id, act, step){
+  if (player.quests[id] === 'done') return;
+  if (player.quests[id] === undefined) player.quests[id] = 0;   // never advance a ghost
+  advanceQuest(id);
+  player.qvar.mstep = Math.max(player.qvar.mstep || 0, step);
+  if (act !== undefined) player.qvar.act = Math.max(player.qvar.act || 0, act);
+}
+/* markers the line drops around the city, from a small pool of spots */
+function mqSpot(salt, dist){
+  for (let t = 0; t < 300; t++){
+    const x = (hash3(worldSeed, salt, t) * MAP) | 0;
+    const y = (hash3(worldSeed, salt + 7, t) * MAP) | 0;
+    if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
+    if (dist !== undefined && districtAt(x, y) !== dist) continue;
+    return { x: x + 0.5, y: y + 0.5 };
+  }
+  return HIDEOUT;
+}
+function atSpot(sp, r){ return sp && Math.hypot(sp.x - cam.x, sp.y - cam.y) < (r || 6); }
+function toHideout(){ return HIDEOUT && { x: HIDEOUT.x, y: HIDEOUT.y, name: 'THE HIDEOUT' }; }
+
+/*--------------------- the skateboard chase (Act 1 climax) -----------------*/
+let chaseT = 0, chaseOn = false;
+function startChase(){
+  chaseOn = true; chaseT = 55;
+  // a wall of enforcers between you and home
+  for (let i = 0; i < 4; i++){
+    const t = randWalkNear(cam.x, cam.y, 12, 22);
+    if (t){ const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
+      { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
+      a.aggro = 1; a.atk = 9; a.spd = 2.9; }
+  }
+  toast('RIDE. the hideout, before they box you in');
+  sfx('shot', { vol: 0.7, rate: 0.6 });
+}
+function chaseFrame(dt){
+  if (!chaseOn) return;
+  chaseT -= dt;
+  if (mqLive('mq8') && atSpot(HIDEOUT, 5)){
+    chaseOn = false;
+    mqDone('mq8', 2, 8);
+    toast('inside. the door slams. ROOK is grinning');
+    sfx('ui_select', { vol: 0.7, rate: 0.7 });
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].kind === 'enforcer') actors.splice(i, 1);
+    return;
+  }
+  if (chaseT <= 0){
+    chaseOn = false;
+    toast('they had the corner. ROOK will not be pleased - try again');
+    // reset to the strip start; the quest stays live
+    const sp = mqSpot(651, D_STRIP);
+    cam.x = sp.x; cam.y = sp.y;
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].kind === 'enforcer') actors.splice(i, 1);
+  }
+}
+
+/*------------------------------- Act 1 jobs --------------------------------*/
+const MQ1 = {
+  mq1: { name: 'THE HIDEOUT', act: 1,
+    stages: [{ log: 'the watcher gave you an address - find ROOK at THE HIDEOUT on the red mile',
+      target: toHideout }] },
+  mq2: { name: 'MAKING A MARK', act: 1,
+    stages: [{ log: 'tag 3 walls with a GRAFFITI BURNER (buy one at a TOOLS counter)',
+      auto(){ return (player.qvar.vandal || 0) - (player.qvar.mq2Base || 0) >= 3; } }] },
+  mq3: { name: 'BLIND THE BLOCK', act: 1,
+    stages: [{ log: 'cut 3 street cameras with a HACKSAW - face one and press E',
+      auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq3Base || 0) >= 3; } }] },
+  mq4: { name: 'COURIER', act: 1,
+    stages: [{ log: 'carry the cell\u2019s package to the drop in THE STRIP',
+      target(){ return mqSpot(661, D_STRIP); },
+      auto(){ return atSpot(mqSpot(661, D_STRIP), 5); } },
+      { log: 'take the reply back to ROOK at THE HIDEOUT', target: toHideout }] },
+  mq5: { name: 'WHEELS', act: 1,
+    stages: [{ log: 'get a KICKDECK (tool shops sell them) and meet ROOK',
+      target: toHideout,
+      auto(){ return invCount('deck') > 0 && atSpot(HIDEOUT, 6); } }] },
+  mq6: { name: 'NOBODY COUNTS IT', act: 1,
+    stages: [{ log: 'lift 5 SCRAP ELECTRONICS from the belt and bring them to ROOK',
+      target: toHideout,
+      auto(){ return invCount('scrap') >= 5 && atSpot(HIDEOUT, 6); } }] },
+  mq7: { name: 'A LOUD DISTRACTION', act: 1,
+    stages: [{ log: 'set off FIRECRACKERS at the marked junction to pull the patrols',
+      target(){ return mqSpot(671, D_STRIP); },
+      auto(){ return player.qvar.mq7pop && atSpot(mqSpot(671, D_STRIP), 10); } }] },
+  mq8: { name: 'THE RUN', act: 1,
+    stages: [{ log: 'RIDE the deck to THE HIDEOUT before the enforcers box you in',
+      target: toHideout }] }
+};
+/* firecrackers set the mq7 flag when they pop near the junction */
+function mqFirecracker(x, y){
+  const sp = mqSpot(671, D_STRIP);
+  if (mqLive('mq7') && sp && Math.hypot(sp.x - x, sp.y - y) < 10) player.qvar.mq7pop = 1;
+}
+/*--------------------------- ROOK, who leads -------------------------------
+  One tree, an act hub. entry() reads the line's state and jumps to the node
+  that hands out or closes the current job. Each act gets its own opening
+  speech the first time you reach it. */
+function rookTree(){
+  const q = player.quests;
+  return {
+    entry(){
+      if (q.mq1 === undefined) return 'meet';           // first contact
+      if (mqLive('mq1')) return 'settle';
+      if (q.mq2 === undefined) return 'give2';
+      if (mqLive('mq2')) return 'wait2';
+      if (q.mq3 === undefined) return 'give3';
+      if (mqLive('mq3')) return 'wait3';
+      if (q.mq4 === undefined) return 'give4';
+      if (mqLive('mq4') && player.quests.mq4 === 1) return 'turn4';
+      if (mqLive('mq4')) return 'wait4';
+      if (q.mq5 === undefined) return 'give5';
+      if (mqLive('mq5')) return 'turn5';
+      if (q.mq6 === undefined) return 'give6';
+      if (mqLive('mq6')) return 'turn6';
+      if (q.mq7 === undefined) return 'give7';
+      if (mqLive('mq7')) return 'wait7';
+      if (q.mq8 === undefined) return 'give8';
+      if (mqLive('mq8')) return 'wait8';
+      return 'act1done';
+    },
+    meet: { text: 'So the watcher sends me a stray. I am ROOK. This is the cell - what is left of it. We are going to turn this city\u2019s lights off and watch which half of it actually knows how to live in the dark. You in, or are you sightseeing?',
+      opts: [{ t: 'I\u2019m in', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
+                                       mqDone('mq1'); }, next: 'in' },
+             { t: 'Turn the power off? That hurts everyone', next: 'why' },
+             { t: 'Not my fight', next: 'leave' }] },
+    why: { text: 'Everyone already lives in the brownouts - everyone but the towers. Cut the grid and the people lose a light they were already losing. The corps lose the only thing holding them up. It is not cruelty. It is math.',
+      opts: [{ t: 'Alright. I\u2019m in', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
+                                              mqDone('mq1'); }, next: 'in' },
+             { t: 'I\u2019ll think about it', next: 'leave' }] },
+    in: { text: 'Good. First thing - make yourself known. Put our mark on three walls. There is a burner at any tools counter. Paint loud.' },
+    settle: { text: 'You found us. Come in. Talk to VESPER if you want the version that is kind about it; talk to me if you want the true one.',
+      opts: [{ t: 'Put me to work', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
+                                          mqDone('mq1'); }, next: 'in' }] },
+    give2: { text: 'Three walls. The burner is yours to buy. Go.',
+      opts: [{ t: 'On it', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0; } }] },
+    wait2: { text: () => 'Marks so far: ' + ((player.qvar.vandal || 0) - (player.qvar.mq2Base || 0)) + ' of 3.' },
+    give3: { text: 'People saw the paint. Now blind them. Three street cameras, a hacksaw through each eye. Face one and cut.',
+      opts: [{ t: 'Consider them blind', do(){ mqStart('mq3'); player.qvar.mq3Base = player.qvar.camCut || 0; } }] },
+    wait3: { text: () => 'Cameras cut: ' + ((player.qvar.camCut || 0) - (player.qvar.mq3Base || 0)) + ' of 3.' },
+    give4: { text: 'You can be trusted with a package, then. Take this to a friend on the strip. Do not open it. Bring back what they give you.',
+      opts: [{ t: 'Where on the strip', do(){ mqStart('mq4'); }, next: 'go4' }] },
+    go4: { text: 'You will see the drop marked. Walk, do not run. Running is a confession.' },
+    wait4: { text: 'The drop is marked on the strip. Do not open the package.' },
+    turn4: { text: 'That is the reply. You did not read it. Good - it says so on your face that you did not.',
+      opts: [{ t: 'Here', do(){ mqDone('mq4'); }, next: 'give5' }] },
+    give5: { text: 'You move too slow on foot for what comes next. Get a deck - tool shops sell them. Learn to ride before you have to.',
+      opts: [{ t: 'Understood', do(){ mqStart('mq5'); } }] },
+    turn5: { text: () => invCount('deck') ? 'You can ride. Good. You will need it sooner than you think.'
+                                          : 'No deck, no next job. Tool shops. Go.',
+      opts: [{ t: 'Ready', if: () => invCount('deck') > 0, do(){ mqDone('mq5'); }, next: 'give6' }] },
+    give6: { text: 'We are almost out of funds and entirely out of parts. The belt sheds scrap nobody counts - lift five units and bring them here.',
+      opts: [{ t: 'Five scrap', do(){ mqStart('mq6'); } }] },
+    turn6: { text: () => invCount('scrap') >= 5 ? 'Five units. That buys the next stupid thing we do.'
+                                                : 'Count stands at ' + invCount('scrap') + ' of 5.',
+      opts: [{ t: 'Delivered', if: () => invCount('scrap') >= 5,
+               do(){ invTake('scrap', 5); player.credits += 40; mqDone('mq6'); toast('+40 cr'); },
+               next: 'give7' }] },
+    give7: { text: 'Tomorrow we hit a corpo courier on the strip. Tonight, we teach the patrols to look the wrong way. Set off firecrackers at the marked junction - loud, then gone.',
+      opts: [{ t: 'Boom', do(){ mqStart('mq7'); } }] },
+    wait7: { text: 'The junction is marked. Crackers, then leave. Do not linger to admire it.' },
+    give8: { text: 'The courier is hit, the take is ours, and every enforcer in the district just got the same alert. You cannot walk out of this one. RIDE - the deck, straight here, and do not stop for anything wearing armour.',
+      opts: [{ t: 'Start the run', do(){ mqStart('mq8');
+               const sp = mqSpot(651, D_STRIP); cam.x = sp.x; cam.y = sp.y;
+               if (!skating && invCount('deck')) toggleRide();
+               startChase(); }, next: 'runline' }] },
+    runline: { text: 'GO.' },
+    wait8: { text: 'Ride here. Now.' },
+    act1done: { text: 'You made it. First blood, first run, first time you cannot go back. Rest up - VESPER will want to talk before the real work starts. Act two begins when you are ready.',
+      opts: [{ t: 'Talk to VESPER', next: 'toVesper' }] },
+    toVesper: { text: 'She is by the window. She is always by the window.' }
+  };
+}
+/*----------------------------- VESPER, the friend --------------------------
+  In Act 1 she is colour and warmth; her own arc opens in Act 2. */
+function vesperTree(){
+  return {
+    entry(){ return (player.qvar.act || 0) >= 1 ? 'known' : 'first'; },
+    first: { text: 'You\u2019re the new one. I\u2019m VESPER. Do not let ROOK convince you this is all cold math - some of us remember why we started. Get us our power back and maybe I stop flinching at the dark.',
+      opts: [{ t: 'Why the blackouts?', next: 'why' },
+             { t: 'See you around', }] },
+    why: { text: 'The grid picks favourites. My block goes dark three nights a week; the tower across the water has never once blinked. ROOK wants to break the whole thing. I just want it to be FAIR. Those are not the same wish. Remember that.',
+      opts: [{ t: 'I\u2019ll remember' }] },
+    known: { text: () => ['Careful out there. ROOK counts jobs; I count who comes back.',
+                          'You keep coming back. Most do not. I have decided to find that reassuring.',
+                          'The dark is easier with somebody in it. Do not tell ROOK I said that.']
+             [((player.qvar.vandal || 0) + mqStep()) % 3] }
+  };
+}
 /* The pause menu is a hallway of doors now, not a wall of dials: each group
    of controls lives behind its own button, one green rule between each. */
 function openPauseMenu(){
@@ -6767,6 +7008,7 @@ function drugTick(dt){
 const PED_BANG_BARKS = ['gunshots!', 'not again', 'call the flock!', 'MOVE!'];
 let crackerCd = 0;
 function popFirecracker(){
+  mqFirecracker(cam.x, cam.y);
   if (worldTime < crackerCd){ toast('your ears are still ringing'); return false; }
   crackerCd = worldTime + 2;
   panicHere(cam.x, cam.y, 120);
@@ -7332,6 +7574,7 @@ const WHEELS_QUESTS = {
   }
 };
 Object.assign(QUESTS, WHEELS_QUESTS);
+Object.assign(QUESTS, MQ1);
 function vanceTree(){
   return {
     entry(){
@@ -13093,7 +13336,7 @@ function simulate(dt){
     fxs[i].t -= dt;
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
-  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); }
+  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); chaseFrame(dt); }
   if (player.car && !myCar && DEALER)           // the save remembers the keys
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
                player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
