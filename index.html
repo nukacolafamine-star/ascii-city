@@ -4417,6 +4417,7 @@ function onPress(code, key){
     case 'KeyM': openMap(); break;
     case 'KeyG': if (inside){ toast('no metro in here'); break; } useMetro(); break;
     case 'KeyB': bloomOn = !bloomOn; toast('bloom ' + (bloomOn ? 'on' : 'off')); break;
+    case 'KeyC': tryHide(); break;
     case 'KeyV': if (inside){ toast('no room to ride in here'); break; } toggleRide(); break;
     case 'KeyN': newWorld((Math.random() * 1e9) | 0); break;
     case 'BracketLeft':
@@ -7195,6 +7196,111 @@ function dayTick(){                           // called once per day rollover
   }
 }
 let enfT = 40, camWhisperT = 20;
+/*----------------------- the weight of being noticed -----------------------
+  Corruption used to mean three enforcers at tier six and nothing before.
+  Now the pressure climbs a ladder. At 2 the occasional lone officer walks
+  your district with your face on file. At 4 they come oftener, and a
+  spotlight helicopter sometimes finds the sky above you - and somebody
+  files the paperwork to visit your home address. At 6 the helicopter
+  barely leaves, drops teams where its light pins you, and the officers
+  arrive in threes. Press C, stand still six seconds - unhit, unseen by
+  any live camera, out of the light - and the trail goes cold.
+============================================================================*/
+let heli = null, heliT = 60, hideT = 0, swatT = 0;
+function enfCap(){
+  const c = player.corruption;
+  return c >= 6 ? 6 : c >= 4 ? 3 : c >= 2 ? 2 : 0;
+}
+function spawnEnforcer(nearR, aggro){
+  const t = randWalkNear(cam.x, cam.y, nearR, nearR + 14);
+  if (!t) return null;
+  const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
+    { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
+  a.aggro = aggro ? 1 : 0; a.atk = 9;
+  return a;
+}
+function heliFrame(dt){
+  if (!heli) return;
+  heli.t -= dt;
+  if (heli.t <= 0 && player.corruption < 6){ heli = null; toast('the rotor noise fades'); return; }
+  if (heli.t <= 0) heli.t = 20;                // at six it just circles back
+  // the airframe drifts toward a point behind the player; the light hunts
+  heli.x += (cam.x + Math.cos(worldTime * 0.4) * 8 - heli.x) * 0.4 * dt;
+  heli.y += (cam.y + Math.sin(worldTime * 0.4) * 8 - heli.y) * 0.4 * dt;
+  const sdx = cam.x - heli.sx, sdy = cam.y - heli.sy;
+  const sd = Math.hypot(sdx, sdy) || 1;
+  const chase = 2.6 + player.corruption * 0.3; // the light gets faster with heat
+  heli.sx += sdx / sd * Math.min(sd, chase * dt);
+  heli.sy += sdy / sd * Math.min(sd, chase * dt);
+  // pinned in the light?
+  if (sd < 1.6){
+    heli.lock += dt;
+    if (((worldTime * 3) | 0) & 1) hurtT = Math.max(hurtT, 0.06);   // the glare
+    for (const a of actors)                    // the light holds their eyes on you
+      if (a.kind === 'enforcer') a.aggro = 1;
+    if (heli.lock > 3 && player.corruption >= 6 && swatT <= 0){
+      swatT = 30;                              // the drop team
+      let n = 0;
+      for (let i = 0; i < 3; i++) if (spawnEnforcer(4, true)) n++;
+      if (n) toast('ropes hit the pavement - SWAT drop');
+      sfx('door', { rate: 0.5, vol: 0.8 });
+    }
+  } else heli.lock = Math.max(0, heli.lock - dt * 2);
+  // the machine is heard, seen high up, and the light shows on the street
+  heli.rot -= dt;
+  if (heli.rot <= 0){
+    heli.rot = 0.55;
+    sfx('footstep', { vol: 0.5, rate: 0.42 });
+    addFx(heli.x, heli.y, 8.5); addFx(heli.x + 0.6, heli.y, 8.2);
+  }
+  heli.beam -= dt;
+  if (heli.beam <= 0){
+    heli.beam = 0.12;
+    for (let i = 0; i < 5; i++){               // the pool of light, sketched
+      const th = Math.random() * Math.PI * 2, r = Math.random() * 1.6;
+      addFx(heli.sx + Math.cos(th) * r, heli.sy + Math.sin(th) * r, 0.05);
+    }
+  }
+  swatT = Math.max(0, swatT - dt);
+}
+function tryHide(){
+  if (hideT > 0){ hideT = 0; toast('hide broken'); return; }
+  if (inside || cam.riding || skating){ toast('stand on your own feet first'); return; }
+  if (player.corruption <= 0 && !actors.some(a => a.kind === 'enforcer')){
+    toast('nobody is looking for you'); return;
+  }
+  hideT = 6;
+  hideX = cam.x; hideY = cam.y;
+  toast('hold still - become nobody');
+  sfx('ui_move', { vol: 0.4, rate: 0.5 });
+}
+let hideX = 0, hideY = 0;
+function hideFrame(dt){
+  if (hideT <= 0) return;
+  if (Math.hypot(cam.x - hideX, cam.y - hideY) > 0.4){
+    hideT = 0; toast('you moved - still on the books'); return;
+  }
+  if (hurtT > 0.5){ hideT = 0; toast('a hit is a location'); return; }
+  // seen: a live camera close, or standing in the spotlight
+  for (const q of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
+    if (q.k === PK_CAM && !q.dead && sightClear(q.x, q.y, cam.x, cam.y)){
+      hideT = 0; toast('a camera has you - kill its eye or move on'); return;
+    }
+  if (heli && Math.hypot(cam.x - heli.sx, cam.y - heli.sy) < 2.2){
+    hideT = 0; toast('not in the light, you will not'); return;
+  }
+  hideT -= dt;
+  if (hideT <= 0){
+    for (const a of actors) if (a.kind === 'enforcer') a.aggro = 0;
+    // half of them get reassigned somewhere less interesting
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].kind === 'enforcer' && (i & 1)) actors.splice(i, 1);
+    if (heli){ heli = null; toast('the rotor swings away - trail lost'); }
+    else toast('the street forgets you - trail lost');
+    heliT = 120 + Math.random() * 60;
+    sfx('ui_select', { vol: 0.6, rate: 0.7 });
+  }
+}
 function corruptionTick(){                    // polled every half second
   if (player.corruption <= 0 || inside || jamT > 0) return;
   camWhisperT -= 0.5;
@@ -7206,21 +7312,43 @@ function corruptionTick(){                    // polled every half second
         toast('a camera swivels to follow you'); break;
       }
   }
-  if (player.corruption >= 6){
+  const c = player.corruption, cap = enfCap();
+  if (cap > 0){
     enfT -= 0.5;
     if (enfT <= 0){
-      enfT = 45 + Math.random() * 60;
-      if (actors.filter(a => a.kind === 'enforcer').length < 3){
-        const t = randWalkNear(cam.x, cam.y, 18, 30);
-        if (t){
-          const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
-            { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
-          a.aggro = 1; a.atk = 9;
-          toast('an enforcer has your signature');
+      enfT = c >= 6 ? 30 + Math.random() * 30
+           : c >= 4 ? 60 + Math.random() * 45
+           : 110 + Math.random() * 70;
+      const have = actors.filter(a => a.kind === 'enforcer').length;
+      if (have < cap){
+        if (c >= 6){                           // they arrive in threes now
+          let n = 0;
+          for (let i = 0; i < 3 && have + n < cap; i++)
+            if (spawnEnforcer(14, true)) n++;
+          if (n) toast(n > 1 ? 'a coordinated party fans out' : 'an enforcer has your signature');
+        } else {
+          const a = spawnEnforcer(18, c >= 4);
+          if (a) toast(c >= 4 ? 'an enforcer has your signature'
+                              : 'an enforcer walks this district with your face on file');
         }
       }
     }
   }
+  if (c >= 4){                                 // the sky gets interested
+    if (!heli){
+      heliT -= 0.5;
+      if (heliT <= 0){
+        heliT = c >= 6 ? 20 + Math.random() * 25 : 90 + Math.random() * 90;
+        heli = { x: cam.x + 20, y: cam.y + 20, sx: cam.x + 10, sy: cam.y + 10,
+                 lock: 0, rot: 0, beam: 0,
+                 t: c >= 6 ? 999 : 30 + Math.random() * 25 };
+        toast('rotors, somewhere above the towers');
+      }
+    }
+    if (!worldDelta.swatDue && Math.random() < 0.02){
+      worldDelta.swatDue = 1;                  // the home visit, filed for later
+    }
+  } else if (heli && c < 4){ heli = null; }
 }
 /* peds can be hurt; the ledger fills accordingly */
 function damagePed(p, d){
@@ -11852,6 +11980,11 @@ function drawMinimap(x0, y0){
       if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
         plot(a.x, a.y, pulse ? '@' : 'o', H_RED);
   }
+  if (heli){                                    // the machine and its light
+    const pulse2 = ((Date.now() / 220) | 0) & 1;
+    plot(heli.x, heli.y, pulse2 ? 'H' : '+', H_RED);
+    plot(heli.sx, heli.sy, 'o', H_YEL);
+  }
   // The tracked quest, visible even when it is somewhere else: on the window
   // it pulses, off it it pins to the border as an arrow pointing the way.
   // Deltas are taken in SCREEN space, so the map's mirrored x costs nothing.
@@ -11962,8 +12095,10 @@ function hudPass(){
         if (pe.k === PK_CAM && !pe.dead) eyes++;
       chips.push('EYES ' + eyes);
     }
+    if (hideT > 0) chips.push('HIDING ' + hideT.toFixed(1));
+    if (heli) chips.push(heli.lock > 0.5 ? 'SPOTLIT' : 'HELI');
     if (chips.length)
-      put(row++, chips.join(' '), player.corruption > 0 ? H_RED : H_GRN);
+      put(row++, chips.join(' '), player.corruption > 0 || heli ? H_RED : H_GRN);
     if (devDebug)
       put(row++, 'fps ' + fps.toFixed(0) + '  rays ' + statRays +
                  '  glyphs ' + statCells, H_GRN);
@@ -12258,6 +12393,7 @@ function simulate(dt){
     fxs[i].t -= dt;
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
+  if (!inside){ heliFrame(dt); hideFrame(dt); }
 }
 function render(){
   statRays = 0; statCells = 0;
