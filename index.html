@@ -7208,6 +7208,18 @@ function atHideout(r){
   return atSpot(HIDEOUT, r);
 }
 function mqAct(){ return player.qvar.act || 0; }
+/* A cell that is trying not to be found does not walk a marked man out onto
+   a job. Early on ROOK has almost no tolerance for it; by the time the line
+   is committed to what it is doing, a little heat is the price of the work.
+   Indexed by act - act 0 is "before the line has properly started". */
+const HEAT_CAP = [3, 3, 5, 7, 9];
+function mqHeatCap(){ return HEAT_CAP[clamp(mqAct(), 0, HEAT_CAP.length - 1)]; }
+/* The nodes that would hand you NEW work. Turn-ins and progress checks are
+   never gated: you can always come in, report, and be paid. */
+function mqHandsOutWork(n){
+  return n === 'meet' || n === 'settle' || n === 'act1done' ||
+         (n.length > 4 && n.slice(0, 4) === 'give');
+}
 function mqStep(){ return player.qvar.mstep || 0; }
 function mqLive(id){ return player.quests[id] === 0 || player.quests[id] === 1; }
 /* start the next job in the line and track it */
@@ -7333,6 +7345,13 @@ function mqFirecracker(x, y){
 function rookTree(){
   return {
     entry(){
+      const n = this.nextNode();
+      // too hot to be given anything. He will still take a finished job off
+      // you and pay for it - he just will not send you back out.
+      if (mqHandsOutWork(n) && player.corruption > mqHeatCap()) return 'toohot';
+      return n;
+    },
+    nextNode(){
       // Read this FRESH every time. It used to be captured when the tree was
       // built, which is during worldgen - and loading a save replaces
       // player.quests wholesale a moment later, so the tree spent the rest of
@@ -7447,6 +7466,15 @@ function rookTree(){
                const sp = mqSpot(651, D_STRIP); cam.x = sp.x; cam.y = sp.y;
                if (!skating && invCount('deck')) toggleRide();
                startChase(); }, next: 'runline' }] },
+    /* the door is open, the work is not */
+    toohot: { text: () =>
+        'No. Look at you - corruption ' + player.corruption + ', and I will not go past ' +
+        mqHeatCap() + ' on a job of mine. Every camera on the mile has your face and half of ' +
+        'them are still holding it. Go and be boring somewhere for a day, or pay THE FIXER to ' +
+        'lose the paperwork. Come back when the number is ' + mqHeatCap() + ' or under.',
+      opts: [{ t: 'How do I cool off?', next: 'cooloff' },
+             { t: 'Fine' }] },
+    cooloff: { text: 'Three ways. Sleep somewhere and let a day pass - the record fades a point a day if you keep your hands still. Pay THE FIXER on the red mile, forty a point, and he deletes them faster than that. Or stop doing whatever it is you keep doing in front of the flock.' },
     runline: { text: 'GO.' },
     wait8: { text: 'Ride here. Now.' },
     act1done: { text: 'You made it. First blood, first run, first time you cannot go back. VESPER wants a word before the real work starts - she always does.',
@@ -9806,9 +9834,11 @@ function pedCrime(n, why){
 function dayTick(){                           // called once per day rollover
   dayCount++;
   for (const k in tags) if (dayCount - tags[k].day > 3) delete tags[k];
-  if (player.corruption > 0 && dayCount - (player.qvar.lastCrimeDay || 0) >= 2){
+  // one clean day a point, where it used to be two - the ladder above is
+  // steep enough that waiting it out should not be most of an evening
+  if (player.corruption > 0 && dayCount - (player.qvar.lastCrimeDay || 0) >= 1){
     player.corruption--;
-    player.qvar.lastCrimeDay = dayCount;      // the next point needs two more
+    player.qvar.lastCrimeDay = dayCount;      // the next point needs another
     toast('the record fades: -1 corruption');
   }
 }
