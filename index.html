@@ -3442,7 +3442,10 @@ const INT_FLAVOR = {
            'Everything here belongs to somebody who forgot it.'] },
   casino:  { keeper: 'PIT BOSS', floorA: 0, floorB: 0, lines: [
            'Play or make room for somebody who will.',
-           'The odds are on the wall. Reading them is free. Only that is.'] }
+           'The odds are on the wall. Reading them is free. Only that is.'] },
+  parlor:  { keeper: 'MADAME', floorA: 0, floorB: 0, lines: [
+           'Sit anywhere, sugar. Somebody will find you.',
+           'House rules: pay first, no names, no cameras. ESPECIALLY no cameras.'] }
 };
 function initInteriorFlavors(){          // palette indices exist by now
   INT_FLAVOR.shop.floorA  = C.walk;   INT_FLAVOR.shop.floorB  = C.deckOld;
@@ -3541,6 +3544,8 @@ function buildInterior(bld, door, floor){
   if (floor === 1 && (bld.dist === D_RED || bld.dist === D_STRIP) &&
       hash3(bld.id, 63, 7) < 0.22)
     kind = 'casino';                           // the house always finds a room
+  else if (floor === 1 && bld.dist === D_RED && hash3(bld.id, 65, 11) < 0.30)
+    kind = 'parlor';                           // the mile's older institution
   if (floor === 1 && bld.dist === D_DOWN && hash3(bld.id, 62, 5) < 0.3)
     kind = 'shop';                             // ground-floor retail downtown
   const trade = kind === 'shop' ? shopTypeFor(bld) : null;
@@ -3726,6 +3731,32 @@ function buildInterior(bld, door, floor){
     if (rh > 8) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.0, 'holoboard');
     if (rnd() < 0.7) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
     if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, 'sake');
+  } else if (kind === 'parlor'){
+    const theme = PARLOR_THEMES[(hash3(bld.id, 66, 13) * PARLOR_THEMES.length) | 0];
+    // soft light, low furniture: sofas up front, the rooms implied at the back
+    furn(IOX + 1.4, IOY + rh - 1.7, 'floorlamp');
+    furn(IOX + rw - 1.4, IOY + rh - 1.7, 'floorlamp');
+    furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.2, 'sofa', 0);
+    if (rw > 8) furn(IOX + 2.0, IOY + Math.min(5, rh - 3) + 0.5, 'sofa', Math.PI / 2);
+    furn(IOX + rw - 1.7, IOY + 2.0, 'kitchenette', -Math.PI / 2);   // the bar
+    for (let bx2 = IOX + 2; bx2 < IOX + rw - 2; bx2 += 3)
+      if (hash3(bld.id, bx2, 67) < 0.6) lowWall(bx2, IOY + 2);      // the booths
+    // the host by the door, and the companions working the floor
+    const host = spawnActor('vendor', IOX + 1.5, IOY + rh - 2.6, {
+      name: theme.host, brain: 'still',
+      tree: { start: { text: theme.pitch,
+        opts: [{ t: 'Good to know' }] } } });
+    host.interior = 1;
+    const nComp = Math.max(1, Math.min(3, ((rw - 3) / 3) | 0));
+    for (let ci = 0; ci < nComp; ci++){
+      const comp = theme.comps[ci];
+      const a = spawnActor('citizen', IOX + 2 + ci * Math.max(2, ((rw - 4) / nComp) | 0),
+                           IOY + 3.6, {
+        name: comp, brain: 'still', shirt: ci ? C.nPink : C.nViolet,
+        tree: companionTree(theme, comp) });
+      a.interior = 1;
+    }
+    if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, 'sake');
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
@@ -5473,6 +5504,133 @@ const CASINO_GAMES = {
   wheel:     { dealer: 'WHEEL SPINNER', open: openWheel,
                pitch: 'Round it goes. Where it stops, I get paid either way.' }
 };
+/*========================= 13k2. THE RED MILE TRADE =========================
+  The parlors sell an hour of somebody's undivided attention, and the camera
+  is a gentleman about it: the moment things get interesting the screen goes
+  to black and stays there, and all you get is dialogue - the kind of
+  dialogue that makes a room of teenagers go WHOA. WHOA. Nothing on screen,
+  ever. The fade is the whole show.
+============================================================================*/
+const PARLOR_THEMES = [
+  { name: 'THE VELVET ROOM', host: 'MADAME SABLE',
+    comps: ['VELVET', 'CANDY', 'SOLACE'],
+    pitch: 'Company, sweetheart. The real kind. The kind that asks how your day was and means it.' },
+  { name: 'NEON GARDEN', host: 'THE GARDENER',
+    comps: ['ORCHID', 'JAZZ', 'DEW'],
+    pitch: 'Every flower in this garden picked you first. House rules on the wall. Petals extra.' },
+  { name: 'THE SIGNAL HOUSE', host: 'OPERATOR',
+    comps: ['ECHO', 'STATIC', 'CARRIER'],
+    pitch: 'Full-spectrum companionship. Some of the staff are holograms. Nobody has ever once asked for a refund.' },
+  { name: 'STEAM AND SILK', host: 'THE ATTENDANT',
+    comps: ['MIST', 'LOTUS', 'EMBER'],
+    pitch: 'Bath first. Always bath first. The rest of the menu is written on the fog.' }
+];
+/* the beats: each scene is a fade-to-black and a handful of lines. corny on
+   purpose - the innuendo is the product, the black screen is the policy */
+const PARLOR_SCENES = [
+  ['The lights dim to nothing.',
+   '"So... do you come to the red mile often?"',
+   '"Only when the city gets lonely."',
+   '"The city\'s ALWAYS lonely, sugar."',
+   '"...WHOA."', '"Whoa is right. That\'s the deluxe package."',
+   'Some time later, the lights come back up.'],
+  ['Black. Total black.',
+   '"Is that a signal jammer in your pocket?"',
+   '"...actually yes, it is."',
+   '"Well leave it ON, baby. What happens here stays unrecorded."',
+   'A shoe hits a lamp somewhere in the dark.',
+   '"Careful! That lamp costs more than you do."', '"...worth it."',
+   'Eventually: morning. Or something like it.'],
+  ['The dark swallows the room.',
+   '"You have GOT to be kidding me."', '"Nope."',
+   '"That\'s not standard issue."', '"Nothing about me is standard issue."',
+   'A long pause. A vending machine hums somewhere, judgmentally.',
+   '"...okay WHOA."',
+   'The house plays soft static over whatever happened next.'],
+  ['Fade to black, hard cut.',
+   '"Tell me your name again?"', '"Does it matter?"',
+   '"It does when I\'m about to yell it."', '"...WHOA WHOA WHOA."',
+   'The neon outside blinks twice, almost politely.',
+   'Time passes. An unreasonable amount of it.'],
+  ['Darkness, and the click of a lighter that is not a lighter.',
+   '"Ever done this in zero gravity?"', '"This district has GRAVITY?"',
+   '"Give me ten minutes and it won\'t."',
+   'Somewhere, a smoke alarm chirps once and gives up.',
+   'The rest is between them and the dark.'],
+  ['The black comes down like a curtain with opinions.',
+   '"Careful with the jacket. It\'s Balenciago."', '"It\'s COUNTERFEIT."',
+   '"It\'s ASPIRATIONAL."',
+   'Fabric noises. A belt hits the floor with ceremony.',
+   '"...whoa."', '"You keep saying that."', '"You keep EARNING it."',
+   'The meter runs. Nobody checks it.']
+];
+function openScene(title, beats, after){
+  pushMode({
+    name: 'scene', pausesWorld: true, idx: 0, t0: performance.now(), title,
+    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.045 >= beats[this.idx].length; },
+    onKey(code){
+      if (code === 'Space' || code === 'Enter'){
+        if (!this.pageDone()) this.t0 = -1;
+        else if (this.idx < beats.length - 1){ this.idx++; this.t0 = performance.now(); }
+        else { popMode(); if (after) after(); }
+      }
+      if (code === 'Escape' && performance.now() - this.openedT > 250){
+        popMode(); if (after) after();
+      }
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      // the whole frame goes dark; the panel IS the scene
+      hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
+      hudPanel(0, 0, cols, rows);
+      for (let y = 0; y < rows; y++)
+        for (let x = 0; x < cols; x++){ gBuf[y * cols + x] = 0; }
+      const line = beats[this.idx];
+      const shown = this.t0 < 0 ? line
+        : line.slice(0, Math.ceil((performance.now() - this.t0) * 0.045));
+      const w = Math.min(cols - 8, 66);
+      const wrapped = wrapText(shown, w);
+      const y0 = (rows >> 1) - wrapped.length;
+      for (let i = 0; i < wrapped.length; i++)
+        hudStr((cols - wrapped[i].length) >> 1, y0 + i * 2, wrapped[i],
+               line.startsWith('"') ? H_PUR : H_DIM);
+      hudStr((cols - this.title.length) >> 1, 2, this.title, H_RED);
+      if (this.pageDone())
+        hudStr((cols - 16) >> 1, rows - 3,
+               this.idx < beats.length - 1 ? '[SPACE]' : '[SPACE]  leave', H_DIM);
+    }
+  });
+}
+function companionTree(theme, comp){
+  const price = 60, deluxe = 150;
+  const buy = (cost) => ({
+    if: () => player.credits >= cost,
+    do(){
+      player.credits -= cost;
+      const beats = PARLOR_SCENES[(hash3(worldSeed, comp.length * 31 + cost, dayCount || 0)
+                     * PARLOR_SCENES.length) | 0];
+      openScene(theme.name, beats, () => {
+        player.hp = player.maxHp;
+        flash = Math.max(flash, 0.3);
+        toast('you feel fantastic. and broke.');
+        sfx('ui_select', { vol: 0.6, rate: 0.8 });
+      });
+    }
+  });
+  return {
+    start: { text: 'Hey there. I\'m ' + comp + '. First time in ' +
+                   theme.name.toLowerCase() + '? House rules: pay first, no names, no feelings. Mostly.',
+      opts: [
+        Object.assign({ t: 'An hour of your time (' + price + ' cr)', next: 'later' }, buy(price)),
+        Object.assign({ t: 'The deluxe. Whatever that is (' + deluxe + ' cr)', next: 'later' }, buy(deluxe)),
+        { t: 'What do people... do here?', next: 'coy' },
+        { t: 'Just passing through' }] },
+    coy: { text: 'Officially? Conversation. Companionship. A sympathetic ear. ' +
+                 'Unofficially, the lights go out and the management does not ask questions, sweetheart.',
+      opts: [{ t: 'Back', next: 'start' }] },
+    later: { text: 'Come back any time. The dark remembers you fondly.' }
+  };
+}
 /* The pause menu is a hallway of doors now, not a wall of dials: each group
    of controls lives behind its own button, one green rule between each. */
 function openPauseMenu(){
@@ -11677,9 +11835,10 @@ function hudPass(){
   // The old ASCII CITY status box and the KEYS panel are gone; what the
   // player actually needs while walking lives under the map, the rest moved
   // to the pause menu (CONTROLS / DEBUG).
-  const mapOn = showMap && cols >= MW + 30;
+  const sceneOn = topMode() && topMode().name === 'scene';
+  const mapOn = showMap && cols >= MW + 30 && !sceneOn;
   if (mapOn) drawMinimap(cols - MW - 3, 1);
-  {
+  if (!sceneOn) {
     const bw = MW + 2;
     const bx = Math.max(1, cols - MW - 3), byT = mapOn ? MH + 3 : 1;
     const put = (row, txt, col) => {
