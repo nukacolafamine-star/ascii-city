@@ -4961,7 +4961,9 @@ function onCanvasClick(e){
     return;
   }
   if (m && m.name === 'pause') modeStack.length = 0;    // click through the pause card
-  if (!document.pointerLockElement) tryPointerLock();
+  lockTries = 0;                             // a click is a fresh gesture
+  try { window.focus(); } catch (e){}        // and it claims the keyboard back
+  if (!document.pointerLockElement && !topMode()) tryPointerLock();
 }
 cv.addEventListener('click', onCanvasClick);
 glv.addEventListener('click', onCanvasClick);
@@ -5649,20 +5651,57 @@ function endGrind(clean){
 ============================================================================*/
 const modeStack = [];
 function topMode(){ return modeStack.length ? modeStack[modeStack.length - 1] : null; }
-function pushMode(m){ m.openedT = performance.now(); modeStack.push(m); }
-function popMode(){ modeStack.pop(); }
+/* Mouselook holds the pointer; a menu needs it back. Talking to somebody or
+   opening a shop used to leave the lock on, which is why the map's
+   click-to-mark did nothing while a menu was up, and why pressing ESC in a
+   dialog seemed to do nothing at all - the browser was eating that ESC to
+   release the lock, the dialog stayed open, and by the time you got out of
+   it mouselook was gone with no way back but a click on the canvas.
+
+   So: leaving play hands the pointer back, and returning to play takes it
+   again. Every menu, dialog, shop and scene closes through popMode, and
+   RESUME closes through closeMenus, so both ends are covered by these two. */
+function pushMode(m){
+  m.openedT = performance.now();
+  const wasPlaying = !modeStack.length;
+  modeStack.push(m);
+  if (wasPlaying && document.pointerLockElement === view){
+    try { document.exitPointerLock(); } catch (e){}
+  }
+}
+function popMode(){
+  modeStack.pop();
+  if (!modeStack.length) resumePlay();       // back in the world, back to the controls
+}
+// keys are listened for on the window, so the window has to be the one
+// holding the keyboard - in a frame that is not a given
+function resumePlay(){
+  try { window.focus(); } catch (e){}
+  tryPointerLock();
+}
 // Refusal (browser cooldown after an ESC exit, or a context with no lock at
-// all) just means the player clicks the canvas as before.
+// all) just means the player clicks the canvas as before - but come back for
+// it once or twice first, so the cooldown alone never costs you mouselook.
+let lockRetryT = 0, lockTries = 0;
+function retryPointerLock(){
+  if (lockRetryT || lockTries >= 2) return;
+  lockTries++;
+  lockRetryT = setTimeout(() => {
+    lockRetryT = 0;
+    if (!TOUCH.on && !modeStack.length && !document.pointerLockElement) tryPointerLock();
+  }, 1400);
+}
 function tryPointerLock(){
   if (TOUCH.on) return;                      // no mouse to capture on glass
+  if (document.pointerLockElement === view) return;
   try {
     const p = view.requestPointerLock && view.requestPointerLock();
-    if (p && p.catch) p.catch(() => {});
-  } catch (e){}
+    if (p && p.catch) p.catch(() => retryPointerLock());
+  } catch (e){ retryPointerLock(); }
 }
 function closeMenus(){
   modeStack.length = 0;
-  tryPointerLock();          // back to the game means back to mouselook
+  resumePlay();              // back to the game means back to the controls
 }
 function worldFrozen(){
   const m = topMode();
@@ -7250,8 +7289,11 @@ function openDebugMenu(){
 // ESC under pointer lock never reaches the page - the browser consumes it as
 // it releases the lock - so losing the lock during play IS the pause gesture.
 document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === view){ lockTries = 0; return; }
   if (!document.pointerLockElement && !topMode()) openPauseMenu();
 });
+// some browsers report a refused lock here rather than rejecting the promise
+document.addEventListener('pointerlockerror', () => retryPointerLock());
 
 /*============================== 13c. AUDIO =================================
   Sound comes from local files in audio/ - free-use mp3 / wav the repo does
