@@ -1870,7 +1870,7 @@ const ART = {
   bin:  parseArt(['TTT', 'MMM', 'MMM', 'MMM']),
   tlight: parseArt(['MMM', 'MXM', 'MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   rail: parseArt(['M.M', 'MMM', 'M.M', 'M.M']),
-  bench: parseArt(['KKKKK', 'K...K', 'K...K']),
+  bench: benchArt(),
   cam:   parseArt(['MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   play:  parseArt(['.SSSSS.', 'MSSSSSM', 'M.....M', 'M.....M', 'MM...MM', 'M.....M']),
   metro: parseArt(['XXXXXXX', 'M.....M', 'MKKKKKM', 'M.KKK.M', 'M..K..M']),
@@ -1897,6 +1897,45 @@ const ART = {
   rock: parseArt(['.XXX.', 'XXXXM', 'XXXMM']),
   stair: parseArt(['....X', '...XX', '..XXX', '.XXXX', 'XXXXX', 'MMMMM'])
 };
+/*-------------------------------- the bench --------------------------------
+  A park bench is mostly the gaps: slats you can see the street through, a
+  back you can see over, and arms at each end. Extruding a flat elevation
+  cannot make a hole, so the bench is authored as a volume like the carts -
+  legs, a slatted seat, a slatted back, and two arm rails.
+  Local frame: u along its length, v from the front edge (0) to the back
+  (1), z up from the path.
+============================================================================*/
+function benchArt(){
+  const vol = function(aw, vd, ah){
+    const H = 0.95;                             // world height of the grid
+    const K = ROLE.K, M = ROLE.M;
+    const out = new Uint8Array(aw * vd * ah);
+    for (let z = 0; z < ah; z++){
+      const zw = (1 - (z + 0.5) / ah) * H;
+      for (let y = 0; y < vd; y++){
+        const v = (y + 0.5) / vd;
+        for (let x = 0; x < aw; x++){
+          const u = (x + 0.5) / aw;
+          const endU = u < 0.09 || u > 0.91;
+          let role = 0;
+          if (zw < 0.42){                       // four legs, nothing between
+            if (endU && (v < 0.28 || v > 0.72)) role = M;
+          } else if (zw < 0.50){                // the seat: slats front to back
+            if ((((v * 5) | 0) & 1) === 0) role = K;
+          } else if (v > 0.78){                 // the back: slats, and gaps
+            if ((((zw - 0.50) * 11) | 0) % 2 === 0) role = K;
+          } else if (endU && zw > 0.60 && zw < 0.69 && v > 0.20)
+            role = M;                           // the arm rail
+          else if (endU && zw >= 0.50 && zw <= 0.60 && v > 0.70)
+            role = M;                           // its upright, back by the frame
+          if (role) out[(z * vd + y) * aw + x] = role;
+        }
+      }
+    }
+    return out;
+  };
+  return { w: 16, h: 12, data: new Uint8Array(16 * 12), vol };
+}
 /*---------------------------- market stalls --------------------------------
   Everything else in the world is a flat elevation inflated into a solid,
   which is honest work for a bin or a post but makes a market cart a brick -
@@ -1995,7 +2034,8 @@ const PROPDEF = [
   { art: ART.bin,    w: 0.6,  h: 1.1, sl: slots({ M: [C.metal, 0.7], T: [C.tire, 0.8] }) },
   { art: ART.rail,   w: 1.05, h: 1.2, sl: slots({ M: [C.rail, 0.62] }) },
   STALL_VARIANTS[0],
-  { art: ART.bench,  w: 1.9,  h: 0.85, sl: slots({ K: [C.trunk, 0.75] }) },
+  { art: ART.bench,  w: 1.9,  h: 0.95, dep: 0.40,
+    sl: slots({ K: [C.trunk, 0.78], M: [C.rail, 0.66] }) },
   { art: ART.cam,    w: 0.5,  h: 3.6, sl: slots({ M: [C.metal, 0.60], X: [-1, 1.0] }) },
   { art: ART.play,   w: 3.2,  h: 2.4, sl: slots({ M: [C.rail, 0.62], S: [C.nPink, 0.82] }) },
   { art: ART.metro,  w: 2.6,  h: 2.2, sl: slots({ X: [-1, 1.0], K: [C.dataDk, 0.45],
@@ -4099,6 +4139,13 @@ function probeInteract(){
     if ((!a.dialog && !a.tree) || !!a.interior !== !!inside) continue;
     probeConsider(a.x, a.y, { kind: 'actor', a, prompt: '[E]  TALK - ' + a.name });
   }
+  // the courier drop: a place you have to actually put your hands on
+  if (!inside && mqLive('mq4') && player.quests.mq4 === 0){
+    const dp = mqSpot(661, D_STRIP);
+    if (dp && Math.hypot(dp.x - cam.x, dp.y - cam.y) < 4)
+      probeConsider(dp.x, dp.y, { kind: 'drop',
+        prompt: '[E]  LEAVE THE PACKAGE' });
+  }
   if (!inside){                                 // the walking public will talk
     const nearPed = gridQuery(pedGrid, cam.x, cam.y, 3, _q2);
     for (let i = 0; i < nearPed.length; i++){
@@ -4192,6 +4239,11 @@ function tryInteract(){
     openDialog(t.p.ident.name, [pedLine(t.p)]);
   } else if (t.kind === 'door'){
     if (t.exit) exitInterior(); else enterInterior(t.door);
+  } else if (t.kind === 'drop'){
+    player.qvar.mq4dropped = 1;
+    sfx('door', { vol: 0.6, rate: 1.3 });
+    toast('the package is gone, and a reply is in your pocket. back to ROOK');
+    checkQuests();
   } else if (t.kind === 'theswitch'){
     openTheChoice();
   } else if (t.kind === 'shift'){
@@ -4635,7 +4687,7 @@ addEventListener('mousedown', e => {
 });
 addEventListener('mousemove', e => {
   if (document.pointerLockElement === view && !topMode()){
-    cam.ang -= e.movementX * 0.0026;
+    cam.ang += e.movementX * 0.0026;
     cam.pitch = clamp(cam.pitch - e.movementY * 0.10, -R.rows * 0.62, R.rows * 0.62);
   }
 });
@@ -4653,7 +4705,13 @@ function onPress(code, key){
     case 'Escape': openPauseMenu(); break;
     case 'Space':
       if (sitting){ standUp(); break; }
-      if (skating){ ollie(); break; }
+      // on the deck: rolling or grinding it is an ollie, stopped at
+      // something it is a hand. On foot a prompt wins, otherwise jump.
+      if (skating){
+        if (skV > 1 || grind || !lookTarget) ollie(); else tryInteract();
+        break;
+      }
+      if (lookTarget){ tryInteract(); break; }
       jump(); break;
     case 'KeyE':
       if (sitting) break;
@@ -5014,8 +5072,8 @@ function updateCam(dt){
     const c = cam.riding;
     cam.x = c.x - c.dx * 0.5; cam.y = c.y - c.dy * 0.5;
     if (c.mine){                                // you steer; the car obeys
-      if (keys.KeyA || keys.ArrowLeft)  cam.ang += 1.9 * dt;
-      if (keys.KeyD || keys.ArrowRight) cam.ang -= 1.9 * dt;
+      if (keys.KeyA || keys.ArrowLeft)  cam.ang -= 1.9 * dt;
+      if (keys.KeyD || keys.ArrowRight) cam.ang += 1.9 * dt;
       cam.z = c.z + 0.7 + Math.sin(c.blink * 0.7) * 0.05;
       return;
     }
@@ -5075,7 +5133,7 @@ function updateCam(dt){
   if (keys.ArrowLeft) str -= 1;
   fwd += TOUCH.f; str += TOUCH.s;             // the virtual stick is analog
   const ca = Math.cos(cam.ang), sa = Math.sin(cam.ang);
-  let mx = (ca * fwd + sa * str), my = (sa * fwd - ca * str);
+  let mx = (ca * fwd - sa * str), my = (sa * fwd + ca * str);
   const ml = Math.hypot(mx, my);
   if (ml > 0.001){
     const mag = Math.min(1, ml);              // keyboard is full tilt; a stick can creep
@@ -5135,9 +5193,9 @@ function skateFrame(dt){
       if (skV > 3) skidBurst();
     }
     let turn = 0;
-    if (keys.KeyA || keys.ArrowLeft) turn += 1;
-    if (keys.KeyD || keys.ArrowRight) turn -= 1;
-    turn = clamp(turn - TOUCH.s, -1, 1);
+    if (keys.KeyA || keys.ArrowLeft) turn -= 1;
+    if (keys.KeyD || keys.ArrowRight) turn += 1;
+    turn = clamp(turn + TOUCH.s, -1, 1);
     if (turn && stumbleT <= 0){
       cam.ang += turn * (2.6 / (1 + skV / 6)) * dt;     // heavy at speed
       skV *= 1 - 0.25 * Math.abs(turn) * dt;            // carving costs
@@ -6308,9 +6366,9 @@ const MQ1 = {
     stages: [{ log: 'cut 3 street cameras with a HACKSAW - face one and press E',
       auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq3Base || 0) >= 3; } }] },
   mq4: { name: 'COURIER', act: 1,
-    stages: [{ log: 'carry the cell\u2019s package to the drop in THE STRIP',
+    stages: [{ log: 'carry the cell\u2019s package to the drop in THE STRIP - hand it over there',
       target(){ return mqSpot(661, D_STRIP); },
-      auto(){ return atSpot(mqSpot(661, D_STRIP), 5); } },
+      auto(){ return !!player.qvar.mq4dropped; } },
       { log: 'take the reply back to ROOK at THE HIDEOUT', target: toHideout }] },
   mq5: { name: 'WHEELS', act: 1,
     stages: [{ log: 'get a KICKDECK (tool shops sell them) and meet ROOK',
@@ -7054,7 +7112,7 @@ function sfxAt(name, x, y, o){
   if (d > 46) return;
   o = Object.assign({}, o);
   o.vol = (o.vol !== undefined ? o.vol : 1) / (1 + d * 0.22);
-  o.pan = clamp((dirY * dx - dirX * dy) / Math.max(0.001, d) * 0.9, -1, 1);
+  o.pan = clamp((dirX * dy - dirY * dx) / Math.max(0.001, d) * 0.9, -1, 1);
   sfx(name, o);
 }
 
@@ -11155,10 +11213,8 @@ function stampIntersectionIds(){
         if (tt !== T_CROSS && tt !== T_ROAD){ ok = false; break; }
       }
       if (!ok) continue;
-      // the raycast view mirrors east-west relative to world axes, so the
-      // paint goes down as a mirror image: reversed run, flipped glyphs
       for (let i = 0; i < id.length; i++)
-        signFloor[y0 * MAP + x0 + i] = id[id.length - 1 - i];
+        signFloor[y0 * MAP + x0 + i] = id[i];
     }
 }
 function openMap(){
@@ -11197,8 +11253,8 @@ function openMap(){
       switch (code){
         case 'KeyW': case 'ArrowUp':    this.cy -= step; pan(); break;
         case 'KeyS': case 'ArrowDown':  this.cy += step; pan(); break;
-        case 'KeyA': case 'ArrowLeft':  this.cx += step; pan(); break;   // east is left now
-        case 'KeyD': case 'ArrowRight': this.cx -= step; pan(); break;
+        case 'KeyA': case 'ArrowLeft':  this.cx -= step; pan(); break;
+        case 'KeyD': case 'ArrowRight': this.cx += step; pan(); break;
         case 'KeyQ': case 'BracketLeft':  this.z = Math.min(8, this.z * 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'KeyE': case 'BracketRight': this.z = Math.max(1, this.z / 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'Enter':                          // drop the line at the crosshair
@@ -11221,7 +11277,7 @@ function openMap(){
       }
       if (cy >= R.rows - 3){ this.onKey('Escape'); return; }
       // anywhere else: that is where you want to go
-      const wx = this.cx - (cx - R.cols / 2) * this.z;
+      const wx = this.cx + (cx - R.cols / 2) * this.z;
       const wy = this.cy + (cy - R.rows / 2) * this.z * 1.8;
       setWaypoint(wx, wy);
     },
@@ -11272,7 +11328,7 @@ function drawMapMode(m){
       else if (t === T_LOT) hudCell(x, r, '"', H_DRK);
     }
   }
-  const sx = wx => ((m.cx - wx) / m.z + cols / 2) | 0;
+  const sx = wx => ((wx - m.cx) / m.z + cols / 2) | 0;
   const sy = wy => ((wy - m.cy) / za + rows / 2) | 0;
   // intersection ids at close zoom
   if (m.z <= 2){
@@ -11670,7 +11726,7 @@ function floorSample(wx, wy, ix, iy){
     if (pc !== undefined){
       const gl = MINIFONT[pc];
       if (gl && fx >= 0.14 && fy >= 0.10){
-        const gc = 2 - (((fx - 0.14) * 4.17) | 0), gr = ((fy - 0.10) * 6.25) | 0;
+        const gc = ((fx - 0.14) * 4.17) | 0, gr = ((fy - 0.10) * 6.25) | 0;
         if (gc >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
           _wb = C.nAmber; _wd = 0.95; _wwet = 1;
           return;
@@ -12086,7 +12142,7 @@ function drawSprite(sx, sy, zb, wW, wH, art, sb, sd, mirror, dyn){
   const cols = R.cols, rows = R.rows;
   const unitCols = (cols * 0.5 / planeLen) / tY;
   const unitRows = projRows / tY;
-  const cc = cols * 0.5 * (1 + tX / tY);
+  const cc = cols * 0.5 * (1 - tX / tY);
   const wc = Math.max(0.6, wW * unitCols), hr = Math.max(0.6, wH * unitRows);
   const left = cc - wc * 0.5;
   const rowB = horizon + (cam.z - zb) * unitRows, rowT = rowB - hr;
@@ -12269,7 +12325,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const tNear = Math.max(0.2, tC - rad);
   // the cells this solid can possibly touch
   const tX = (dirY * relX - dirX * relY) / planeLen;
-  const ccC = cols * 0.5 * (1 + tX / tC);
+  const ccC = cols * 0.5 * (1 - tX / tC);
   const halfC = rad * (cols * 0.5 / planeLen) / tNear;
   let c0 = Math.floor(ccC - halfC) - 1, c1 = Math.ceil(ccC + halfC) + 1;
   if (c1 < 0 || c0 >= cols) return;
@@ -12415,7 +12471,7 @@ function drawPlane(axis, plane, a0, a1, zb, hm, art, sb, sd, dyn, flip){
       const tY = rx * dirX + ry * dirY;
       if (tY < 0.25){ ok = 0; break; }
       const tX = (dirY * rx - dirX * ry) / planeLen;
-      const cc = cols * 0.5 * (1 + tX / tY);
+      const cc = cols * 0.5 * (1 - tX / tY);
       if (cc < lo) lo = cc;
       if (cc > hi) hi = cc;
     }
@@ -12721,8 +12777,13 @@ function drawSignPlane(sg){
     const t = (sg.plane - camA) / rp;
     if (t < 0.25 || t > viewD) continue;
     const hitB = sg.axis === 0 ? cam.y + rayY[x] * t : cam.x + rayX[x] * t;
-    const u = (hitB - sg.a0) * invLen;
+    let u = (hitB - sg.a0) * invLen;
     if (u < 0 || u >= 1) continue;
+    // a0 is always the lower world coordinate, so which way the lettering
+    // runs across the screen depends on which way you are facing it. Signs
+    // are culled to their front face, so orienting to the view always
+    // reads forwards - it used to be a coin flip per sign.
+    if (sg.axis === 0 ? dirX < 0 : dirY > 0) u = 0.9999 - u;
     const ur = projRows / t;
     const rowB = horizon + (cam.z - sg.z) * ur;
     const rowT = rowB - sg.hm * ur;
@@ -13438,7 +13499,7 @@ function drawMinimap(x0, y0){
     let line = '';
     const ty = cyT + (j - hh) * 2;      // +y runs down-screen, same as the city map
     for (let i = 0; i < MW; i++){
-      const tx = cxT - (i - hw);        // east left, like the view
+      const tx = cxT + (i - hw);        // east right, like the world
       if (!inMap(tx, ty)){ line += ' '; continue; }
       const t = tType[ty * MAP + tx];
       line += t === T_BLD ? '#' : t === T_WATER ? '~' : t === T_BRIDGE ? '=' :
@@ -13910,7 +13971,12 @@ function render(){
   gBuf.fill(0); dBuf.fill(1e30);
   dirX = Math.cos(cam.ang); dirY = Math.sin(cam.ang);
   planeLen = Math.tan(CFG.FOV * 0.5);
-  planeX = dirY * planeLen; planeY = -dirX * planeLen;
+  // The camera plane used to point the wrong way round, so the whole world
+  // rendered as its own mirror image: facing north put world-EAST on the
+  // left of the screen. Everything downstream had been bent to match - the
+  // maps drew east-left, the controls strafed backwards, the painted street
+  // numbers were reversed. This is the one sign that caused all of it.
+  planeX = -dirY * planeLen; planeY = dirX * planeLen;
   projRows = (cols * R.cellW) / (2 * planeLen * R.cellH);
   horizon = R.rows * 0.5 + cam.pitch;
   hzRow = clamp(Math.floor(horizon), 0, R.rows - 1);
