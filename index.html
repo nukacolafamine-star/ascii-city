@@ -2922,18 +2922,8 @@ function onPress(code, key){
   const m = topMode();                          // an open mode owns the keyboard
   if (m){ if (m.onKey) m.onKey(code, key); return; }
   if (skating && airT > 0){                     // mid-air, the keys are trick inputs
-    const TK = { KeyQ: ['kickflip', 10], KeyE: ['heelflip', 10],
-                 KeyW: ['nollie', 12], KeyS: ['shove-it', 8],
-                 KeyA: ['bigspin', 14], KeyD: ['impossible', 16] };
-    if (TK[code]){
-      const nm = TK[code][0], pts = TK[code][1];
-      if (!skTrick) skTrick = { name: nm, base: nm, pts, t: 0, dur: 0.3 };
-      else if (!skTrick.late && skTrick.name.indexOf(nm) < 0){
-        skTrick.name += ' late ' + nm;          // one late add, clock untouched
-        skTrick.pts = (skTrick.pts + pts) * 2;
-        skTrick.late = 1;
-      }
-      sfx('ui_move', { rate: 2.0, vol: 0.35 });
+    if (TRICK_KEY[code]){
+      pushTrick(TRICK_KEY[code]);
       return;
     }
   }
@@ -3041,13 +3031,13 @@ function toggleRide(){
 let skating = false, wasSkating = false, airT = 0, airDur = 0.5, arcH = 0.9;
 let skV = 0, pushCd = 0, pushArtT = 0, dipT = 0, crouchT = 0, landT = 0;
 let stumbleT = 0, wobbleT = 0, carveT = 0, seamAcc = 0, nearT = 0, skLean = 0;
-let skTrick = null, skCombo = 0, comboT = 0, styleN = 0, styleAcc = 0;
+let skTrick = null, skCombo = 1, comboT = 0, styleN = 0, styleAcc = 0;
 let ollieHold = -1;                            // >=0 while SPACE is charging
 let grind = null, grindT = 0;
 const skParts = [];
 function resetSkate(){
-  skV = 0; airT = 0; skTrick = null; grind = null;
-  skCombo = 0; comboT = 0; styleN = 0; stumbleT = 0; wobbleT = 0; crouchT = 0;
+  skV = 0; airT = 0; skTrick = null; skChain = []; grind = null;
+  skCombo = 1; comboT = 0; styleN = 0; stumbleT = 0; wobbleT = 0; crouchT = 0;
 }
 function cashOutDeck(){
   if (styleN >= 10){
@@ -3055,7 +3045,52 @@ function cashOutDeck(){
     player.credits += pay;
     toast('street cred +' + pay + ' cr');
   }
-  styleN = 0; skCombo = 0; comboT = 0; skTrick = null; grind = null;
+  styleN = 0; skCombo = 1; comboT = 0; skTrick = null; skChain = []; grind = null;
+}
+/* Six flicks, and a language for stringing them together. This is a
+   digital city - the board does things a real one cannot, and the names
+   escalate to say so. */
+const TRICK_KEY = {
+  KeyQ: { base: 'kickflip',   name: 'KICKFLIP',   pts: 10 },
+  KeyE: { base: 'heelflip',   name: 'HEELFLIP',   pts: 10 },
+  KeyW: { base: 'ollie',      name: 'OLLIE',      pts: 8 },
+  KeyS: { base: 'shove-it',   name: 'SHOVE-IT',   pts: 8 },
+  KeyA: { base: 'bigspin',    name: 'BIGSPIN',    pts: 14 },
+  KeyD: { base: 'impossible', name: 'IMPOSSIBLE', pts: 16 }
+};
+const COUNT_WORD = ['', '', 'DOUBLE', 'TRIPLE', 'QUAD', 'PENTA', 'HEXA',
+                    'SEPTA', 'OCTA', 'NONA', 'DECA'];
+const ESCALATE = ['', 'SUPER', 'HYPER', 'MEGA', 'ULTRA', 'OMEGA', 'QUANTUM',
+                  'VOID', 'IMPOSSIBLE'];
+let skChain = [];
+function chainRuns(){                          // repeats collapse into runs
+  const runs = [];
+  for (const t of skChain){
+    const last = runs[runs.length - 1];
+    if (last && last.name === t.name) last.n++;
+    else runs.push({ name: t.name, pts: t.pts, n: 1 });
+  }
+  return runs;
+}
+function chainName(){
+  const runs = chainRuns();
+  if (!runs.length) return '';
+  return runs.map((r, i) => {
+    const esc = ESCALATE[Math.min(i, ESCALATE.length - 1)];
+    const cnt = r.n < COUNT_WORD.length ? COUNT_WORD[r.n] : 'x' + r.n;
+    return [esc, cnt, r.name].filter(Boolean).join(' ');
+  }).join(' ');
+}
+function chainPoints(){                        // deeper into the chain pays more
+  let pts = 0;
+  chainRuns().forEach((r, i) => { pts += r.n * r.pts * (1 + i * 0.5); });
+  return Math.round(pts);
+}
+function pushTrick(def){
+  skChain.push(def);
+  // the snap: the board flicks to this trick's first frame on the press
+  skTrick = { base: def.base, name: def.name, t: 0, dur: 0.22 };
+  sfx('ui_move', { rate: Math.min(3, 1.7 + skChain.length * 0.12), vol: 0.35 });
 }
 function grindableNear(r){                    // a rail or a bench under you
   let best = null, bd = r;
@@ -3305,7 +3340,7 @@ const SK_MAX = 14.3;              // twice a sprint, flat out
 function skateFrame(dt){
   if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
   if (keys.KeyF) cam.pitch = clamp(cam.pitch - 26 * dt, -R.rows * 0.62, R.rows * 0.62);
-  if (comboT > 0){ comboT -= dt; if (comboT <= 0) skCombo = 0; }
+  if (comboT > 0){ comboT -= dt; if (comboT <= 0) skCombo = 1; }
   if (pushArtT > 0) pushArtT -= dt;
   for (let i = skParts.length - 1; i >= 0; i--)
     if ((skParts[i].t -= dt) <= 0) skParts.splice(i, 1);
@@ -3448,25 +3483,33 @@ function skateLand(){
   resolveTrick(false);
 }
 function resolveTrick(intoGrind){
-  if (!skTrick) return;
-  const frac = Math.min(1, skTrick.t / skTrick.dur);
-  if (frac >= 1 || intoGrind){                 // caught it clean
-    skCombo = Math.min(9, skCombo + 1); comboT = 3;
-    const pts = skTrick.pts * skCombo;
+  if (!skChain.length){ skTrick = null; if (!intoGrind) skCombo = 1; return; }
+  const nm = chainName();
+  const n = skChain.length;
+  // one flick needs to finish; a chain only needs its last flick underway
+  const frac = skTrick ? Math.min(1, skTrick.t / skTrick.dur) : 1;
+  const clean = intoGrind || frac >= (n > 1 ? 0.45 : 0.8);
+  const sketchy = !clean && frac >= 0.22;
+  if (clean){
+    const pts = chainPoints() * skCombo;
     styleN += pts;
     skV = Math.min(SK_MAX, skV + 0.3);
-    toast(skTrick.name + '  +' + pts + (skCombo > 1 ? '  x' + skCombo : ''));
-  } else if (frac >= 0.5){                     // sketchy catch
-    styleN += skTrick.pts >> 1;
+    toast((nm + '  +' + pts + (skCombo > 1 ? '  x' + skCombo : '')).slice(0, 64));
+    sfx('ui_select', { vol: 0.5, rate: Math.min(2.2, 1 + n * 0.12) });
+  } else if (sketchy){
+    styleN += chainPoints() >> 1;
     skV *= 0.7; wobbleT = 0.4;
     sfx('ui_back', { rate: 0.4, vol: 0.5 });
-    toast('sketchy ' + skTrick.name);
-  } else skBail(skTrick.name);
-  skTrick = null;
+    toast(('sketchy ' + nm).slice(0, 64));
+  } else skBail(nm);
+  // a rail keeps the streak alive; dirt ends it
+  if (clean && intoGrind){ skCombo = Math.min(9, skCombo + 1); comboT = 6; }
+  else skCombo = 1;
+  skChain = []; skTrick = null;
 }
 function skBail(why){
-  skV = 0; stumbleT = 0.6; skCombo = 0; comboT = 0;
-  skTrick = null; grind = null;
+  skV = 0; stumbleT = 0.6; skCombo = 1; comboT = 0;
+  skTrick = null; skChain = []; grind = null;
   styleN = Math.max(0, styleN - 10);
   sfx('hit', { rate: 0.55, vol: 0.8 });
   toast('bailed - ' + why);
@@ -6117,7 +6160,7 @@ const DT_IMPOSSIBLE = [
     "      '`'         '`'     "
   ],
 ];
-const DECK_TRICKS = { kickflip: DT_KICKFLIP, heelflip: DT_HEELFLIP,
+const DECK_TRICKS = { kickflip: DT_KICKFLIP, heelflip: DT_HEELFLIP, ollie: DT_NOLLIE,
                       'shove-it': DT_SHOVEIT, nollie: DT_NOLLIE,
                       bigspin: DT_BIGSPIN, impossible: DT_IMPOSSIBLE };
 const VM_PIPE_HOLD = [
@@ -8907,6 +8950,11 @@ function hudPass(){
         if (styleN > 0 || skCombo > 1){
           const stx = 'STYLE ' + styleN + (skCombo > 1 ? ' x' + skCombo : '');
           hudStr(Math.max(0, cols - stx.length - 2), rows - 2, stx, H_PUR);
+        }
+        if (skChain.length){                    // the trick reads as you fly
+          const cn = (chainName() + '  ' + chainPoints() +
+                      (skCombo > 1 ? ' x' + skCombo : '')).slice(0, cols - 4);
+          hudStr(Math.max(1, (cols - cn.length) >> 1), rows - 4, cn, H_YEL);
         }
       }
       if (vAnim){
