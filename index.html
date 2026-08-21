@@ -4786,9 +4786,15 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.7) mid(0.5, 0.70, 'cratepile', Math.PI);
     if (rnd() < 0.5) wall('e', 0.12, 'generator');
     if (rnd() < 0.4) bin(IOX + 1.6, IOY + rh - 1.6);
-    dropItem(IOX + 2.5, IOY + rh - 2.5, 0, 'scrap');
-    if (rnd() < 0.5) dropItem(IOX + rw - 2.5, IOY + 2.5, 0, 'scrap');
-    if (rnd() < 0.55) dropItem(IOX + rw - 2.5, IOY + rh - 2.5, 0, 'ammo', 4);
+    /* The scrap comes FIRST and always, DEPOT_SCRAP of it, so its delta keys
+       are 'b<id>_0' upward and can be counted from outside the room without
+       building it. Two errands send you here for three units and for five,
+       and "go to a depot" has to mean the depot has them. */
+    for (let i = 0; i < DEPOT_SCRAP; i++){
+      const a = i / Math.max(1, DEPOT_SCRAP - 1);
+      dropItem(IOX + 1.9 + a * (rw - 3.8), IOY + rh - 2.4 - (i & 1) * 1.5, 0, 'scrap');
+    }
+    if (rnd() < 0.55) dropItem(IOX + rw - 2.5, IOY + 2.5, 0, 'ammo', 4);
   } else {                                          // home
     // bed in the corner, kitchen at the far end, couch and television facing
     // each other across the floor with room to walk between them
@@ -4801,8 +4807,12 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.35) bin(IOX + rw - 1.5, IOY + rh - 1.6);
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
   }
+  // A shop ALWAYS has somebody behind the counter. It used to be 85%, and the
+  // one in seven with nobody in it could not be traded with at all - which is
+  // a dead room on its own account, and a dead end when an errand has sent
+  // you to that trade to buy something.
   if (kind !== 'dungeon' && kind !== 'empty' && kind !== 'hideout' &&
-      rnd() < (kind === 'storage' ? 0.35 : 0.85)){
+      (kind === 'shop' || rnd() < (kind === 'storage' ? 0.35 : 0.85))){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
     const a = spawnClear('vendor', kx, IOY + 1.4,
                          { name: TF ? TF.keeper : F.keeper, brain: 'still',
@@ -7318,8 +7328,13 @@ const MQ1 = {
       auto(){ return !!player.qvar.mq4dropped; } },
       { log: 'take the reply back to ROOK at THE HIDEOUT', target: toHideout }] },
   mq5: { name: 'WHEELS', act: 1,
-    stages: [{ log: 'get a KICKDECK (tool shops sell them) and meet ROOK',
-      target: toHideout,
+    stages: [{ log: () => invCount('deck') > 0
+                 ? 'take the KICKDECK to ROOK'
+                 : 'get a KICKDECK - a TOOLS counter sells them',
+      target(){
+        if (invCount('deck') > 0) return toHideout();
+        return supplyMark(nearestShopFor('deck'), 'TOOLS') || toHideout();
+      },
       auto(){ return invCount('deck') > 0 && atHideout(6); } }] },
   mq6: { name: 'NOBODY COUNTS IT', act: 1,
     stages: [{ log: () => invCount('scrap') >= 5
@@ -7329,8 +7344,7 @@ const MQ1 = {
       // point at the work until it is done, then at the man who wanted it
       target(){
         if (invCount('scrap') >= 5) return toHideout();
-        const d = nearestDepot();
-        return d ? { x: d.x, y: d.y, name: regionName(d.x, d.y) + ' DEPOT' } : toHideout();
+        return supplyMark(nearestDepot(5 - invCount('scrap')), 'DEPOT') || toHideout();
       },
       auto(){ return invCount('scrap') >= 5 && atHideout(6); } }] },
   mq7: { name: 'A LOUD DISTRACTION', act: 1,
@@ -8991,10 +9005,16 @@ const QUESTS = {
   noodles: {
     name: 'A WARM MEAL',
     stages: [
-      { log: 'bring CUP NOODLES to the drifter (stalls and shop counters carry them)',
-        target(){ if (invCount('noodles') === 0) return null;
-                  const a = actors.find(x => x.name === 'DRIFTER');
-                  return a && { x: a.x, y: a.y, name: 'THE DRIFTER' }; } }
+      { log: () => invCount('noodles') > 0
+                 ? 'take the CUP NOODLES to the drifter'
+                 : 'buy CUP NOODLES - any market, bodega or general counter has them',
+        target(){
+          if (invCount('noodles') > 0){        // you have them: go and give them
+            const a = actors.find(x => x.name === 'DRIFTER');
+            return a && { x: a.x, y: a.y, name: 'THE DRIFTER' };
+          }
+          return supplyMark(nearestShopFor('noodles'), 'COUNTER');
+        } }
     ]
   },
   test: {
@@ -9015,16 +9035,7 @@ const QUESTS = {
     name: 'QUIET STREETS',
     stages: [
       { log: 'buy a HACKSAW - find a counter signed TOOLS',
-        target(){
-          let best = null, bd = 1e9;
-          for (const d of doors){
-            const B = buildings[d.b];
-            if (!B || buildingUse(B) !== 'tools') continue;
-            const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
-            if (dd < bd){ bd = dd; best = d; }
-          }
-          return best && { x: best.x, y: best.y, name: 'TOOLS & TRINKETS' };
-        },
+        target(){ return supplyMark(nearestShopFor('saw'), 'TOOLS'); },
         auto(){ return invCount('saw') > 0; } },
       { log: 'cut 3 flock cams (face one and press E)',
         auto(){ return (player.qvar.camCut || 0) - (player.qvar.quietBase || 0) >= 3; } },
@@ -9045,8 +9056,8 @@ const QUESTS = {
             const a = actors.find(x => x.name === 'THE WATCHER');
             return a && { x: a.x, y: a.y, name: 'THE WATCHER' };
           }
-          const d = nearestDepot();
-          return d && { x: d.x, y: d.y, name: regionName(d.x, d.y) + ' DEPOT' };
+          const d = nearestDepot(3 - Math.min(3, invCount('scrap')));
+          return supplyMark(d, 'DEPOT');
         } }
     ]
   },
@@ -9342,15 +9353,50 @@ function questLog(st){ return typeof st.log === 'function' ? st.log() : st.log; 
 /* Where the scrap actually is. Depots are the only rooms that stock it, and
    the only use dealt in the industrial regions, so the nearest one is both
    the right errand and the right direction. */
-function nearestDepot(){
-  let best = null, bd = 1e9;
+const DEPOT_SCRAP = 5;                   // what every depot keeps on its floor
+/* How much of a depot's scrap is still lying there. The drops are keyed
+   'b<id>_0' upward, so this is answerable without opening the room. */
+function depotScrapLeft(b){
+  let n = 0;
+  for (let i = 0; i < DEPOT_SCRAP; i++)
+    if (!worldDelta.taken['b' + b.id + '_' + i]) n++;
+  return n;
+}
+/* The nearest depot that can actually fill the order. An errand for five
+   units should not walk you to a shed you emptied an hour ago - if none has
+   enough left, take the fullest one within reach rather than the nearest. */
+function nearestDepot(need){
+  let best = null, bd = 1e9, alt = null, ad = -1;
   for (const d of doors){
     const b = buildings[d.b];
     if (!b || buildingUse(b) !== 'depot') continue;
     const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
+    const left = depotScrapLeft(b);
+    if (!need || left >= need){
+      if (dd < bd){ bd = dd; best = d; }
+    } else if (left > 0 && (left > ad || (left === ad && dd < bd))){
+      ad = left; alt = d;
+    }
+  }
+  return best || alt;
+}
+/* Where to buy a thing. Every trade carries its whole list, so the nearest
+   counter of the right trade is a promise, not a hope. */
+function nearestShopFor(item){
+  let best = null, bd = 1e9;
+  for (const d of doors){
+    const b = buildings[d.b];
+    if (!b) continue;
+    const u = buildingUse(b);
+    const tr = u && USES[u] && USES[u].trade;
+    if (!tr || !SHOP_TYPES[tr] || SHOP_TYPES[tr].stock.indexOf(item) < 0) continue;
+    const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
     if (dd < bd){ bd = dd; best = d; }
   }
   return best;
+}
+function supplyMark(d, what){
+  return d && { x: d.x, y: d.y, name: regionName(d.x, d.y) + ' ' + what };
 }
 /* The city names its own industry - GANTRY ROW, RUSTYARD, THE SMELTERS - and
    those names are on the map. Quests use them instead of inventing one. */
