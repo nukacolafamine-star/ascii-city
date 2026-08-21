@@ -4611,6 +4611,28 @@ function tryInteract(){
 /* The cast: three characters near the start, each carrying a quest. Their
    conversations are trees - see openTree - and quest state picks the entry
    node, so they greet you differently as their thread moves along. */
+/* Who is standing in the hideout depends on choices recorded in qvar, so it
+   has to be dealt AFTER those are known. On a fresh world that is any time;
+   on a load it is only true once the save has been applied, which is why
+   this is its own function and loadGame calls it again. */
+function spawnHideoutCast(){
+  if (!HIDEOUT) return;
+  for (let i = actors.length - 1; i >= 0; i--)
+    if (actors[i].name === 'ROOK' || actors[i].name === 'VESPER') actors.splice(i, 1);
+  if (player.qvar.betrayed){
+    // the cell knows what you chose; its leader is done talking
+    const rk = spawnActor('razor', HIDEOUT.x, HIDEOUT.y, {
+      name: 'ROOK', brain: 'hostile', hp: 220, shirt: C.carC, skin: C.dataDk });
+    rk.atk = 12; rk.spd = 2.4;
+  } else {
+    const rk = spawnActor('citizen', HIDEOUT.x, HIDEOUT.y, {
+      name: 'ROOK', brain: 'still', shirt: C.carC, skin: C.dataDk, tree: rookTree() });
+    rk.range = 2;
+    if (!player.qvar.vesperDead)
+      spawnActor('citizen', HIDEOUT.x + 1.2, HIDEOUT.y, {
+        name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: vesperTree() });
+  }
+}
 function spawnActors(){
   actors = [];
   const w = randWalkNear(cam.x, cam.y, 4, 10);
@@ -4737,7 +4759,7 @@ function spawnActors(){
                { t: 'Leave' }] },
       work: { text: 'The flock over the mile sees too much and forgets nothing. Thin it. Three cameras. There is a tools counter under a TOOLS sign - ask for the hacksaw.',
         opts: [{ t: 'Deal',
-                 do(){ player.qvar.quietBase = player.qvar.camCut || 0; startQuest('quiet'); },
+                 do(){ mqBase('quietBase', 'camCut'); startQuest('quiet'); },
                  next: 'deal' },
                { t: 'Not my fight' }] },
       deal: { text: 'Cameras first, questions never. The saw pays for itself in scrap anyway.' },
@@ -4782,21 +4804,7 @@ function spawnActors(){
     { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
       a: 'tee', b: 'boba' }
   ];
-  if (HIDEOUT){
-    if (player.qvar.betrayed){
-      // the cell knows what you chose; its leader is done talking
-      const rk = spawnActor('razor', HIDEOUT.x, HIDEOUT.y, {
-        name: 'ROOK', brain: 'hostile', hp: 220, shirt: C.carC, skin: C.dataDk });
-      rk.atk = 12; rk.spd = 2.4;
-    } else {
-      const rk = spawnActor('citizen', HIDEOUT.x, HIDEOUT.y, {
-        name: 'ROOK', brain: 'still', shirt: C.carC, skin: C.dataDk, tree: rookTree() });
-      rk.range = 2;
-      if (!player.qvar.vesperDead)
-        spawnActor('citizen', HIDEOUT.x + 1.2, HIDEOUT.y, {
-          name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: vesperTree() });
-    }
-  }
+  spawnHideoutCast();
   {
     const isp = mqSpot(711, D_DOWN);
     spawnActor('citizen', isp.x, isp.y, {
@@ -6618,6 +6626,13 @@ function mqStart(id){
   startQuest(id);
   player.track = id;
 }
+/* Some jobs count a DELTA - three walls from where you were, not three walls
+   ever. The baseline has to be taken exactly ONCE: taking it again on a
+   second handshake sets it to your current total and silently erases the
+   work you had already done. */
+function mqBase(key, counter){
+  if (player.qvar[key] === undefined) player.qvar[key] = player.qvar[counter] || 0;
+}
 /* a job is done: bump the step, and if it closes an act, bump the act */
 function mqDone(id, act, step){
   if (player.quests[id] === 'done') return;
@@ -6719,9 +6734,13 @@ function mqFirecracker(x, y){
   that hands out or closes the current job. Each act gets its own opening
   speech the first time you reach it. */
 function rookTree(){
-  const q = player.quests;
   return {
     entry(){
+      // Read this FRESH every time. It used to be captured when the tree was
+      // built, which is during worldgen - and loading a save replaces
+      // player.quests wholesale a moment later, so the tree spent the rest of
+      // the game reading an empty object and ROOK never got past hello.
+      const q = player.quests;
       if (q.mq1 === undefined) return 'meet';           // first contact
       if (mqLive('mq1')) return 'settle';
       if (q.mq2 === undefined) return 'give2';
@@ -6787,23 +6806,23 @@ function rookTree(){
       return 'act3done';
     },
     meet: { text: 'So the watcher sends me a stray. I am ROOK. This is the cell - what is left of it. We are going to turn this city\u2019s lights off and watch which half of it actually knows how to live in the dark. You in, or are you sightseeing?',
-      opts: [{ t: 'I\u2019m in', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
+      opts: [{ t: 'I\u2019m in', do(){ mqStart('mq2'); mqBase('mq2Base', 'vandal');
                                        mqDone('mq1'); }, next: 'in' },
              { t: 'Turn the power off? That hurts everyone', next: 'why' },
              { t: 'Not my fight', next: 'leave' }] },
     why: { text: 'Everyone already lives in the brownouts - everyone but the towers. Cut the grid and the people lose a light they were already losing. The corps lose the only thing holding them up. It is not cruelty. It is math.',
-      opts: [{ t: 'Alright. I\u2019m in', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
+      opts: [{ t: 'Alright. I\u2019m in', do(){ mqStart('mq2'); mqBase('mq2Base', 'vandal');
                                               mqDone('mq1'); }, next: 'in' },
              { t: 'I\u2019ll think about it', next: 'leave' }] },
     in: { text: 'Good. First thing - make yourself known. Put our mark on three walls. There is a burner at any tools counter. Paint loud.' },
     settle: { text: 'You found us. Come in. Talk to VESPER if you want the version that is kind about it; talk to me if you want the true one.',
-      opts: [{ t: 'Put me to work', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
+      opts: [{ t: 'Put me to work', do(){ mqStart('mq2'); mqBase('mq2Base', 'vandal');
                                           mqDone('mq1'); }, next: 'in' }] },
     give2: { text: 'Three walls. The burner is yours to buy. Go.',
-      opts: [{ t: 'On it', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0; } }] },
+      opts: [{ t: 'On it', do(){ mqStart('mq2'); mqBase('mq2Base', 'vandal'); } }] },
     wait2: { text: () => 'Marks so far: ' + ((player.qvar.vandal || 0) - (player.qvar.mq2Base || 0)) + ' of 3.' },
     give3: { text: 'People saw the paint. Now blind them. Three street cameras, a hacksaw through each eye. Face one and cut.',
-      opts: [{ t: 'Consider them blind', do(){ mqStart('mq3'); player.qvar.mq3Base = player.qvar.camCut || 0; } }] },
+      opts: [{ t: 'Consider them blind', do(){ mqStart('mq3'); mqBase('mq3Base', 'camCut'); } }] },
     wait3: { text: () => 'Cameras cut: ' + ((player.qvar.camCut || 0) - (player.qvar.mq3Base || 0)) + ' of 3.' },
     give4: { text: 'You can be trusted with a package, then. Take this to a friend on the strip. Do not open it. Bring back what they give you.',
       opts: [{ t: 'Where on the strip', do(){ mqStart('mq4'); }, next: 'go4' }] },
@@ -6855,7 +6874,7 @@ function rookTree(){
     houseline: { text: 'Do not get comfortable. Comfortable people stop cutting cameras.' },
     wait14: { text: 'The rowhouse is marked, in the suburbs. Go put your feet up. Once.' },
     give15: { text: 'The tower job is close. First, go dark a whole downtown block for us - four more cameras, clean and quiet.',
-      opts: [{ t: 'Four cameras', do(){ mqStart('mq15'); player.qvar.mq15Base = player.qvar.camCut || 0; } }] },
+      opts: [{ t: 'Four cameras', do(){ mqStart('mq15'); mqBase('mq15Base', 'camCut'); } }] },
     wait15: { text: () => 'Cameras cut: ' + ((player.qvar.camCut || 0) - (player.qvar.mq15Base || 0)) + ' of 4.' },
     give16: { text: 'This is the one. A corpo tower, top floor, the access we have been building toward. Get in and get up - but their cameras are LIVE. Every eye that finds you sends security. Do not be seen, or fight what seeing you costs.',
       opts: [{ t: 'Going in', do(){ mqStart('mq16'); }, next: 'wait16' }] },
@@ -8287,7 +8306,22 @@ function loadGame(n){
     for (const p of props)
       if ((p.k === PK_CAM || p.k === PK_LAMP) &&
           worldDelta.cut[(p.y | 0) * MAP + (p.x | 0)]) p.dead = 1;
-  Object.assign(player, s.player);
+  // Restore INTO the objects that already exist rather than swapping them
+  // out. Long-lived closures - dialogue trees above all - hold references to
+  // player.quests and player.qvar for the life of the world, and replacing
+  // those objects leaves every one of them reading a snapshot that can never
+  // change again. Keeping identity means a load is invisible to them.
+  for (const k in s.player){
+    const v = s.player[k], cur = player[k];
+    if (Array.isArray(v) && Array.isArray(cur)){
+      cur.length = 0;
+      for (let i = 0; i < v.length; i++) cur.push(v[i]);
+    } else if (v && cur && typeof v === 'object' && typeof cur === 'object' &&
+               !Array.isArray(v) && !Array.isArray(cur)){
+      for (const kk in cur) delete cur[kk];
+      Object.assign(cur, v);
+    } else player[k] = v;
+  }
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
   cam.x = s.cam.x; cam.y = s.cam.y; cam.ang = s.cam.ang; cam.pitch = s.cam.pitch;
@@ -8303,6 +8337,11 @@ function loadGame(n){
   }
   refreshWear();                              // the arms wear what was saved
   if (!player.hotbar) player.hotbar = [null, null, null];
+  // The hideout cast is dealt from qvar flags, and spawnActors ran before
+  // those were restored - so a betrayed ROOK came back friendly and a dead
+  // VESPER came back alive. Re-deal exactly those two; everyone else on the
+  // street stays where the seed put them.
+  spawnHideoutCast();
   drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // no ride survives a rewind
   if (GL) glBuildPalette(); else buildAtlases();
   bgGrad = null; buildBackground();
