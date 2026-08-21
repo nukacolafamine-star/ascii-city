@@ -10370,12 +10370,12 @@ let waypoint = null, wayG = null, waySet = [], wayOn = false, wayT = 0;
    line is redrawn when the job changes, not when the man you are walking
    toward takes a step. */
 let autoPath = true, autoPathKey = '';
-/* Every leg of a job that the line should redraw for, as one string: the
-   stage you are on, and - when there is no live stage left - who is holding
-   your money. The walk back to be paid is a step like any other, and keying
-   only off the tracked stage meant it returned '' and the tick bailed before
-   it ever asked questTarget() where to go. */
-function questKey(){
+/* Which piece of work you are on: the stage you are at, or - when no stage
+   is live - whoever is holding your money. The walk back to be paid is a
+   step like any other, and keying only off the tracked stage returned '' the
+   moment a job finished, so the tick bailed before it ever asked
+   questTarget() where to go. */
+function questLeg(){
   const id = player.track;
   if (id && typeof player.quests[id] === 'number') return id + '#' + player.quests[id];
   const owed = player.qvar.owed;
@@ -10385,19 +10385,41 @@ function questKey(){
   }
   return '';
 }
+/* ...and WHERE that work is sending you, which is not the same question. A
+   stage can hold still while its destination moves out from under it: carry
+   three scrap and the watcher's job stops pointing at the depot and starts
+   pointing at the watcher; buy the burner and a tool job stops pointing at
+   the counter. The stage number never changed, so a key built from it alone
+   said 'same leg, leave the line alone' and the walk home was never drawn.
+   The destination's name is part of the key for that reason. */
+function questKey(t){
+  const leg = questLeg();
+  if (!leg) return '';
+  if (t === undefined) t = questTarget();
+  return leg + (t ? '@' + t.name : '');
+}
 function autoPathTick(){
-  const key = questKey();
-  if (key === autoPathKey) return;             // same leg, leave the line alone
-  if (!autoPath){ autoPathKey = key; return; }
+  if (!autoPath){ autoPathKey = ''; return; } // toggling it on redraws anyway
   // Most jobs are handed over indoors, where there is no street to draw on.
   // Do NOT count the objective as dealt with - hold it until you are back
   // out, or the walk you were given the line for happens without one.
   if (inside) return;
-  // Same reasoning for a target that cannot answer yet: an actor who has not
-  // spawned, a giver behind a door. Consuming the key here spent the only
-  // chance this leg ever had - hold, and draw it the moment it resolves.
+  const leg = questLeg();
   const t = questTarget();
-  if (!t) return;
+  const key = questKey(t);
+  if (key === autoPathKey) return;            // same work, same place
+  if (!t){
+    // Nowhere to go. If the line is already drawn for THIS leg then whatever
+    // it was pointing at is done with - you bought the tool, and the job
+    // itself has no address - so take it down. If we have not drawn for this
+    // leg at all, the target simply cannot answer yet (an actor not spawned,
+    // a giver behind a door): hold, and draw it the moment it resolves.
+    if (leg && autoPathKey.indexOf(leg + '@') === 0){
+      autoPathKey = key;
+      clearWaypoint(true);
+    }
+    return;
+  }
   autoPathKey = key;
   setWaypoint(t.x, t.y, t.name);
 }
