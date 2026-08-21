@@ -1572,6 +1572,21 @@ function makeSign(b, tx, ty, nx, ny, txt, col, vert, blink){
   const face = axis === 0 ? (nx > 0 ? tx + 1 : tx) : (ny > 0 ? ty + 1 : ty);
   pushSign(axis, n, face, (run[0] + run[1]) * 0.5, wm, hm, z, nx, ny, art, col, blink);
 }
+/* The sign, the door and the room have to agree. Casinos, parlors and the
+   condemned towers are dealt by hash inside buildInterior, so their names
+   are derived from the SAME hashes here - one function both the signage
+   and the door naming consult, so the street never promises noodles over
+   a card table. */
+function specialWordFor(b){
+  if (b.landmark) return null;
+  if (isDungeon(b))
+    return ['CONDEMNED', 'NO ENTRY', 'SEALED', 'VACANT'][(hash3(b.id, 72, 5) * 4) | 0];
+  if ((b.dist === D_RED || b.dist === D_STRIP) && hash3(b.id, 63, 7) < 0.22)
+    return ['LUCKY LUCKY', 'VELVET WHEEL', 'PACHINKO', 'HIGH-LOW'][(hash3(b.id, 64, 9) * 4) | 0];
+  if (b.dist === D_RED && hash3(b.id, 65, 11) < 0.30)
+    return ['VELVET ROOM', 'NEON GARDEN', 'SIGNAL HOUSE', 'STEAM SILK'][(hash3(b.id, 66, 13) * 4) | 0];
+  return null;
+}
 function buildSigns(){
   signs = [];
   const mkSign = (b, D, f, vert, words) => {
@@ -1588,7 +1603,9 @@ function buildSigns(){
     const shopish = INTERIOR_KIND[b.dist] === 'shop' ||
                     (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3) ||
                     (b.dist === D_DOWN && hash3(b.id, 62, 5) < 0.3);
-    let forced = shopish && rnd() < 0.6 ? SHOP_SIGN[shopTypeFor(b)] : null;
+    const sw = specialWordFor(b);
+    let forced = sw ? sw
+               : shopish && rnd() < 0.6 ? SHOP_SIGN[shopTypeFor(b)] : null;
     // one bucket per outward direction, so a shop faces every street it fronts
     const faces = [[], [], [], []];
     for (let y = b.y0; y <= b.y1; y++)
@@ -3533,7 +3550,8 @@ function buildDoors(){
     const D = DISTRICT[b.dist];
     doors.push({ x: c[0] + 0.5 + nx * 0.62, y: c[1] + 0.5 + ny * 0.62,
                  bx: c[0], by: c[1], nx, ny, b: b.id,
-                 name: b.word || D.words[(hash3(b.id, 5, 1) * D.words.length) | 0] });
+                 name: specialWordFor(b) || b.word ||
+                       D.words[(hash3(b.id, 5, 1) * D.words.length) | 0] });
   }
 }
 /* Some towers went dark years ago and nobody official ever asks why. A
@@ -3610,6 +3628,35 @@ function buildInterior(bld, door, floor){
   const furn = (x, y, fid, yaw) =>
     ip.push({ x, y, k: PK_FURN, fid, s: 0, r: FURN_DEF[fid].w * 0.5 + 0.1,
               yaw: yaw === undefined ? Math.PI : yaw });
+  // nobody spawns INSIDE the furniture: test a spot against every piece
+  // placed so far, spiral to open floor when it is taken
+  const furnFree = (x, y) => {
+    for (const q of ip){
+      if (q.k !== PK_FURN) continue;
+      const F = FURN_DEF[q.fid];
+      const turned = Math.abs(Math.round((q.yaw || 0) / (Math.PI / 2))) % 2;
+      const w = turned ? F.w * F.dep : F.w, d = turned ? F.w : F.w * F.dep;
+      if (Math.abs(x - q.x) < w * 0.5 + 0.35 && Math.abs(y - q.y) < d * 0.5 + 0.35)
+        return false;
+    }
+    return true;
+  };
+  const clearSpot = (x, y) => {
+    if (S.walkG[(y | 0) * MAP + (x | 0)] && furnFree(x, y)) return [x, y];
+    for (let r = 0.7; r <= 3.2; r += 0.6)
+      for (let a = 0; a < 8; a++){
+        const nx = x + Math.cos(a * Math.PI / 4) * r;
+        const ny = y + Math.sin(a * Math.PI / 4) * r;
+        if (nx < IOX + 0.6 || ny < IOY + 0.6 ||
+            nx > IOX + rw - 0.6 || ny > IOY + rh - 0.6) continue;
+        if (S.walkG[(ny | 0) * MAP + (nx | 0)] && furnFree(nx, ny)) return [nx, ny];
+      }
+    return [x, y];
+  };
+  const spawnClear = (kind2, x, y, o) => {
+    const sp = clearSpot(x, y);
+    return spawnActor(kind2, sp[0], sp[1], o);
+  };
   if (kind === 'office'){                           // desks in partitioned rows
     for (let y = IOY + 2; y < IOY + rh - 2; y += 3){
       for (let x = IOX + 1; x < IOX + rw - 3; x++)
@@ -3747,7 +3794,7 @@ function buildInterior(bld, door, floor){
     if (worldDelta.swatDue && player.corruption >= 4){
       worldDelta.swatDue = 0;
       for (let i2 = 0; i2 < 2; i2++){
-        const a = spawnActor('enforcer', IOX + 2 + i2 * 2, IOY + (rh >> 1),
+        const a = spawnClear('enforcer', IOX + 2 + i2 * 2, IOY + (rh >> 1),
           { name: 'SWAT', brain: 'hostile', hp: 55, shirt: C.carC, skin: C.dataDk });
         a.aggro = 1; a.atk = 11; a.interior = 1;
       }
@@ -3779,14 +3826,14 @@ function buildInterior(bld, door, floor){
     for (let h = 0; h < packs; h++){
       const hx2 = IOX + 2 + ((hash3(bld.seed, floor * 7 + h, 79) * (rw - 4)) | 0);
       const hy2 = IOY + 3 + ((hash3(bld.seed, floor * 11 + h, 83) * (rh - 5)) | 0);
-      const a = spawnActor('razor', hx2 + 0.5, hy2 + 0.5, {
+      const a = spawnClear('razor', hx2 + 0.5, hy2 + 0.5, {
         name: 'SQUATTER', brain: 'hostile', hp: 22 + depth * 12 });
       a.atk = 5 + depth * 2;
       a.interior = 1;
     }
     if (top){                                   // the top keeps its keeper
       furn(IOX + (rw >> 1) + 0.5, IOY + 2.0, 'altar');
-      const w = spawnActor('razor', IOX + (rw >> 1) + 0.5, IOY + 3.6, {
+      const w = spawnClear('razor', IOX + (rw >> 1) + 0.5, IOY + 3.6, {
         name: 'THE WARDEN', brain: 'hostile', hp: 120 + depth * 20 });
       w.atk = 10 + depth * 2; w.spd = 2.0;
       w.interior = 1;
@@ -3814,7 +3861,7 @@ function buildInterior(bld, door, floor){
       if (gx2 > IOX + rw - 2) break;
       furn(gx2 + 0.5, gy2 + 0.5, gi === 0 ? 'displaycase' : 'conftable');
       const G = CASINO_GAMES[games[gi]];
-      const a = spawnActor('vendor', gx2 + 0.5, gy2 + 1.6, {
+      const a = spawnClear('vendor', gx2 + 0.5, gy2 + 1.6, {
         name: G.dealer, brain: 'still',
         tree: { start: { text: G.pitch, opts: [
           // the bet menu stacks over the dialog; the dialog waits underneath
@@ -3837,7 +3884,7 @@ function buildInterior(bld, door, floor){
     for (let bx2 = IOX + 2; bx2 < IOX + rw - 2; bx2 += 3)
       if (hash3(bld.id, bx2, 67) < 0.6) lowWall(bx2, IOY + 2);      // the booths
     // the host by the door, and the companions working the floor
-    const host = spawnActor('vendor', IOX + 1.5, IOY + rh - 2.6, {
+    const host = spawnClear('vendor', IOX + 1.5, IOY + rh - 2.6, {
       name: theme.host, brain: 'still',
       tree: { start: { text: theme.pitch,
         opts: [{ t: 'Good to know' }] } } });
@@ -3845,7 +3892,7 @@ function buildInterior(bld, door, floor){
     const nComp = Math.max(1, Math.min(3, ((rw - 3) / 3) | 0));
     for (let ci = 0; ci < nComp; ci++){
       const comp = theme.comps[ci];
-      const a = spawnActor('citizen', IOX + 2 + ci * Math.max(2, ((rw - 4) / nComp) | 0),
+      const a = spawnClear('citizen', IOX + 2 + ci * Math.max(2, ((rw - 4) / nComp) | 0),
                            IOY + 3.6, {
         name: comp, brain: 'still', shirt: ci ? C.nPink : C.nViolet,
         tree: companionTree(theme, comp) });
@@ -3878,7 +3925,7 @@ function buildInterior(bld, door, floor){
   }
   if (kind !== 'dungeon' && rnd() < (kind === 'storage' ? 0.35 : 0.85)){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
-    const a = spawnActor('vendor', kx, IOY + 1.4,
+    const a = spawnClear('vendor', kx, IOY + 1.4,
                          { name: TF ? TF.keeper : F.keeper, brain: 'still',
                            dialog: F.lines });
     a.interior = 1;
@@ -5705,16 +5752,16 @@ const CASINO_GAMES = {
   ever. The fade is the whole show.
 ============================================================================*/
 const PARLOR_THEMES = [
-  { name: 'THE VELVET ROOM', host: 'MADAME SABLE',
+  { name: 'VELVET ROOM', host: 'MADAME SABLE',
     comps: ['VELVET', 'CANDY', 'SOLACE'],
     pitch: 'Company, sweetheart. The real kind. The kind that asks how your day was and means it.' },
   { name: 'NEON GARDEN', host: 'THE GARDENER',
     comps: ['ORCHID', 'JAZZ', 'DEW'],
     pitch: 'Every flower in this garden picked you first. House rules on the wall. Petals extra.' },
-  { name: 'THE SIGNAL HOUSE', host: 'OPERATOR',
+  { name: 'SIGNAL HOUSE', host: 'OPERATOR',
     comps: ['ECHO', 'STATIC', 'CARRIER'],
     pitch: 'Full-spectrum companionship. Some of the staff are holograms. Nobody has ever once asked for a refund.' },
-  { name: 'STEAM AND SILK', host: 'THE ATTENDANT',
+  { name: 'STEAM SILK', host: 'THE ATTENDANT',
     comps: ['MIST', 'LOTUS', 'EMBER'],
     pitch: 'Bath first. Always bath first. The rest of the menu is written on the fog.' }
 ];
@@ -5847,14 +5894,14 @@ function initHomes(){
     return best;
   };
   const ap = pick(D_IND, b => -Math.abs((b.x1 - b.x0) - 5) + hash3(b.id, 91, 1) * 0.5);
-  if (ap) HOMES.apartment = { bld: ap.b.id, price: 800, tier: 1,
-    name: 'THE WALK-UP', x: ap.d.x, y: ap.d.y };
+  if (ap){ HOMES.apartment = { bld: ap.b.id, price: 800, tier: 1,
+    name: 'THE WALK-UP', x: ap.d.x, y: ap.d.y }; ap.d.name = 'THE WALK-UP'; }
   const su = pick(D_SUB, b => (b.x1 - b.x0) + hash3(b.id, 92, 1));
-  if (su) HOMES.suburb = { bld: su.b.id, price: 0, tier: 2,
-    name: 'THE ROWHOUSE', x: su.d.x, y: su.d.y };
+  if (su){ HOMES.suburb = { bld: su.b.id, price: 0, tier: 2,
+    name: 'THE ROWHOUSE', x: su.d.x, y: su.d.y }; su.d.name = 'THE ROWHOUSE'; }
   const ph = pick(D_DOWN, b => b.h);
-  if (ph) HOMES.penthouse = { bld: ph.b.id, price: 0, tier: 3,
-    name: 'THE SPIRE PENTHOUSE', x: ph.d.x, y: ph.d.y };
+  if (ph){ HOMES.penthouse = { bld: ph.b.id, price: 0, tier: 3,
+    name: 'THE SPIRE PENTHOUSE', x: ph.d.x, y: ph.d.y }; ph.d.name = 'THE SPIRE PENTHOUSE'; }
   if (HOMES.apartment)
     landmarks.push({ name: 'THE WALK-UP', x: HOMES.apartment.x, y: HOMES.apartment.y });
 }
