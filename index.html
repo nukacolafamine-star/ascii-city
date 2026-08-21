@@ -1221,6 +1221,7 @@ function buildCity(seed){
   buildDoors();
   placeStreetItems();
   deoverlapProps();
+  stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
 }
 
 /* Now that props are solids rather than flat cards, two of them sharing a
@@ -1232,7 +1233,7 @@ const MODEL_CLEAR = [];
 (function(){
   const c = (k, r) => { MODEL_CLEAR[k] = r; };
   c(PK_TREE, 2.4);   c(PK_SAKURA, 2.4);  c(PK_TURBINE, 2.0);
-  c(PK_STALL, 0.9);  c(PK_METRO, 0.9);   c(PK_BENCH, 0.7);
+  c(PK_STALL, 1.1);  c(PK_METRO, 0.9);   c(PK_BENCH, 0.7);
   c(PK_RACK, 0.6);   c(PK_ROCK, 0.5);    c(PK_PLAY, 0.4);
   c(PK_STAIR, 0.4);  c(PK_BIN, 0.35);    c(PK_TLIGHT, 0.35);
   c(PK_LAMP, 0.3);   c(PK_RAIL, 0.28);   c(PK_HYDR, 0.28);
@@ -1664,7 +1665,6 @@ const ART = {
   bin:  parseArt(['TTT', 'MMM', 'MMM', 'MMM']),
   tlight: parseArt(['MMM', 'MXM', 'MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   rail: parseArt(['M.M', 'MMM', 'M.M', 'M.M']),
-  stall: parseArt(['XXXXXXX', 'MSSSSSM', 'M.....M', 'MBBBBBM', 'M.....M', 'M.....M']),
   bench: parseArt(['KKKKK', 'K...K', 'K...K']),
   cam:   parseArt(['MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   play:  parseArt(['.SSSSS.', 'MSSSSSM', 'M.....M', 'M.....M', 'MM...MM', 'M.....M']),
@@ -1692,19 +1692,88 @@ const ART = {
   rock: parseArt(['.XXX.', 'XXXXM', 'XXXMM']),
   stair: parseArt(['....X', '...XX', '..XXX', '.XXXX', 'XXXXX', 'MMMMM'])
 };
+/*---------------------------- market stalls --------------------------------
+  Everything else in the world is a flat elevation inflated into a solid,
+  which is honest work for a bin or a post but makes a market cart a brick -
+  and a brick has nowhere to put the person who works in it. Stalls are
+  authored as real volumes instead: a canopy on four posts, a counter across
+  the customer side, and behind it an open bay with a body's worth of
+  headroom. The counter is the divide - you stand at it, the cook stands
+  behind it, and the gap over the counter is where you see each other.
+
+  Local frame: u runs across the frontage, v from the counter (0) back to
+  the shelving (1), z up from the pavement. Roles are the same letters the
+  flat art uses, so the colour slots and the neon `dyn` channel carry over.
+============================================================================*/
+const STALL_H = 3.4, STALL_W = 3.0;    // tall enough to stand a cook up in
+function stallVolume(sp){
+  const roof = ROLE[sp.roof], trim = ROLE[sp.trim], sign = ROLE[sp.sign],
+        ctr = ROLE[sp.counter], front = ROLE[sp.front], back = ROLE[sp.back],
+        frame = ROLE.M, H = STALL_H;
+  const goods = sp.goods.map(ch => ROLE[ch]);
+  // wares, with gaps - a shelf packed edge to edge reads as a solid slab
+  const ware = (u, tier) => {
+    const n = ((u * 6.5) | 0) + tier * 2;
+    return (n % 3 === 2) ? 0 : goods[n % goods.length];
+  };
+  return function(aw, vd, ah){
+    const vox = new Uint8Array(aw * vd * ah);
+    for (let z = 0; z < ah; z++){
+      const zw = (1 - (z + 0.5) / ah) * H;      // world height of this layer
+      for (let y = 0; y < vd; y++){
+        const v = (y + 0.5) / vd;
+        for (let x = 0; x < aw; x++){
+          const u = (x + 0.5) / aw;
+          const side = u < 0.07 || u > 0.93;
+          const post = (u < 0.10 || u > 0.90) && (v < 0.13 || v > 0.87);
+          let role = 0;
+          if (zw >= H - 0.26)                   // canopy, with a lit front lip
+            role = v < 0.12 ? trim : roof;
+          else if (v < 0.30){                   /* ---- the customer side ---- */
+            if (zw > H - 0.92) role = sign;                 // board under the eave
+            else if (zw > H - 1.10) role = trim;            // strip light on it
+            else if (zw > 1.32) role = post ? frame : 0;    // open: see the cook
+            else if (zw > 1.12) role = ware(u, 0);          // what is for sale
+            else if (zw > 0.94) role = ctr;                 // the counter itself
+            else role = side ? frame : front;               // and its face
+          } else if (v > 0.82){                 /* ---- the back unit -------- */
+            if (v > 0.94) role = zw < 2.34 ? back : 0;      // back skin
+            else if (zw > 2.10 && zw < 2.26) role = back;   // upper shelf
+            else if (zw > 1.88 && zw < 2.10) role = ware(u, 1);
+            else if (zw > 1.48 && zw < 1.64) role = back;   // lower shelf
+            else if (zw > 1.26 && zw < 1.48) role = ware(u, 2);
+            else if (zw < 0.90) role = back;                // cabinet beneath
+            else role = side && zw < 2.34 ? frame : 0;
+          } else                                /* ---- the bay: hollow ------ */
+            role = side && zw < 2.34 ? frame : 0;
+          if (role) vox[(z * vd + y) * aw + x] = role;
+        }
+      }
+    }
+    return vox;
+  };
+}
+// the flat `data` is never read for these - the volume builder replaces it
+function stallArt(sp){
+  return { w: 16, h: 18, data: new Uint8Array(16 * 18), vol: stallVolume(sp) };
+}
 // Stalls come in flavours - ramen cart, produce stand, tech bench - picked
 // per stall from its hash, weighted by the district it stands in.
 const STALL_VARIANTS = [
-  { art: parseArt(['H.XXXXX.H', 'MSSSSSSSM', 'MWWWWWWWM', 'MB.B.B.BM', 'M.......M', 'M.......M']),
-    w: 2.8, h: 2.8,
+  { art: stallArt({ roof: 'M', trim: 'X', sign: 'S', counter: 'B', front: 'M',
+                    back: 'K', goods: ['W', 'H', 'B'] }),
+    w: STALL_W, h: STALL_H,
     sl: slots({ X: [-1, 1.0], S: [C.nAmber, 0.9], W: [C.nWhite, 0.5],
-                M: [C.metal, 0.62], B: [C.trunk, 0.75], H: [C.nPink, 0.95] }) },
-  { art: parseArt(['XXXXXXX', 'MSSSSSM', 'MVVKVVM', 'MKVVKVM', 'MVVKVVM', 'M.....M']),
-    w: 2.6, h: 2.6,
+                M: [C.metal, 0.62], B: [C.trunk, 0.75], H: [C.nPink, 0.95],
+                K: [C.dataDk, 0.7] }) },
+  { art: stallArt({ roof: 'M', trim: 'X', sign: 'S', counter: 'K', front: 'M',
+                    back: 'K', goods: ['V', 'V', 'B'] }),
+    w: STALL_W, h: STALL_H,
     sl: slots({ X: [-1, 0.9], S: [C.nGreen, 0.8], V: [C.leaf, 0.8],
-                K: [C.trunk, 0.8], M: [C.metal, 0.6] }) },
-  { art: parseArt(['XXXXXXX', 'MGGWGGM', 'MGGGGGM', 'MKKKKKM', 'M..K..M', 'M.....M']),
-    w: 2.6, h: 2.7,
+                K: [C.trunk, 0.8], B: [C.camRed, 0.8], M: [C.metal, 0.6] }) },
+  { art: stallArt({ roof: 'M', trim: 'X', sign: 'G', counter: 'K', front: 'M',
+                    back: 'K', goods: ['G', 'W', 'M'] }),
+    w: STALL_W, h: STALL_H,
     sl: slots({ X: [-1, 1.0], G: [C.nCyan, 0.85], W: [C.nWhite, 0.95],
                 K: [C.dataDk, 0.8], M: [C.metal, 0.62] }) }
 ];
@@ -1721,8 +1790,7 @@ const PROPDEF = [
   { art: ART.tlight, w: 0.62, h: 4.6, sl: slots({ M: [C.metal, 0.66], X: [-1, 1.0] }) },
   { art: ART.bin,    w: 0.6,  h: 1.1, sl: slots({ M: [C.metal, 0.7], T: [C.tire, 0.8] }) },
   { art: ART.rail,   w: 1.05, h: 1.2, sl: slots({ M: [C.rail, 0.62] }) },
-  { art: ART.stall,  w: 2.6,  h: 2.7, sl: slots({ X: [-1, 1.0], S: [C.nAmber, 0.85],
-                                                  M: [C.metal, 0.62], B: [C.trunk, 0.72] }) },
+  STALL_VARIANTS[0],
   { art: ART.bench,  w: 1.9,  h: 0.85, sl: slots({ K: [C.trunk, 0.75] }) },
   { art: ART.cam,    w: 0.5,  h: 3.6, sl: slots({ M: [C.metal, 0.60], X: [-1, 1.0] }) },
   { art: ART.play,   w: 3.2,  h: 2.4, sl: slots({ M: [C.rail, 0.62], S: [C.nPink, 0.82] }) },
@@ -2245,7 +2313,7 @@ function updateActor(a, dt){
   const pr = Math.hypot(prx, pry);
   const engaged = pr < 2.6;                    // player close: stop, meet their eye
   if (engaged && pr > 0.001){ a.dx = prx / pr; a.dy = pry / pr; }
-  if (pr < 0.9 && pr > 0.001){                 // and never stand inside them
+  if (pr < 0.9 && pr > 0.001 && !a.pinned){    // and never stand inside them
     const bx = a.x - prx / pr * 1.4 * dt, by = a.y - pry / pr * 1.4 * dt;
     if (walkG[clamp(by | 0, 0, MAP - 1) * MAP + clamp(bx | 0, 0, MAP - 1)]){ a.x = bx; a.y = by; }
   }
@@ -2523,7 +2591,7 @@ function buildInterior(bld, door, floor){
       for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
         if (rnd() < 0.75) ip.push({ x: IOX + 0.6, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
       if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
-                            r: 0.5, dist: bld.dist });
+                            r: 0.5, dist: bld.dist, yaw: 0 });   // counter to the room
     }
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
@@ -2855,10 +2923,9 @@ function spawnActors(){
     if (dd < bd){ bd = dd; st = s; }
   }
   if (st && bd < 120){
-    for (let t = 0; t < 16; t++){
-      const x = (st.x + rr(-1.8, 1.8)) | 0, y = (st.y + rr(-1.8, 1.8)) | 0;
-      if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
-      spawnActor('vendor', x + 0.5, y + 0.5, {
+    {
+      const bay = stallBay(st);                 // the cook works his own cart
+      const ck = spawnActor('vendor', bay.x, bay.y, {
         name: 'STALL COOK', brain: 'still', shirt: C.shirtA,
         tree: {
           entry: () => questStage('sphere') === undefined ? 'start'
@@ -2879,7 +2946,7 @@ function spawnActors(){
           paid: { text: 'Ha. It showed me a heart, once. Forty credits - stories are the one thing I pay for.' },
           after: { text: 'The dome still grinning? Good. Soup is on whenever you are.' }
         } });
-      break;
+      ck.dx = bay.fx; ck.dy = bay.fy; ck.pinned = 1;
     }
   }
   // the fixer keeps a corner on the red mile - or failing that, any corner
@@ -2958,12 +3025,12 @@ function spawnActors(){
             : dn2 === D_IND ? VEND[4]
             : dn2 === D_STRIP ? VEND[(((p.s * 5) | 0) % 2) ? 5 : 0]
             : VEND[(((p.s * 5) | 0) + 1) % 3];
-    const sp2 = freeSpotNear(p.x, p.y);
-    if (Math.hypot(sp2[0] - p.x, sp2[1] - p.y) > 2.5) continue;
-    spawnActor('vendor', sp2[0], sp2[1], {
+    const bay = stallBay(p);                  // in the cart, behind the counter
+    const vd2 = spawnActor('vendor', bay.x, bay.y, {
       name: V.name, brain: 'still',
       tree: { start: { text: V.greet,
         opts: [vopt(V.a), vopt(V.b), { t: 'Just looking' }] } } });
+    vd2.dx = bay.fx; vd2.dy = bay.fy; vd2.pinned = 1;
     stallN++;
   }
 }
@@ -8029,8 +8096,11 @@ function voxelize(art, depthScale, round){
   if (art._vox[key]) return art._vox[key];
   const aw = art.w, ah = art.h, data = art.data;
   const vd = Math.max(2, Math.round(aw * depthScale));
-  const vox = new Uint8Array(aw * vd * ah);
-  for (let z = 0; z < ah; z++){
+  // A few things - the market stalls - are authored as real volumes rather
+  // than inflated from an elevation, because they have to be hollow.
+  const hollow = !!art.vol;
+  const vox = hollow ? art.vol(aw, vd, ah) : new Uint8Array(aw * vd * ah);
+  if (!hollow) for (let z = 0; z < ah; z++){
     let x = 0;
     while (x < aw){
       if (!data[z * aw + x]){ x++; continue; }
@@ -8062,7 +8132,7 @@ function voxelize(art, depthScale, round){
           if (z < z0) z0 = z; if (z > z1) z1 = z;
         }
   if (x1 < 0){ x0 = y0 = z0 = 0; x1 = aw - 1; y1 = vd - 1; z1 = ah - 1; }
-  return (art._vox[key] = { aw, vd, ah, vox,
+  return (art._vox[key] = { aw, vd, ah, vox, hollow,
     fx0: x0 / aw, fx1: (x1 + 1) / aw,
     fy0: y0 / vd, fy1: (y1 + 1) / vd,
     fz0: z0 / ah, fz1: (z1 + 1) / ah });
@@ -8112,6 +8182,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   // sample finely up close, coarsely at range - nobody can see the
   // difference at thirty tiles and it is most of the cost
   const step = Math.min(sxw, syw, szw) * (0.7 + tC * 0.05);
+  const nMax = m.hollow ? 128 : 64;   // air costs steps; a solid stops early
   const tn = tC / viewD, lvl = levelOf(tn), dm = densMul(tn);
   const lit = art.lit;
   const tCap = Math.min(viewD, tC + rad + 1);
@@ -8151,7 +8222,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
       const dt = step / L;
       let hit = -1, hx = 0, hy = 0, hz = 0, face = 0, ht = 0;
       let px = -1, py = -1, pz = -1;
-      for (let t = t0 + dt * 0.5, n = 0; t <= t1 && n < 64; t += dt, n++){
+      for (let t = t0 + dt * 0.5, n = 0; t <= t1 && n < nMax; t += dt, n++){
         const u = Ou + Du * t, v = Ov + Dv * t, w = Oz + Dz * t;
         const ix = ((u + hu) / wW * aw) | 0;
         const iy = ((v + hv) / dW * vd) | 0;
@@ -8340,14 +8411,38 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   const set = (k, d, b) => { MODEL_DEPTH[k] = d; MODEL_BOXY[k] = b; };
   set(PK_LAMP, 1.0, 0);   set(PK_TREE, 1.0, 0);    set(PK_HYDR, 1.0, 0);
   set(PK_TLIGHT, 0.9, 0); set(PK_BIN, 0.95, 0);    set(PK_RAIL, 0.5, 1);
-  set(PK_STALL, 0.8, 1);  set(PK_BENCH, 0.75, 1);  set(PK_CAM, 0.9, 1);
+  set(PK_STALL, 0.85, 1);  set(PK_BENCH, 0.75, 1);  set(PK_CAM, 0.9, 1);
   set(PK_PLAY, 0.35, 1);  set(PK_METRO, 0.8, 1);   set(PK_APPLE, 1.0, 0);
   set(PK_TURBINE, 0.5, 0);set(PK_ITEM, 0.9, 1);    set(PK_SAKURA, 1.0, 0);
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
   MODEL_TURN[PK_BENCH] = Math.PI / 2;         // benches run along the kerb
-  MODEL_TURN[PK_STALL] = Math.PI / 2;         // carts open onto the pavement
 })();
+/* Which way a stall faces: out over the pavement, where the customers are.
+   Stalls are planted on the old kerb line, so one neighbour is roadway and
+   another is footway - the footway side is the front. */
+function stallYaw(o){
+  const gx = o.x | 0, gy = o.y | 0;
+  let fx = 0, fy = 0;
+  for (let d = 0; d < 4; d++){
+    const q = tileAt(gx + DIRV[d][0], gy + DIRV[d][1]);
+    if (q === T_WALK){ fx = DIRV[d][0]; fy = DIRV[d][1]; break; }
+  }
+  if (!fx && !fy){                              // no kerb: face the nearer road
+    const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
+    const xn = rx - RW, xp = P - rx, yn = ry - RW, yp = P - ry;
+    if (Math.min(xn, xp) <= Math.min(yn, yp)) fx = xn <= xp ? -1 : 1;
+    else fy = yn <= yp ? -1 : 1;
+  }
+  // the volume puts its counter at v = -depth/2, which lies along (sin, -cos)
+  return Math.atan2(fx, -fy);
+}
+/* Where the cook stands: in the bay, behind the counter, looking out over it. */
+function stallBay(o){
+  if (o.yaw === undefined) o.yaw = stallYaw(o);
+  const fx = Math.sin(o.yaw), fy = -Math.cos(o.yaw);
+  return { x: o.x - fx * 0.42, y: o.y - fy * 0.42, fx, fy };
+}
 function propYaw(o){                          // square to the nearer roadway
   const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
   const dx = rx < RW ? 0 : Math.min(rx - RW, P - rx);
@@ -8449,7 +8544,9 @@ function spritePass(){
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      if (o.yaw === undefined) o.yaw = propYaw(o) + (MODEL_TURN[o.k] || 0);
+      if (o.yaw === undefined)
+        o.yaw = o.k === PK_STALL ? stallYaw(o)
+                                 : propYaw(o) + (MODEL_TURN[o.k] || 0);
       const dep = MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
       drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
                 dyn, o.yaw, dep, MODEL_BOXY[o.k] ? 1 : 0);
