@@ -403,6 +403,7 @@ let walkG = new Uint8Array(MAP * MAP);   // 0 blocked, else step cost x10
    stone channel wall and plugged the river with masonry at every crossing.
    The riverbed is recorded once when it is cut, and nothing overwrites it. */
 const riverBed = new Uint8Array(MAP * MAP);
+const DECK_T = 0.62;                     // how deep a bridge deck is, in metres
 function inChannel(ix, iy){
   return tType[iy * MAP + ix] === T_WATER || riverBed[iy * MAP + ix] === 1;
 }
@@ -13112,7 +13113,7 @@ function floorPass(){
            its fog twenty tiles behind where the wall actually stands - a
            three-metre cut bank rendered like distant haze, which is what made
            the edges look like paper rather than ground. */
-        let wallD = -1, wix = ix2, wiy = iy2;
+        let wallD = -1, wix = ix2, wiy = iy2, onDeck = 0;
         const span = dW - d;
         const nStep = Math.min(40, Math.max(2, Math.ceil(span * 0.8)));
         for (let sI = 1; sI <= nStep; sI++){
@@ -13120,6 +13121,16 @@ function floorPass(){
           const sx2 = cam.x + rayX[x] * ds, sy2 = cam.y + rayY[x] * ds;
           const six = sx2 | 0, siy = sy2 | 0;
           if (sx2 < 0 || sy2 < 0 || six >= MAP || siy >= MAP){ wallD = ds; break; }
+          const st2 = tType[siy * MAP + six];
+          if (st2 === T_BRIDGE){
+            // A deck is a slab with a beam down its side, not a sheet of
+            // paper laid on the water. While the ray is still inside its
+            // depth it stops on that edge; below it, the river carries on.
+            if (cam.z * (1 - ds / d) > -DECK_T){
+              wallD = ds; wix = six; wiy = siy; onDeck = 1; break;
+            }
+            continue;
+          }
           if (!inChannel(six, siy)){ wallD = ds; wix = six; wiy = siy; break; }
         }
         if (wallD < 0){                            // clear all the way down
@@ -13129,6 +13140,13 @@ function floorPass(){
           waterShade(wx2, wy2);
           // a deck overhead puts the water in its shadow
           if (tType[iy2 * MAP + ix2] === T_BRIDGE) _wd *= 0.62;
+        } else if (onDeck){                        // the side of the deck
+          const tw = wallD / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = wallD;
+          const drop = clamp(-cam.z * (1 - wallD / d) / DECK_T, 0, 1);  // 0 top, 1 soffit
+          _wb = drop < 0.34 ? C.deck : C.deckOld;  // edge beam, then the shadow under
+          _wd = 0.50 - drop * 0.26 + hash3(wix, wiy, 29) * 0.07;
+          if (((wix + wiy) & 3) === 0) _wd += 0.05;      // girder spacing
+          _wwet = 0;
         } else {                                   // the channel wall, in place
           const tw = wallD / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = wallD;
           const f = clamp((wallD - d) / Math.max(0.001, span), 0, 1);
@@ -13597,6 +13615,13 @@ function voxelize(art, depthScale, round){
     fz0: z0 / ah, fz1: (z1 + 1) / ah });
 }
 const FACE_DIM = [1.0, 0.84, 1.14];             // side, front/back, top
+/* The whole engine mirrors about the STREET plane, which is right for a wet
+   pavement and wrong for the river three metres below it. It shows on the
+   bridges: a railing post standing over the water threw a reflection into
+   it, upside down and floating in the wrong place, because the mirror it was
+   using was the road it stands on and not the water it stands over. Anything
+   over the channel is drawn without one. */
+let _noRef = 0;
 function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const cols = R.cols, rows = R.rows;
   const relX = ox - cam.x, relY = oy - cam.y;
@@ -13743,14 +13768,16 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
         statCells++;
       }
       // and what the wet street gives back
-      const ur = projRows / t;
-      const mb = 2 * horizon + 2 * cam.z * ur;
-      const rr = Math.round(mb - r + refWob[x]);
-      if (rr > hzRow && rr < rows){
-        const j = rr * cols + x;
-        if (reflects(j)){
-          const ng = (g * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
-          if (ng >= 1){ gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0; statCells++; }
+      if (!_noRef){
+        const ur = projRows / t;
+        const mb = 2 * horizon + 2 * cam.z * ur;
+        const rr = Math.round(mb - r + refWob[x]);
+        if (rr > hzRow && rr < rows){
+          const j = rr * cols + x;
+          if (reflects(j)){
+            const ng = (g * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+            if (ng >= 1){ gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0; statCells++; }
+          }
         }
       }
     }
@@ -14138,10 +14165,13 @@ function spritePass(){
                     ? Math.sin(worldTime * 0.75 + o.x * 0.6 + o.y * 0.3) * 0.075 : 0);
       if (o.k === PK_FLOTSAM) o.yaw = (o.fix || 0) + worldTime * (0.05 + o.s * 0.07);
       else if (o.yaw === undefined) o.yaw = propFacing(o);
+      // a post over the river has no business reflecting in the road's mirror
+      _noRef = tType[(o.y | 0) * MAP + (o.x | 0)] === T_BRIDGE ? 1 : 0;
       const dep = def.dep !== undefined ? def.dep
                 : MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
       drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
                 dyn, o.yaw, dep, MODEL_BOXY[o.k] ? 1 : 0);
+      _noRef = 0;
     }
   }
 }
