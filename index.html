@@ -7059,8 +7059,15 @@ function openBuyHome(h){
 }
 /* a shift: six hours gone, credits in, and the body pays the difference.
    Desk work bruises the soul; freight bruises everything else. */
+/* A legal shift is meant to be a bad deal you take anyway. The wage covers
+   what the work costs you in food and leaves a little over: at roughly three
+   and a half credits a hit point, ten points of desk ache runs about 36 and
+   eighteen of freight about 65. The thin margin IS the design - it is why
+   people take the other kind of work, and why a bed of your own changes the
+   arithmetic completely, since sleeping heals for nothing and turns the whole
+   wage into profit. */
 function workShift(desk){
-  const cost = desk ? 10 : 18, pay = desk ? 60 : 90;
+  const cost = desk ? 10 : 18, pay = desk ? 52 : 84;
   if (player.hp <= cost + 8){ toast('you are in no state to work'); return; }
   player.hp -= cost;
   player.credits += pay;
@@ -8181,34 +8188,34 @@ const heal = n => p => { if (p.hp >= p.maxHp) return false;
                          p.hp = Math.min(p.maxHp, p.hp + n); return true; };
 const ITEMS = {
   // ---- street food ----
-  noodles: { name: 'CUP NOODLES', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 15,
-             hint: 'restores 25 hp', use: heal(25) },
-  ramen:   { name: 'RAMEN BOWL', pcol: C.nAmber, stack: 3, cat: 'consumable', price: 24,
-             hint: 'the real thing - 40 hp', use: heal(40) },
-  gyoza:   { name: 'GYOZA SIX', pcol: C.nWhite, stack: 4, cat: 'consumable', price: 14,
-             hint: 'pan-fried - 20 hp', use: heal(20) },
-  bao:     { name: 'PORK BAO', pcol: C.nWhite, stack: 4, cat: 'consumable', price: 10,
-             hint: 'steamed soft - 15 hp', use: heal(15) },
-  onigiri: { name: 'ONIGIRI', pcol: C.nWhite, stack: 5, cat: 'consumable', price: 8,
-             hint: 'pocket rice - 12 hp', use: heal(12) },
-  taiyaki: { name: 'TAIYAKI', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 8,
-             hint: 'sweet fish-cake - 12 hp', use: heal(12) },
-  skewer:  { name: 'TOFU SKEWER', pcol: C.nGreen, stack: 6, cat: 'consumable', price: 7,
-             hint: 'charred on the cart - 10 hp', use: heal(10) },
-  kebab:   { name: 'SYNTH KEBAB', pcol: C.camRed, stack: 4, cat: 'consumable', price: 16,
-             hint: 'vat meat, real fire - 25 hp', use: heal(25) },
-  apple:   { name: 'SYNTH APPLE', pcol: C.nGreen, stack: 6, cat: 'consumable', price: 4,
-             hint: 'polished, waxy - 6 hp', use: heal(6) },
-  soda:    { name: 'SYNTH COLA', pcol: C.nCyan, stack: 5, cat: 'consumable', price: 10,
-             hint: 'restores 10 hp', use: heal(10) },
-  coffee:  { name: 'CANNED COFFEE', pcol: C.tlAmb, stack: 5, cat: 'consumable', price: 6,
-             hint: 'hot from the vending machine - 8 hp', use: heal(8) },
-  boba:    { name: 'BOBA TEA', pcol: C.nPink, stack: 4, cat: 'consumable', price: 9,
-             hint: 'pearls at the bottom - 10 hp', use: heal(10) },
-  sake:    { name: 'SAKE FLASK', pcol: C.nWhite, stack: 3, cat: 'consumable', price: 14,
+  noodles: { name: 'CUP NOODLES', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 46,
+             hint: 'restores 13 hp', use: heal(13) },
+  ramen:   { name: 'RAMEN BOWL', pcol: C.nAmber, stack: 3, cat: 'consumable', price: 70,
+             hint: 'the real thing - 20 hp', use: heal(20) },
+  gyoza:   { name: 'GYOZA SIX', pcol: C.nWhite, stack: 4, cat: 'consumable', price: 40,
+             hint: 'pan-fried - 11 hp', use: heal(11) },
+  bao:     { name: 'PORK BAO', pcol: C.nWhite, stack: 4, cat: 'consumable', price: 30,
+             hint: 'steamed soft - 8 hp', use: heal(8) },
+  onigiri: { name: 'ONIGIRI', pcol: C.nWhite, stack: 5, cat: 'consumable', price: 26,
+             hint: 'pocket rice - 7 hp', use: heal(7) },
+  taiyaki: { name: 'TAIYAKI', pcol: C.nAmber, stack: 5, cat: 'consumable', price: 26,
+             hint: 'sweet fish-cake - 7 hp', use: heal(7) },
+  skewer:  { name: 'TOFU SKEWER', pcol: C.nGreen, stack: 6, cat: 'consumable', price: 22,
+             hint: 'charred on the cart - 6 hp', use: heal(6) },
+  kebab:   { name: 'SYNTH KEBAB', pcol: C.camRed, stack: 4, cat: 'consumable', price: 48,
+             hint: 'vat meat, real fire - 13 hp', use: heal(13) },
+  apple:   { name: 'SYNTH APPLE', pcol: C.nGreen, stack: 6, cat: 'consumable', price: 14,
+             hint: 'polished, waxy - 4 hp', use: heal(4) },
+  soda:    { name: 'SYNTH COLA', pcol: C.nCyan, stack: 5, cat: 'consumable', price: 24,
+             hint: 'restores 6 hp', use: heal(6) },
+  coffee:  { name: 'CANNED COFFEE', pcol: C.tlAmb, stack: 5, cat: 'consumable', price: 20,
+             hint: 'hot from the vending machine - 5 hp', use: heal(5) },
+  boba:    { name: 'BOBA TEA', pcol: C.nPink, stack: 4, cat: 'consumable', price: 24,
+             hint: 'pearls at the bottom - 6 hp', use: heal(6) },
+  sake:    { name: 'SAKE FLASK', pcol: C.nWhite, stack: 3, cat: 'consumable', price: 26,
              hint: 'warm and loose for a while',
-             use(p){ heal(8)(p); return takeDrug('sake'); } },
-  medkit:  { name: 'MEDKIT', pcol: C.camRed, stack: 2, cat: 'consumable', price: 60,
+             use(p){ heal(5)(p); return takeDrug('sake'); } },
+  medkit:  { name: 'MEDKIT', pcol: C.camRed, stack: 2, cat: 'consumable', price: 190,
              hint: 'restores all hp',
              use(p){ if (p.hp >= p.maxHp) return false; p.hp = p.maxHp; return true; } },
   // ---- the shelf behind the dispensary counter ----
@@ -8290,32 +8297,36 @@ const ITEMS = {
              hint: 'clears a street corner instantly',
              use(){ popFirecracker(); return true; } },
   jammer:  { name: 'SIGNAL JAMMER', pcol: C.nGreen, stack: 1, cat: 'misc', price: 120,
-             hint: 'cameras and enforcers lose you for a minute',
-             use(){ return startJammer(); } },
+             keep: 1,
+             hint: 'cameras and enforcers lose you for a minute - two jams a cell',
+             use(){ return drawPower('jammer') && startJammer(); } },
   shim:    { name: 'MAG-SHIM', pcol: C.rail, stack: 3, cat: 'misc', price: 60,
              hint: 'slips one door that refuses you' },
   saw:     { name: 'HACKSAW', pcol: C.rail, stack: 1, cat: 'misc', price: 45,
              hint: 'face a flock cam or street light and E cuts it down' },
   camjack: { name: 'CAM-JACK', pcol: C.nGreen, stack: 1, cat: 'misc', price: 150, keep: 1,
-             hint: 'ride the flock: view any camera in range',
-             use(){ return openCamJack(); } },
+             hint: 'ride the flock: view any camera in range - four rides a cell',
+             use(){ return drawPower('camjack') && openCamJack(); } },
   burner:  { name: 'GRAFFITI BURNER', pcol: C.nMag, stack: 1, cat: 'misc', price: 80, keep: 1,
              hint: 'burns a tag on the wall you face; fades in days',
              use(){ return burnTag(); } },
-  sniffer: { name: 'SNIFFER CHIP', pcol: C.tlAmb, stack: 3, cat: 'misc', price: 40,
-             hint: 'pings loose loot on the minimap for a while',
-             use(){ snifferT = 90; toast('the chip hums - loot pings on the map'); return true; } },
+  sniffer: { name: 'SNIFFER CHIP', pcol: C.tlAmb, stack: 1, cat: 'misc', price: 40,
+             keep: 1,
+             hint: 'pings loose loot on the minimap - six sweeps a cell',
+             use(){ if (!drawPower('sniffer')) return false;
+                    snifferT = 90; toast('the chip hums - loot pings on the map');
+                    return true; } },
   // ---- misc ----
   scrap:   { name: 'SCRAP ELECTRONICS', pcol: C.nGreen, stack: 9, cat: 'misc', price: 12,
              hint: 'shops pay a little; the watcher pays well' },
   cigarette:{ name: 'CIGARETTE', pcol: C.nAmber, stack: 12, cat: 'consumable', price: 4,
              hint: 'a slow drag - it loops until your hands are busy',
              use(){ return lightUp(); } },
-  battery: { name: 'BATTERY', pcol: C.nCyan, stack: 8, cat: 'misc', price: 6,
-             hint: 'everything here runs on these' },
+  battery: { name: 'BATTERY', pcol: C.nCyan, stack: 8, cat: 'misc', price: 22,
+             hint: 'cells for the powered tools - jammer, cam-jack, sniffer' },
   credchip:{ name: 'CREDIT CHIP', pcol: C.nAmber, stack: 1, cat: 'misc', price: 0,
              hint: 'spends itself the moment you lift it' },
-  deck:    { name: 'KICKDECK', pcol: C.nMag, stack: 1, cat: 'misc', price: 280,
+  deck:    { name: 'KICKDECK', pcol: C.nMag, stack: 1, cat: 'misc', price: 120,
              hint: 'press V away from traffic to ride; SPACE ollies, Q/E flip' }
 };
 function invAdd(id, n){
@@ -8734,6 +8745,47 @@ function startJammer(){
   toast('sixty seconds of static - move');
   sfx('ui_select', { rate: 0.5, vol: 0.7 });
   return true;
+}
+/* ------------------------- powered tools ---------------------------------
+   A jammer is a transmitter, a cam-jack is a receiver and a sniffer chip is
+   a scanner - none of them run on nothing, and the batteries were sitting in
+   the shops with no use in the game at all. Each carries its own charge, and
+   a BATTERY refills it by however many jobs that cell is worth: the jammer
+   is a broadcast and eats one for two, the cam-jack sips at four rides, the
+   sniffer chip gets six sweeps out of the same cell.
+   Charge lives in qvar, so it saves with the player and survives a rewind. */
+const POWERED = { jammer: 2, camjack: 4, sniffer: 6 };
+function charge(id){
+  const c = player.qvar.chg || (player.qvar.chg = {});
+  return c[id] === undefined ? 0 : c[id];
+}
+function setCharge(id, n){
+  const c = player.qvar.chg || (player.qvar.chg = {});
+  c[id] = n;
+}
+/* Spend one job's worth of power. Loads a fresh cell if the tool is flat and
+   you are carrying one; refuses, and says so, if you are not. */
+function drawPower(id){
+  const per = POWERED[id];
+  if (!per) return true;                       // not a powered tool
+  if (charge(id) > 0){ setCharge(id, charge(id) - 1); return true; }
+  if (!invCount('battery')){
+    toast(ITEMS[id].name + ' is flat - it needs a BATTERY');
+    sfx('ui_back', { vol: 0.5, rate: 0.6 });
+    return false;
+  }
+  invTake('battery', 1);
+  setCharge(id, per - 1);
+  toast('fresh cell in the ' + ITEMS[id].name.toLowerCase() +
+        ' - ' + (per - 1) + ' more after this');
+  sfx('ui_select', { vol: 0.5, rate: 1.2 });
+  return true;
+}
+function chargeLabel(id){
+  const per = POWERED[id];
+  if (!per) return '';
+  const c = charge(id);
+  return c > 0 ? '  ' + c + '/' + per : (invCount('battery') ? '  FLAT' : '  NO CELL');
 }
 function useItem(id){
   const st = player.inv.find(s => s.id === id);
@@ -9486,6 +9538,14 @@ function startQuest(id){
   was actually worth. The three that end the story pay nothing: nobody is
   left holding a purse.
 ============================================================================*/
+/* The line pays for the line and very little else. Each act covers the gear
+   that act FORCES you to own, plus a couple of meals, and stops - act one
+   asks for a burner, a hacksaw, firecrackers and a board, which is 320
+   credits against 285 of wages and the 120 you start with. Everything past
+   that - a gun, a coat, a second medkit, the cam-jack, a home - is what the
+   side work, the shifts and the things you should not be doing are for.
+   It used to hand out 3345 across the main line, which bought all of it
+   twice over and left nothing to want. */
 const QUEST_PAY = {
   // ---- the odd jobs the city hands out ----
   scrap: 0,            // paid per unit, at the counter
@@ -9495,16 +9555,19 @@ const QUEST_PAY = {
   sphere: 35,          // the cook pays 40 for the story
   // ---- Vance and the runner ----
   wheels1: 25, wheels2: 30, wheels3: 220, wheels4: 40, wheels5: 150,
+  /* Front-loaded inside each act, because the gear is demanded before the
+     wage that buys it arrives. mq4 is the biggest purse in act one for one
+     reason: mq5 wants a board, and the courier run is what pays for it. */
   // ---- act one: proving you turn up ----
-  mq1: 0, mq2: 45, mq3: 60, mq4: 80, mq5: 50, mq6: 40, mq7: 90, mq8: 160,
+  mq1: 0, mq2: 30, mq3: 35, mq4: 95, mq5: 30, mq6: 25, mq7: 50, mq8: 65,
   // ---- act two: the cell trusts you with doors ----
-  mq9: 0, mq10: 110, mq11: 140, mq12: 220, mq13: 0, mq14: 0,
-  mq15: 150, mq16: 300,
+  mq9: 0, mq10: 30, mq11: 35, mq12: 50, mq13: 0, mq14: 0,
+  mq15: 40, mq16: 65,
   // ---- act three: the plan, and what it costs ----
-  mq17: 0, mq18: 260, mq19: 180, mq20: 120, mq21: 200, mq22: 170,
+  mq17: 0, mq18: 60, mq19: 45, mq20: 30, mq21: 45, mq22: 40,
   mq23: 0, mq24: 0,
   // ---- act four: nobody is counting any more ----
-  mq25: 0, mq26: 150, mq27: 320, mq28: 500, mq29: 0, mq30: 0
+  mq25: 0, mq26: 50, mq27: 85, mq28: 125, mq29: 0, mq30: 0
 };
 /* Finishing a job is not the same as being paid for one. Cutting three
    cameras in an alley used to put the fee straight in your pocket, which made
