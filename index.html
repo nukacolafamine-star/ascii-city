@@ -3439,7 +3439,10 @@ const INT_FLAVOR = {
            'The walls are thin. The rent is not.',
            'Do not knock on 4C. Trust me.'] },
   storage: { keeper: 'CARETAKER', floorA: 0, floorB: 0, lines: [
-           'Everything here belongs to somebody who forgot it.'] }
+           'Everything here belongs to somebody who forgot it.'] },
+  casino:  { keeper: 'PIT BOSS', floorA: 0, floorB: 0, lines: [
+           'Play or make room for somebody who will.',
+           'The odds are on the wall. Reading them is free. Only that is.'] }
 };
 function initInteriorFlavors(){          // palette indices exist by now
   INT_FLAVOR.shop.floorA  = C.walk;   INT_FLAVOR.shop.floorB  = C.deckOld;
@@ -3535,6 +3538,9 @@ function buildInterior(bld, door, floor){
              : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
   if (floor === 1 && bld.dist === D_IND && hash3(bld.id, 61, 3) < 0.3)
     kind = 'shop';                             // the belt keeps a few counters
+  if (floor === 1 && (bld.dist === D_RED || bld.dist === D_STRIP) &&
+      hash3(bld.id, 63, 7) < 0.22)
+    kind = 'casino';                           // the house always finds a room
   if (floor === 1 && bld.dist === D_DOWN && hash3(bld.id, 62, 5) < 0.3)
     kind = 'shop';                             // ground-floor retail downtown
   const trade = kind === 'shop' ? shopTypeFor(bld) : null;
@@ -3691,6 +3697,35 @@ function buildInterior(bld, door, floor){
       if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
                             r: 0.5, dist: bld.dist, yaw: 0 });   // counter to the room
     }
+  } else if (kind === 'casino'){
+    // The house wears one of four skins, and each leads with its own game -
+    // but every floor keeps blackjack, because every floor keeps blackjack.
+    const theme = (hash3(bld.id, 64, 9) * 4) | 0;
+    const games = [['slots', 'blackjack', 'wheel'],
+                   ['wheel', 'blackjack', 'highlow'],
+                   ['plinko', 'blackjack', 'slots'],
+                   ['highlow', 'blackjack', 'plinko']][theme];
+    // the pit: tables mid-room, the cage at the back, a bar on one wall
+    furn(IOX + 1.5, IOY + 1.6, 'cage', Math.PI / 2);            // the cashier
+    furn(IOX + rw - 1.7, IOY + 2.0, 'kitchenette', -Math.PI / 2);   // the bar
+    const gy2 = IOY + Math.min(4, rh - 3);
+    for (let gi = 0; gi < games.length; gi++){
+      const gx2 = IOX + 2 + gi * Math.max(3, ((rw - 4) / games.length) | 0);
+      if (gx2 > IOX + rw - 2) break;
+      furn(gx2 + 0.5, gy2 + 0.5, gi === 0 ? 'displaycase' : 'conftable');
+      const G = CASINO_GAMES[games[gi]];
+      const a = spawnActor('vendor', gx2 + 0.5, gy2 + 1.6, {
+        name: G.dealer, brain: 'still',
+        tree: { start: { text: G.pitch, opts: [
+          // the bet menu stacks over the dialog; the dialog waits underneath
+          { t: 'Deal me in', next: 'seated', do(){ betMenu(G.dealer, G.open); } },
+          { t: 'Just watching' }] },
+          seated: { text: 'Luck to you. The house sends its regards.' } } });
+      a.interior = 1;
+    }
+    if (rh > 8) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.0, 'holoboard');
+    if (rnd() < 0.7) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
+    if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, 'sake');
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
@@ -5067,6 +5102,377 @@ function stepRes(d){
   return true;
 }
 
+/*============================ 13k. THE HOUSE ================================
+  Five ways to lose money politely. Every game is a mode on the stack, bets
+  come out of credits up front, and the house edge is in the odds, not in
+  any rigged reel. Card faces, reels, pegs and wheels are all drawn with the
+  HUD kit, so they run anywhere the menus do.
+============================================================================*/
+function betMenu(title, launch){
+  const opts = [10, 25, 100, 250];
+  pushMode(makeListMenu({
+    name: 'bet', title,
+    items: opts.map(b => ({
+      label: 'BET ' + b, value: () => player.credits >= b ? '' : 'SHORT',
+      act(){
+        if (player.credits < b){ toast('not enough credits'); return; }
+        player.credits -= b;
+        popMode(); launch(b);
+      }
+    })).concat([{ sep: true }, { label: 'WALK AWAY', act(){ popMode(); } }])
+  }));
+}
+function payout(n, why){
+  if (n > 0){
+    player.credits += n;
+    sfx('ui_select', { vol: 0.7, rate: 1.4 });
+    toast(why + '  +' + n + ' cr');
+  } else {
+    sfx('ui_back', { vol: 0.5, rate: 0.6 });
+    toast(why);
+  }
+}
+/* ---------------------------- blackjack --------------------------------- */
+const CARD_R = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+function cardVal(c){ const r = c % 13; return r === 0 ? 11 : r > 9 ? 10 : r + 1; }
+function handVal(h){
+  let v = 0, aces = 0;
+  for (const c of h){ v += cardVal(c); if (c % 13 === 0) aces++; }
+  while (v > 21 && aces > 0){ v -= 10; aces--; }
+  return v;
+}
+function drawCard(x, y, c, hole){
+  hudPanel(x, y, 5, 4);
+  const suit = '#$%&'[(c / 13) | 0];
+  const r = CARD_R[c % 13];
+  if (hole){
+    for (let i = 0; i < 3; i++) hudStr(x + 1, y + i, ':::', H_DIM);
+    return;
+  }
+  hudStr(x + 1, y, r.padEnd(3), ((c / 13) | 0) < 2 ? H_RED : H_WHT);
+  hudStr(x + 2, y + 1, suit, ((c / 13) | 0) < 2 ? H_RED : H_WHT);
+  hudStr(x + 1, y + 2, r.padStart(3), H_DIM);
+}
+function openBlackjack(bet){
+  const deck = [];
+  for (let i = 0; i < 52; i++) deck.push(i);
+  for (let i = 51; i > 0; i--){ const j = (Math.random() * (i + 1)) | 0;
+    const t = deck[i]; deck[i] = deck[j]; deck[j] = t; }
+  const m = {
+    name: 'blackjack', pausesWorld: true, bet,
+    you: [deck.pop(), deck.pop()], house: [deck.pop(), deck.pop()],
+    phase: 'play', msg: 'H hit   S stand   D double', doubled: false,
+    settle(){
+      const yv = handVal(this.you), hv = handVal(this.house);
+      const b = this.doubled ? this.bet * 2 : this.bet;
+      if (yv > 21) payout(0, 'bust');
+      else if (this.you.length === 2 && yv === 21 && this.house.length === 2 && hv !== 21)
+        payout((b * 2.5) | 0, 'blackjack');
+      else if (hv > 21 || yv > hv) payout(b * 2, 'you take it');
+      else if (yv === hv) payout(b, 'push');
+      else payout(0, 'house takes it');
+      this.phase = 'done'; this.msg = 'SPACE deal again   ESC leave';
+    },
+    housePlay(){
+      this.phase = 'house';
+      while (handVal(this.house) < 17) this.house.push(deck.pop());
+      this.settle();
+    },
+    onKey(code){
+      if (this.phase === 'play'){
+        if (code === 'KeyH'){
+          this.you.push(deck.pop());
+          if (handVal(this.you) > 21) this.settle();
+          else if (handVal(this.you) === 21) this.housePlay();
+        } else if (code === 'KeyS') this.housePlay();
+        else if (code === 'KeyD' && this.you.length === 2 && player.credits >= this.bet){
+          player.credits -= this.bet; this.doubled = true;
+          this.you.push(deck.pop());
+          if (handVal(this.you) > 21) this.settle(); else this.housePlay();
+        }
+      } else if (this.phase === 'done' && (code === 'Space' || code === 'Enter')){
+        popMode(); betMenu('BLACKJACK', openBlackjack); return;
+      }
+      if (code === 'Escape' || code === 'Backspace'){
+        if (performance.now() - this.openedT < 250) return;
+        if (this.phase === 'play') payout(0, 'folded');   // walking out forfeits
+        popMode();
+      }
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      const w = Math.min(cols - 4, 64), h = Math.min(rows - 4, 26);
+      const x = (cols - w) >> 1, y = (rows - h) >> 1;
+      hudPanel(0, 0, cols, rows); hudPanel(x, y, w, h);
+      hudBox(x, y, w, h, 'BLACKJACK  -  ' + this.bet + ' CR' + (this.doubled ? ' DOUBLED' : ''));
+      hudStr(x + 2, y + 2, 'HOUSE  ' + (this.phase === 'play' ? '?' : handVal(this.house)), H_RED);
+      for (let i = 0; i < this.house.length; i++)
+        drawCard(x + 2 + i * 6, y + 3, this.house[i], this.phase === 'play' && i === 1);
+      hudStr(x + 2, y + 9, 'YOU    ' + handVal(this.you), H_GRN);
+      for (let i = 0; i < this.you.length; i++)
+        drawCard(x + 2 + i * 6, y + 10, this.you[i], false);
+      hudStr(x + 2, y + h - 2, this.msg, H_YEL);
+      hudStr(x + w - 14, y + h - 2, 'CR ' + player.credits, H_DIM);
+    }
+  };
+  pushMode(m);
+}
+/* ------------------------------- slots ---------------------------------- */
+const SLOT_SYMS = ['7', '$', '*', 'o', 'x', '+'];
+const SLOT_COL  = () => [H_RED, H_YEL, H_PUR, H_GRN, H_BLU, H_DIM];
+function openSlots(bet){
+  const m = {
+    name: 'slots', pausesWorld: true, bet,
+    reels: [0, 2, 4], spin: [0, 0, 0], t0: 0, phase: 'idle',
+    msg: 'SPACE pull the arm',
+    onKey(code){
+      if (code === 'Space' && this.phase === 'idle'){
+        if (player.credits < this.bet && this.played){ toast('not enough credits'); return; }
+        if (this.played) player.credits -= this.bet;
+        this.played = true;
+        this.phase = 'spin'; this.t0 = performance.now();
+        // land weighted: sevens are rare, the fodder is not
+        this.land = [0, 1, 2].map(() => {
+          const r = Math.random();
+          return r < 0.06 ? 0 : r < 0.16 ? 1 : r < 0.34 ? 2
+               : r < 0.56 ? 3 : r < 0.78 ? 4 : 5;
+        });
+        sfx('ui_move', { vol: 0.5, rate: 0.7 });
+      }
+      if (code === 'Escape' || code === 'Backspace'){
+        if (performance.now() - this.openedT < 250) return;
+        if (this.phase !== 'spin') popMode();
+      }
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      const w = 40, h = 17;
+      const x = (cols - w) >> 1, y = (rows - h) >> 1;
+      hudPanel(0, 0, cols, rows); hudPanel(x, y, w, h);
+      hudBox(x, y, w, h, 'LUCKY LUCKY  -  ' + this.bet + ' CR');
+      const el = performance.now() - this.t0;
+      for (let r2 = 0; r2 < 3; r2++){
+        const stopAt = 900 + r2 * 650;          // reels stop left to right
+        let sym;
+        if (this.phase === 'spin' && el < stopAt)
+          sym = ((el / 70) | 0 + r2 * 2) % SLOT_SYMS.length;
+        else sym = this.land ? this.land[r2] : this.reels[r2];
+        this.reels[r2] = sym;
+        const rx = x + 7 + r2 * 9;
+        hudPanel(rx, y + 5, 7, 5);
+        hudStr(rx + 3, y + 7, SLOT_SYMS[sym], SLOT_COL()[sym]);
+        hudStr(rx, y + 4, '=======', H_DIM);
+        hudStr(rx, y + 10, '=======', H_DIM);
+      }
+      if (this.phase === 'spin' && el >= 900 + 2 * 650){
+        this.phase = 'idle';
+        const [a, b, c] = this.reels;
+        let mult = 0, why = 'the house nods';
+        if (a === 0 && b === 0 && c === 0){ mult = 50; why = 'JACKPOT - THREE SEVENS'; }
+        else if (a === b && b === c){ mult = 10; why = 'three of a kind'; }
+        else if (a === b || b === c || a === c){ mult = 1; why = 'a pair - stake back'; }
+        payout(this.bet * mult, why);
+        this.msg = 'SPACE spin again   ESC leave';
+      }
+      hudStr(x + 2, y + h - 2, this.msg, H_YEL);
+      hudStr(x + w - 14, y + h - 2, 'CR ' + player.credits, H_DIM);
+      hudStr(x + 2, y + 2, '7 7 7 pays x50    triple x10    pair returns', H_DIM);
+    }
+  };
+  pushMode(m);
+}
+/* ------------------------------- plinko --------------------------------- */
+function openPlinko(bet){
+  const SLOTS = [12, 3, 1.5, 0.5, 0.2, 0.5, 1.5, 3, 12];   // the edges pay
+  const m = {
+    name: 'plinko', pausesWorld: true, bet,
+    phase: 'idle', chip: null, msg: 'SPACE drop the chip',
+    onKey(code){
+      if (code === 'Space' && this.phase === 'idle'){
+        if (this.played){
+          if (player.credits < this.bet){ toast('not enough credits'); return; }
+          player.credits -= this.bet;
+        }
+        this.played = true;
+        this.phase = 'drop';
+        this.chip = { row: -1, col: 4, t: performance.now() };
+        sfx('ui_move', { vol: 0.5, rate: 1.3 });
+      }
+      if (code === 'Escape' || code === 'Backspace'){
+        if (performance.now() - this.openedT < 250) return;
+        if (this.phase !== 'drop') popMode();
+      }
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      const w = 46, h = Math.min(rows - 2, 26);
+      const x = (cols - w) >> 1, y = (rows - h) >> 1;
+      hudPanel(0, 0, cols, rows); hudPanel(x, y, w, h);
+      hudBox(x, y, w, h, 'PACHINKO PALACE  -  ' + this.bet + ' CR');
+      const ROWS2 = 8;
+      // pegs: a fixed triangle
+      for (let r2 = 0; r2 < ROWS2; r2++)
+        for (let c2 = 0; c2 <= r2; c2++)
+          hudStr(x + 22 - r2 * 2 + c2 * 4, y + 3 + r2 * 2, '.', H_DIM);
+      // slot floor
+      for (let i2 = 0; i2 < 9; i2++){
+        const sx2 = x + 4 + i2 * 4 + 2;
+        const v = SLOTS[i2];
+        hudStr(sx2, y + h - 3, v >= 12 ? 'x12' : 'x' + v,
+               v >= 3 ? H_YEL : v < 1 ? H_DIM : H_WHT);
+      }
+      if (this.phase === 'drop' && this.chip){
+        const ch = this.chip;
+        if (performance.now() - ch.t > 160){
+          ch.t = performance.now();
+          ch.row++;
+          if (ch.row >= ROWS2){
+            this.phase = 'idle';
+            const mult = SLOTS[clamp(ch.col, 0, 8)];
+            payout((this.bet * mult) | 0,
+                   mult < 1 ? 'the middle eats it' : mult >= 12 ? 'EDGE POCKET' : 'x' + mult);
+            this.msg = 'SPACE drop again   ESC leave';
+          } else if (Math.random() < 0.5) ch.col = Math.max(0, ch.col - 0.5);
+          else ch.col = Math.min(8, ch.col + 0.5);
+          sfx('ui_move', { vol: 0.15, rate: 2.4 });
+        }
+        if (this.phase === 'drop'){
+          const px2 = x + 4 + Math.round(ch.col * 4) + 2;
+          const py2 = y + 2 + Math.max(0, ch.row) * 2;
+          hudStr(px2, py2, 'O', H_YEL);
+        }
+      }
+      hudStr(x + 2, y + h - 2, this.msg, H_YEL);
+      hudStr(x + w - 14, y + h - 2, 'CR ' + player.credits, H_DIM);
+    }
+  };
+  pushMode(m);
+}
+/* ------------------------------ high-low -------------------------------- */
+function openHighLow(bet){
+  const m = {
+    name: 'highlow', pausesWorld: true, bet,
+    die: 1 + ((Math.random() * 6) | 0), pot: bet, streak: 0,
+    msg: 'H higher   L lower   C cash out', phase: 'play',
+    roll(guessHigh){
+      const next = 1 + ((Math.random() * 6) | 0);
+      const win = next === this.die ? false
+                : guessHigh ? next > this.die : next < this.die;
+      this.die = next;
+      if (win){
+        this.streak++;
+        this.pot = (this.pot * 1.4) | 0;
+        sfx('ui_select', { vol: 0.5, rate: 1.2 + this.streak * 0.1 });
+        this.msg = 'streak ' + this.streak + '  pot ' + this.pot + '  H / L / C';
+      } else {
+        this.pot = 0; this.phase = 'done';
+        payout(0, 'the dice remember');
+        this.msg = 'SPACE go again   ESC leave';
+      }
+    },
+    onKey(code){
+      if (this.phase === 'play'){
+        if (code === 'KeyH') this.roll(true);
+        else if (code === 'KeyL') this.roll(false);
+        else if (code === 'KeyC'){
+          payout(this.pot, 'cashed out at streak ' + this.streak);
+          this.phase = 'done'; this.msg = 'SPACE go again   ESC leave';
+        }
+      } else if (code === 'Space' || code === 'Enter'){
+        popMode(); betMenu('HIGH-LOW', openHighLow); return;
+      }
+      if (code === 'Escape' || code === 'Backspace'){
+        if (performance.now() - this.openedT < 250) return;
+        if (this.phase === 'play' && this.pot > 0) payout(this.pot, 'took the pot and ran');
+        popMode();
+      }
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      const w = 40, h = 15;
+      const x = (cols - w) >> 1, y = (rows - h) >> 1;
+      hudPanel(0, 0, cols, rows); hudPanel(x, y, w, h);
+      hudBox(x, y, w, h, 'HIGH-LOW  -  POT ' + this.pot);
+      hudPanel(x + 16, y + 4, 7, 5);
+      const pips = ['', 'o', 'o o', 'o o o', 'oo oo', 'oo:oo', 'oooooo'][this.die];
+      hudStr(x + 17, y + 5, '[ ' + this.die + ' ]', H_WHT);
+      hudStr(x + 17, y + 7, pips.slice(0, 5), H_YEL);
+      hudStr(x + 2, y + 2, 'a tie loses. every win multiplies x1.4', H_DIM);
+      hudStr(x + 2, y + h - 2, this.msg, H_YEL);
+      hudStr(x + w - 14, y + h - 2, 'CR ' + player.credits, H_DIM);
+    }
+  };
+  pushMode(m);
+}
+/* ------------------------------- the wheel ------------------------------ */
+function openWheel(bet){
+  const SEGS = [0, 1, 0, 2, 0, 0.5, 0, 2.5, 0, 5, 0, 0];
+  const m = {
+    name: 'wheel', pausesWorld: true, bet,
+    phase: 'idle', ang: 0, vel: 0, msg: 'SPACE spin the wheel',
+    onKey(code){
+      if (code === 'Space' && this.phase === 'idle'){
+        if (this.played){
+          if (player.credits < this.bet){ toast('not enough credits'); return; }
+          player.credits -= this.bet;
+        }
+        this.played = true;
+        this.phase = 'spin';
+        this.vel = 0.9 + Math.random() * 0.7;
+        sfx('ui_move', { vol: 0.5, rate: 0.8 });
+      }
+      if (code === 'Escape' || code === 'Backspace'){
+        if (performance.now() - this.openedT < 250) return;
+        if (this.phase !== 'spin') popMode();
+      }
+    },
+    draw(){
+      const cols = R.cols, rows = R.rows;
+      const w = 48, h = Math.min(rows - 2, 22);
+      const x = (cols - w) >> 1, y = (rows - h) >> 1;
+      hudPanel(0, 0, cols, rows); hudPanel(x, y, w, h);
+      hudBox(x, y, w, h, 'THE VELVET WHEEL  -  ' + this.bet + ' CR');
+      if (this.phase === 'spin'){
+        this.ang += this.vel;
+        this.vel *= 0.985;
+        if (this.vel < 0.012){
+          this.phase = 'idle';
+          const idx = ((Math.round(this.ang / (Math.PI / 6)) % 12) + 12) % 12;
+          const mult = SEGS[idx];
+          payout((this.bet * mult) | 0,
+                 mult === 0 ? 'the wheel shrugs' : mult >= 5 ? 'THE FIVE' : 'x' + mult);
+          this.msg = 'SPACE spin again   ESC leave';
+        }
+      }
+      const cx2 = x + (w >> 1), cy2 = y + 9;
+      for (let i2 = 0; i2 < 12; i2++){
+        const a2 = i2 * Math.PI / 6 - this.ang;
+        const px2 = cx2 + Math.round(Math.cos(a2) * 14);
+        const py2 = cy2 + Math.round(Math.sin(a2) * 6);
+        const v = SEGS[i2];
+        hudStr(px2, py2, v === 0 ? '--' : v >= 5 ? 'x5' : 'x' + v,
+               v === 0 ? H_DIM : v >= 2.5 ? H_YEL : H_WHT);
+      }
+      hudStr(cx2, cy2 - 7, 'V', H_RED);           // the pointer, fixed at the top
+      hudStr(cx2 - 1, cy2, '(*)', H_PUR);
+      hudStr(x + 2, y + h - 2, this.msg, H_YEL);
+      hudStr(x + w - 14, y + h - 2, 'CR ' + player.credits, H_DIM);
+    }
+  };
+  pushMode(m);
+}
+const CASINO_GAMES = {
+  blackjack: { dealer: 'BLACKJACK DEALER', open: openBlackjack,
+               pitch: 'Cards fall where they fall. Sit.' },
+  slots:     { dealer: 'SLOTS ATTENDANT', open: openSlots,
+               pitch: 'The reels love somebody tonight. Statistically.' },
+  plinko:    { dealer: 'PLINKO WARDEN', open: openPlinko,
+               pitch: 'Gravity does the work. You just pay it.' },
+  highlow:   { dealer: 'DICE CALLER', open: openHighLow,
+               pitch: 'Higher or lower. The only honest question in here.' },
+  wheel:     { dealer: 'WHEEL SPINNER', open: openWheel,
+               pitch: 'Round it goes. Where it stops, I get paid either way.' }
+};
 /* The pause menu is a hallway of doors now, not a wall of dials: each group
    of controls lives behind its own button, one green rule between each. */
 function openPauseMenu(){
