@@ -1355,7 +1355,9 @@ function isKerb(tx, ty){
 }
 // the facing a prop will be drawn at - its footprint turns with it
 function propFacing(p){
-  return p.k === PK_STALL ? stallYaw(p) : propYaw(p) + (MODEL_TURN[p.k] || 0);
+  if (p.k === PK_STALL) return stallYaw(p);
+  if (p.k === PK_BENCH) return benchYaw(p);
+  return propYaw(p) + (MODEL_TURN[p.k] || 0);
 }
 function footBox(k, yaw){
   const m = MODEL_FOOT[k];
@@ -12357,7 +12359,10 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const cols = R.cols, rows = R.rows;
   const relX = ox - cam.x, relY = oy - cam.y;
   const tC = relX * dirX + relY * dirY;
-  if (tC < 0.15 || tC - 1 > viewD) return;
+  // a cheap bound on the solid's reach, so something you are standing in or
+  // beside is not thrown away before the slab test can clip it properly
+  const reach = Math.max(wW, wW * depthScale) * 0.75 + 0.3;
+  if (tC < -reach || tC - 1 > viewD) return;
   const m = voxelize(art, depthScale, !boxy);
   const aw = m.aw, vd = m.vd, ah = m.ah, vox = m.vox;
   const dW = wW * depthScale;
@@ -12368,13 +12373,37 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const rad = 0.5 * Math.max(bu1 - bu0, bv1 - bv0) +
               Math.max(Math.abs(bu0 + bu1), Math.abs(bv0 + bv1)) * 0.5;
   const tNear = Math.max(0.2, tC - rad);
-  // the cells this solid can possibly touch
-  const tX = (dirY * relX - dirX * relY) / planeLen;
-  const ccC = cols * 0.5 * (1 - tX / tC);
-  const halfC = rad * (cols * 0.5 / planeLen) / tNear;
-  let c0 = Math.floor(ccC - halfC) - 1, c1 = Math.ceil(ccC + halfC) + 1;
-  if (c1 < 0 || c0 >= cols) return;
-  if (c0 < 0) c0 = 0; if (c1 > cols - 1) c1 = cols - 1;
+  /* The columns this solid can touch, from its four ground corners rather
+     than from its centre. The centre is useless up close: it divides by a
+     forward distance that goes to zero as a thing comes abeam, which is how
+     the bench you sat on and the car at your elbow vanished. Corners that
+     fall behind the camera cannot be projected at all, so they widen the
+     span to the screen edge on their own side - exact where it matters and
+     still tight for the tree passing twenty tiles off your shoulder, which
+     a full-width fallback made expensive. */
+  let c0, c1;
+  {
+    const cyw = Math.cos(yaw), syw = Math.sin(yaw);
+    let lo = 1e9, hi = -1e9, toLeft = false, toRight = false, front = 0;
+    for (let k = 0; k < 4; k++){
+      const uu = (k & 1) ? bu1 : bu0, vv = (k & 2) ? bv1 : bv0;
+      const wx = relX + uu * cyw - vv * syw;
+      const wy = relY + uu * syw + vv * cyw;
+      const f = wx * dirX + wy * dirY;
+      const lat = (dirY * wx - dirX * wy) / planeLen;
+      if (f < 0.2){ if (lat >= 0) toLeft = true; else toRight = true; continue; }
+      front++;
+      const cc = cols * 0.5 * (1 - lat / f);
+      if (cc < lo) lo = cc;
+      if (cc > hi) hi = cc;
+    }
+    if (!front) return;                       // wholly behind the camera
+    if (toLeft) lo = -1;
+    if (toRight) hi = cols;
+    if (hi < 0 || lo > cols - 1) return;
+    c0 = Math.max(0, Math.floor(lo) - 1);
+    c1 = Math.min(cols - 1, Math.ceil(hi) + 1);
+  }
   // a solid below eye level shows its top at its FAR edge and its base at
   // its near one, so the row span has to cover both ends of its depth
   const tFar = tC + rad;
@@ -12631,7 +12660,6 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_TURBINE, 0.5, 0);set(PK_ITEM, 0.9, 1);    set(PK_SAKURA, 1.0, 0);
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
-  MODEL_TURN[PK_BENCH] = Math.PI / 2;         // benches run along the kerb
 })();
 /* How a cart stands: backed up against a building, counter looking out over
    the street at the frontage on the far side. That is what a real pitch is -
@@ -12669,6 +12697,37 @@ function stallSpot(o){
   _stallBack = bestBack;                        // tiles to the wall it backs onto
   return best;
 }
+/* Which way a bench faces. Squaring it to the roadway - which is all it
+   used to do - leaves half of them looking at a wall from thirty
+   centimetres away. A bench wants its back to the nearest frontage and its
+   face to whatever is across from it: the far side of the street, the park,
+   the water. Same shape of rule as a market cart, looser, because a bench
+   in the middle of a lawn is a perfectly good bench. */
+function benchYaw(o){
+  const gx = o.x | 0, gy = o.y | 0;
+  const wallAt = (x, y) => inMap(x, y) && tH[y * MAP + x] > 0;
+  const scan = (dx, dy, lim) => {
+    for (let s = 1; s <= lim; s++) if (wallAt(gx + dx * s, gy + dy * s)) return s;
+    return -1;
+  };
+  let best = -1, bestScore = -1e9;
+  for (let d = 0; d < 4; d++){
+    const fx = DIRV[d][0], fy = DIRV[d][1];
+    const back = scan(-fx, -fy, 7);           // something to sit against
+    const front = scan(fx, fy, 40);           // and something to look at
+    let score = back < 0 ? -30 : 30 - back * 5;
+    // never face a wall that is nearer than the one behind you
+    if (front >= 0 && front <= back + 1) score -= 200;
+    else score += front < 0 ? 12 : Math.min(front, 26);
+    // a bench on open lawn scores the same every way it can point, and
+    // "the same" used to mean "east" for all of them
+    score += hash3(o.x | 0, o.y | 0, 300 + d) * 4;
+    if (score > bestScore){ bestScore = score; best = d; }
+  }
+  if (best < 0) return propYaw(o) + Math.PI / 2;
+  // the volume puts its front edge at v = -depth/2, along (sin, -cos)
+  return Math.atan2(DIRV[best][0], -DIRV[best][1]);
+}
 function stallYaw(o){
   const d = stallSpot(o);
   // the volume puts its counter at v = -depth/2, which lies along (sin, -cos)
@@ -12698,12 +12757,18 @@ const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
 function spritePass(){
   drawList.length = 0;
   const MD = viewD;
+  /* A solid whose CENTRE is beside you still has half of itself in front of
+     you - a car passing at arm's length, the bench you are sitting on. The
+     near cull used to drop anything whose centre was not 0.3 ahead, which
+     is why those vanished exactly when they filled the corner of the eye.
+     Every test now allows the object's own reach. */
   for (let i = 0; i < cars.length; i++){
     const c = cars[i];
     const rx = c.x - cam.x, ry = c.y - cam.y;
     const f = rx * dirX + ry * dirY;
-    if (f < 0.3 || f > MD) continue;
-    if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 6) continue;
+    const cr = c.len * 0.5 + 0.4;
+    if (f < -cr || f > MD) continue;
+    if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + cr + 4) continue;
     drawList.push({ d: f, k: 0, o: c });
   }
   for (let i = 0; i < peds.length; i++){
@@ -12711,7 +12776,7 @@ function spritePass(){
     if (p.off) continue;                        // living their off-screen hours
     const rx = p.x - cam.x, ry = p.y - cam.y;
     const f = rx * dirX + ry * dirY;
-    if (f < 0.3 || f > MD) continue;
+    if (f < -0.6 || f > MD) continue;
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 2) continue;
     drawList.push({ d: f, k: 1, o: p });
   }
@@ -12719,7 +12784,7 @@ function spritePass(){
     const a = actors[i];
     const rx = a.x - cam.x, ry = a.y - cam.y;
     const f = rx * dirX + ry * dirY;
-    if (f < 0.3 || f > MD) continue;
+    if (f < -0.6 || f > MD) continue;
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 2) continue;
     drawList.push({ d: f, k: 1, o: a });       // drawn exactly like a pedestrian
   }
@@ -12727,7 +12792,7 @@ function spritePass(){
     const s = fxs[i];
     const rx = s.x - cam.x, ry = s.y - cam.y;
     const f = rx * dirX + ry * dirY;
-    if (f < 0.3 || f > MD) continue;
+    if (f < -0.5 || f > MD) continue;
     drawList.push({ d: f, k: 3, o: s });
   }
   const vp = visibleProps();
@@ -12735,8 +12800,23 @@ function spritePass(){
     const p = vp[i];
     const rx = p.x - cam.x, ry = p.y - cam.y;
     const f = rx * dirX + ry * dirY;
-    if (f < 0.3 || f > MD || f > 170) continue;   // sub-cell past 170 anyway
-    if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 3) continue;
+    // Enough reach that a bench you are sitting on or a rack at your elbow
+    // still draws, but no more: a tree whose trunk is behind you has only
+    // canopy overhead, and paying full screen width for it is how the parks
+    // went from three milliseconds to eight.
+    // Small furniture is the stuff you stand beside - a bench under you, a
+    // rack at your elbow - and it earns the reach. A tree does not: its
+    // bounding sphere is the whole canopy, so letting one behind you into
+    // the list drags the entire screen width through the marcher, which is
+    // what took the parks from four milliseconds to seven.
+    // Small furniture earns the reach - the bench under you, the rack at
+    // your elbow. Big foliage does not: a canopy you are standing inside
+    // fills the frame and costs two milliseconds on its own, and what it
+    // renders is leaves directly overhead.
+    const pw = (PROPDEF[p.k] && PROPDEF[p.k].w) || 1;
+    const nearR = pw <= 2.6 ? -(pw * 0.5 + 0.3) : 0.15;
+    if (f < nearR || f > MD || f > 170) continue;
+    if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + Math.min(pw * 0.6, 3)) continue;
     drawList.push({ d: f, k: 2, o: p });
   }
   drawList.sort((a, b) => b.d - a.d);          // far to near
@@ -12792,9 +12872,7 @@ function spritePass(){
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      if (o.yaw === undefined)
-        o.yaw = o.k === PK_STALL ? stallYaw(o)
-                                 : propYaw(o) + (MODEL_TURN[o.k] || 0);
+      if (o.yaw === undefined) o.yaw = propFacing(o);
       const dep = def.dep !== undefined ? def.dep
                 : MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
       drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
