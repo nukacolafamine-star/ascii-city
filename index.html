@@ -7317,10 +7317,10 @@ const MQ1 = {
     stages: [{ log: 'the watcher gave you an address - find ROOK at THE HIDEOUT on the red mile',
       target: toHideout }] },
   mq2: { name: 'MAKING A MARK', act: 1,
-    stages: [{ log: 'tag 3 walls with a GRAFFITI BURNER (buy one at a TOOLS counter)',
+    stages: [{ log: 'put the cell’s mark on 3 walls', tool: 'burner',
       auto(){ return (player.qvar.vandal || 0) - (player.qvar.mq2Base || 0) >= 3; } }] },
   mq3: { name: 'BLIND THE BLOCK', act: 1,
-    stages: [{ log: 'cut 3 street cameras with a HACKSAW - face one and press E',
+    stages: [{ log: 'cut 3 street cameras - face one and press E', tool: 'saw',
       auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq3Base || 0) >= 3; } }] },
   mq4: { name: 'COURIER', act: 1,
     stages: [{ log: 'carry the cell\u2019s package to the drop in THE STRIP - hand it over there',
@@ -7348,7 +7348,8 @@ const MQ1 = {
       },
       auto(){ return invCount('scrap') >= 5 && atHideout(6); } }] },
   mq7: { name: 'A LOUD DISTRACTION', act: 1,
-    stages: [{ log: 'set off FIRECRACKERS at the marked junction to pull the patrols',
+    stages: [{ log: 'pull the patrols to the marked junction - make a noise',
+      tool: 'firecracker',
       target(){ return mqSpot(671, D_STRIP); },
       auto(){ return player.qvar.mq7pop && atSpot(mqSpot(671, D_STRIP), 10); } }] },
   mq8: { name: 'THE RUN', act: 1,
@@ -9020,7 +9021,7 @@ const QUESTS = {
   test: {
     name: 'PRODUCT TESTING',
     stages: [
-      { log: 'ride the sample (MIRRORSHADE) near THE SPHERE downtown',
+      { log: 'ride the sample near THE SPHERE downtown', tool: 'mirror',
         target(){ const l = landmarks.find(x => /SPHERE/.test(x.name));
                   return l && { x: l.x, y: l.y, name: 'THE SPHERE' }; },
         auto(){ const l = landmarks.find(x => /SPHERE/.test(x.name));
@@ -9034,10 +9035,10 @@ const QUESTS = {
   quiet: {
     name: 'QUIET STREETS',
     stages: [
-      { log: 'buy a HACKSAW - find a counter signed TOOLS',
-        target(){ return supplyMark(nearestShopFor('saw'), 'TOOLS'); },
+      { log: 'a counter signed TOOLS keeps them',
+        target(){ return shopMark('saw'); }, tool: 'saw',
         auto(){ return invCount('saw') > 0; } },
-      { log: 'cut 3 flock cams (face one and press E)',
+      { log: 'cut 3 flock cams (face one and press E)', tool: 'saw',
         auto(){ return (player.qvar.camCut || 0) - (player.qvar.quietBase || 0) >= 3; } },
       { log: 'collect from the fixer',
         target(){
@@ -9080,8 +9081,15 @@ const WHEELS_QUESTS = {
   wheels1: {
     name: 'TRUST EXERCISE',
     stages: [
-      { log: 'bring VANCE 3 SCRAP ELECTRONICS - he needs "parts"',
-        target(){ return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' }; } }
+      { log: () => invCount('scrap') >= 3
+                 ? 'take the three SCRAP ELECTRONICS to VANCE'
+                 : 'lift 3 SCRAP ELECTRONICS for VANCE (' + invCount('scrap') + ' of 3)',
+        target(){
+          if (invCount('scrap') >= 3)
+            return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' };
+          return supplyMark(nearestDepot(3 - invCount('scrap')), 'DEPOT') ||
+                 (DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' });
+        } }
     ]
   },
   wheels2: {
@@ -9162,7 +9170,7 @@ const MQ2 = {
       target(){ return mqSpot(681, D_DOWN); },
       auto(){ return player.qvar.mq10seen; } }] },
   mq11: { name: 'DEAD AIR', act: 2,
-    stages: [{ log: 'jam the relay: use a SIGNAL JAMMER at the marked spot downtown',
+    stages: [{ log: 'jam the relay at the marked spot downtown', tool: 'jammer',
       target(){ return mqSpot(691, D_DOWN); },
       auto(){ return player.qvar.mq11jam && atSpot(mqSpot(691, D_DOWN), 12); } }] },
   mq12: { name: 'THE KEYCARD', act: 2,
@@ -9179,7 +9187,8 @@ const MQ2 = {
       auto(){ return HOMES && HOMES.suburb && Math.hypot(HOMES.suburb.x - cam.x, HOMES.suburb.y - cam.y) < 6; } }] },
   mq15: { name: 'CLEAN CUTS', act: 2,
     stages: [{ log: 'blind a downtown block: cut 4 more cameras',
-      auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq15Base || 0) >= 4; } }] },
+      auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq15Base || 0) >= 4; },
+      tool: 'saw' }] },
   mq16: { name: 'INSIDE THE TOWER', act: 2,
     stages: [{ log: 'infiltrate the corpo tower - reach the top floor. cameras raise the alarm',
       target(){ return mqDungeon(); },
@@ -9221,7 +9230,8 @@ const MQ2 = {
       target(){ return mqSpot(711, D_DOWN); },
       auto(){ return !!player.qvar.mq21code; } }] },
   mq22: { name: 'DRY RUN', act: 3,
-    stages: [{ log: 'kill one substation as a test - use a HACKSAW or JAMMER at the marked box',
+    stages: [{ log: 'kill one substation as a test - the marked box',
+      tool: ['saw', 'jammer'],
       target(){ return mqSpot(721, D_IND); },
       auto(){ return player.qvar.mq22cut && atSpot(mqSpot(721, D_IND), 10); } }] },
   mq23: { name: 'SHE IS AFRAID', act: 3,
@@ -9349,7 +9359,12 @@ function questStage(id){ return player.quests[id]; }
 /* An objective that names a place cannot be a fixed string: the places are
    dealt per city. Stage logs may be functions, and everything that shows one
    asks for it through here. */
-function questLog(st){ return typeof st.log === 'function' ? st.log() : st.log; }
+function questLog(st){
+  const base = typeof st.log === 'function' ? st.log() : st.log;
+  // a job you have no tool for is a shopping trip with a job after it
+  const need = toolNeeded(st);
+  return need ? toolWords(need) + ' first - ' + base : base;
+}
 /* Where the scrap actually is. Depots are the only rooms that stock it, and
    the only use dealt in the industrial regions, so the nearest one is both
    the right errand and the right direction. */
@@ -9397,6 +9412,29 @@ function nearestShopFor(item){
 }
 function supplyMark(d, what){
   return d && { x: d.x, y: d.y, name: regionName(d.x, d.y) + ' ' + what };
+}
+/* A counter that sells the thing, named by its trade sign so the marker
+   matches the word over the door. Every shop has somebody behind it, so
+   this is somewhere you can actually buy. */
+function shopMark(item){
+  const d = nearestShopFor(item);
+  if (!d) return null;
+  const u = buildingUse(buildings[d.b]);
+  const tr = u && USES[u] && USES[u].trade;
+  return supplyMark(d, SHOP_SIGN[tr] || 'SHOP');
+}
+/* Which of a stage's required tools you are missing. A stage may name one
+   ('saw') or a choice of them (['saw','jammer']) - carrying any one of the
+   set counts. Returns null once you are equipped for the job. */
+function toolNeeded(st){
+  if (!st || !st.tool) return null;
+  const list = Array.isArray(st.tool) ? st.tool : [st.tool];
+  for (let i = 0; i < list.length; i++) if (invCount(list[i]) > 0) return null;
+  return list;
+}
+function toolWords(list){
+  const n = list.map(id => (ITEMS[id] && ITEMS[id].name) || id);
+  return n.length === 1 ? n[0] : n.slice(0, -1).join(', ') + ' or ' + n[n.length - 1];
 }
 /* The city names its own industry - GANTRY ROW, RUSTYARD, THE SMELTERS - and
    those names are on the map. Quests use them instead of inventing one. */
@@ -9542,6 +9580,13 @@ function questTarget(){
   const id = player.track;
   if (id && typeof player.quests[id] === 'number'){
     const st = QUESTS[id].stages[player.quests[id]];
+    // Nothing else on the list matters until you are holding the thing the
+    // job needs, so the marker walks you to a counter that sells it.
+    const need = toolNeeded(st);
+    if (need){
+      const m = shopMark(need[0]);
+      if (m) return { x: m.x, y: m.y, name: m.name, q: QUESTS[id].name };
+    }
     if (st && st.target){
       const t = st.target();
       if (t) return { x: t.x, y: t.y, name: t.name, q: QUESTS[id].name };
