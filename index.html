@@ -1221,6 +1221,10 @@ function buildCity(seed){
   buildDoors();
   placeStreetItems();
   deoverlapProps();
+  // the nudge can shuffle a cart off a spot that worked; a cart that no
+  // longer has a wall behind it and a frontage in front is not a pitch
+  props = props.filter(q => q.k !== PK_STALL || stallSpot(q) >= 0);
+  for (const q of props) if (q.k === PK_STALL) q.yaw = stallYaw(q);
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
 }
 
@@ -1527,12 +1531,18 @@ function buildProps(){
         if (q === T_WALK) nearWalk = true;
         else if (q === T_ROAD) nearRoad = true;
       }
-      if (!nearWalk || !nearRoad) continue;
       const D = DISTRICT[districtAt(x, y)];
       const hh = hash3(x, y, 41);
-      if (hh < D.stall)
-        props.push({ x: x + 0.5, y: y + 0.5, k: PK_STALL, s: hash3(x, y, 43), r: 0.55 });
-      else if (hh < D.stall + 0.035)
+      if (hh < D.stall){
+        // A cart wants a wall at its back and the far side of the street in
+        // front of it. That matters more than sitting exactly on the old
+        // kerb line, so unlike the benches it may take any paving that fits.
+        const cart = { x: x + 0.5, y: y + 0.5, k: PK_STALL, s: hash3(x, y, 43), r: 0.55 };
+        if (stallSpot(cart) >= 0) props.push(cart);
+        continue;
+      }
+      if (!nearWalk || !nearRoad) continue;
+      if (hh < D.stall + 0.035)
         props.push({ x: x + 0.5, y: y + 0.5, k: PK_BENCH, s: 0, r: 0.35 });
     }
 
@@ -8602,28 +8612,49 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_RACK, 0.6, 1);
   MODEL_TURN[PK_BENCH] = Math.PI / 2;         // benches run along the kerb
 })();
-/* Which way a stall faces: its counter opens onto the nearest carriageway,
-   which is where the crowd is - the old roads are paving now and people walk
-   the full width of them. Read the map first, since that is the ground truth
-   about where the tarmac actually is; fall back to the block grid for a cart
-   that cannot see a road from where it stands. */
-function stallYaw(o){
+/* How a cart stands: backed up against a building, counter looking out over
+   the street at the frontage on the far side. That is what a real pitch is -
+   you put your back to a wall so nobody comes round it, and you face the
+   people coming out of the doors opposite.
+
+   So for each of the four ways it could point, measure how far the wall is
+   behind it and how far the far frontage is in front. A tight back and a
+   real building over the road wins; a cart with no such alignment does not
+   get planted at all. */
+const STALL_BACK = 5, STALL_FRONT = 30;
+function stallSpot(o){
   const gx = o.x | 0, gy = o.y | 0;
-  let fx = 0, fy = 0, near = 99;
-  for (let d = 0; d < 4; d++)
-    for (let step = 1; step <= 4; step++){
-      const q = tileAt(gx + DIRV[d][0] * step, gy + DIRV[d][1] * step);
-      if (q !== T_ROAD && q !== T_CROSS) continue;
-      if (step < near){ near = step; fx = DIRV[d][0]; fy = DIRV[d][1]; }
-      break;                                    // nearest road this way; move on
-    }
-  if (!fx && !fy){                              // out of sight of one: use the grid
-    const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
-    const xn = rx - RW, xp = P - rx, yn = ry - RW, yp = P - ry;
-    if (Math.min(xn, xp) <= Math.min(yn, yp)) fx = xn <= xp ? -1 : 1;
-    else fy = yn <= yp ? -1 : 1;
+  const wallAt = (x, y) => inMap(x, y) && tH[y * MAP + x] > 0;
+  const scan = (dx, dy, lim) => {
+    for (let s = 1; s <= lim; s++) if (wallAt(gx + dx * s, gy + dy * s)) return s;
+    return -1;
+  };
+  if (wallAt(gx, gy)) return -1;                // standing in a wall: no pitch
+  let best = -1, bestScore = -1e9;
+  for (let d = 0; d < 4; d++){
+    const fx = DIRV[d][0], fy = DIRV[d][1];
+    // Close, but not inside it: the cart is STALL_D deep about its centre, so
+    // a wall one tile back would swallow its shelving.
+    const back = scan(-fx, -fy, STALL_BACK);
+    if (back < 2) continue;
+    // and a real frontage over the way, not the far side of an alley
+    const front = scan(fx, fy, STALL_FRONT);
+    if (front < 6 || front <= back + 2) continue;
+    // hard preference for a tight back; the far side just has to be there
+    const score = front - back * 8;
+    if (score > bestScore){ bestScore = score; best = d; }
   }
+  return best;
+}
+function stallYaw(o){
+  const d = stallSpot(o);
   // the volume puts its counter at v = -depth/2, which lies along (sin, -cos)
+  if (d >= 0) return Math.atan2(DIRV[d][0], -DIRV[d][1]);
+  const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;   // nothing fits: face out
+  let fx = 0, fy = 0;
+  const xn = rx - RW, xp = P - rx, yn = ry - RW, yp = P - ry;
+  if (Math.min(xn, xp) <= Math.min(yn, yp)) fx = xn <= xp ? -1 : 1;
+  else fy = yn <= yp ? -1 : 1;
   return Math.atan2(fx, -fy);
 }
 /* Where the cook stands: in the bay, behind the counter, looking out over it. */
