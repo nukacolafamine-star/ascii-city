@@ -2314,6 +2314,7 @@ PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
   order). The X role takes the item's own signature colour, so every model
   carries the tint the HUD and shops already use for it.
 ============================================================================*/
+const THIN = 0.72;      // half a voxel diagonal, plus a hair
 function itemVol(ops){
   return function(aw, vd, ah){
     const vox = new Uint8Array(aw * vd * ah);
@@ -2332,8 +2333,9 @@ function itemVol(ops){
       } else if (k === 'cyl'){                  // vertical, optionally tapered
         const [, cx, cy, z0, z1, r0, role, r1] = op;
         for (let z = z0; z <= z1; z++){
-          const t = r1 === undefined ? r0
-                  : r0 + (r1 - r0) * (z - z0) / Math.max(1, z1 - z0);
+          const t0 = r1 === undefined ? r0
+                   : r0 + (r1 - r0) * (z - z0) / Math.max(1, z1 - z0);
+          const t = Math.max(t0, THIN);         // never thin enough to disappear
           for (let y = 0; y < vd; y++)
             for (let x = 0; x < aw; x++){
               const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
@@ -2351,11 +2353,12 @@ function itemVol(ops){
             }
       } else if (k === 'rodx'){                 // horizontal rod along x
         const [, x0, x1, cy, cz, rad, role] = op;
+        const rr = Math.max(rad, THIN);         // ditto: a hairline is one voxel
         for (let x = x0; x <= x1; x++)
           for (let y = 0; y < vd; y++)
             for (let z = 0; z < ah; z++){
               const dy = y + 0.5 - cy, dz = z + 0.5 - cz;
-              if (dy * dy + dz * dz <= rad * rad) set(x, y, z, role);
+              if (dy * dy + dz * dz <= rr * rr) set(x, y, z, role);
             }
       } else if (k === 'dot'){
         set(op[1], op[2], op[3], op[4]);
@@ -2628,11 +2631,12 @@ const ITEM_DEF = {};
     ['cyl', 6, 6, 6, 7, 2.5, 11],
     ['cyl', 6, 6, 2, 4, 2.9, 9]],
     { S: [C.tlAmb, 0.9], M: [MET, 0.7], K: [TR, 0.9] });
-  d('boba', 0.28, 0.36, [                       // pearls low, straw high
-    ['cyl', 6, 6, 0, 7, 2.6, 2, 3.4],
+  d('boba', 0.28, 0.36, [                       // pearls low, tea high, straw out
+    ['cyl', 6, 6, 0, 7, 2.6, 2, 3.4],           // the clear cup
+    ['cyl', 6, 6, 1, 4, 2.3, 6, 2.9],           // milk tea, filling most of it
     ['dot', 5, 5, 0, 9], ['dot', 7, 6, 0, 9], ['dot', 6, 7, 1, 9], ['dot', 5, 7, 0, 9],
-    ['cyl', 8, 6, 8, 11, 0.7, 13]],
-    { W: [C.nPink, 0.75], K: [DK, 0.95], S: [C.nPink, 0.9] });
+    ['cyl', 8, 6, 8, 11, 0.7, 13]],             // and the straw, which is the pink
+    { W: [W, 0.45], S: [C.tlAmb, 0.85], K: [DK, 0.95] });
   d('sake', 0.26, 0.36, [                       // the tokkuri flask
     ['cyl', 6, 6, 0, 5, 3.0, 2],
     ['cyl', 6, 6, 6, 7, 1.4, 2],
@@ -2675,16 +2679,19 @@ const ITEM_DEF = {};
     ['cyl', 6, 6, 4, 6, 1.5, 13]],
     { W: [W, 0.7], M: [MET, 0.8], S: [C.nCyan, 0.95] });
   d('staticd', 0.30, 0.18, [                    // a dead-channel cassette
-    ['box', 2, 3, 0, 9, 8, 3, 13],
-    ['box', 3, 3, 1, 4, 3, 2, 9],
-    ['box', 7, 3, 1, 8, 3, 2, 9]],
-    { S: [C.nMag, 0.9], K: [DK, 0.9] });
+    ['box', 2, 3, 0, 9, 8, 3, 9],               // black plastic shell
+    ['box', 3, 4, 3, 8, 7, 3, 13],              // the printed label on top
+    ['box', 3, 3, 1, 4, 3, 2, 11],              // the two reels
+    ['box', 7, 3, 1, 8, 3, 2, 11]],
+    { K: [DK, 0.95], M: [MET, 0.7] });
   d('mirror', 0.38, 0.20, [                     // shades, folded on the card
-    ['box', 1, 5, 1, 4, 6, 3, 13],
-    ['box', 7, 5, 1, 10, 6, 3, 13],
+    ['box', 1, 5, 0, 4, 6, 3, 9],               // the frames, dark
+    ['box', 7, 5, 0, 10, 6, 3, 9],
+    ['box', 1, 5, 2, 4, 6, 3, 13],              // the tinted glass in them
+    ['box', 7, 5, 2, 10, 6, 3, 13],
     ['box', 5, 5, 2, 6, 6, 2, 11],
     ['rodx', 1, 10, 8, 1, 0.6, 11]],
-    { S: [C.nViolet, 0.95], M: [MET, 0.75] });
+    { K: [DK, 0.95], M: [MET, 0.75] });
   d('cigarette', 0.26, 0.20, [                  // the pack, one cig resting
     ['box', 3, 4, 0, 8, 8, 4, 2],
     ['box', 3, 4, 5, 8, 8, 5, 13],
@@ -2739,16 +2746,22 @@ const ITEM_DEF = {};
     ['box', 3, 4, 2, 4, 5, 3, 9]],              // the chest pocket
     { S: [C.tlAmb, 0.85], K: [TR, 0.9] });
   d('runners', 0.34, 0.18, [                    // fat soles, knit uppers
-    ['box', 1, 3, 0, 5, 9, 1, 2],
-    ['sph', 3, 6, 3, 1.9, 13, 0.7],
+    ['box', 1, 3, 0, 5, 9, 1, 2],               // the chunky white midsoles
     ['box', 7, 3, 0, 11, 9, 1, 2],
-    ['sph', 9, 6, 3, 1.9, 13, 0.7]],
-    { W: [W, 0.95], S: [C.nPink, 0.85] });
+    ['sph', 3, 6, 3, 1.9, 6, 0.7],              // knit uppers, bone grey
+    ['sph', 9, 6, 3, 1.9, 6, 0.7],
+    ['rodx', 2, 4, 6, 3, 0.6, 13],              // one flash of colour, a swoosh
+    ['rodx', 8, 10, 6, 3, 0.6, 13]],
+    { W: [W, 0.95], S: [C.rail, 0.8] });
   d('puffer', 0.38, 0.24, [                     // three fat tubes, stacked
-    ['rodx', 1, 10, 6, 1, 1.6, 13],
-    ['rodx', 1, 10, 6, 3.6, 1.6, 13],
-    ['rodx', 2, 9, 6, 6, 1.5, 13]],
-    { S: [C.camRed, 0.9] });
+    ['rodx', 1, 10, 6, 1, 1.6, 6],
+    ['rodx', 1, 10, 6, 3.6, 1.6, 6],
+    ['rodx', 2, 9, 6, 6, 1.5, 6],
+    ['rodx', 1, 10, 6, 2.4, 0.5, 9],            // quilting seams, sunk dark
+    ['rodx', 1, 10, 6, 4.9, 0.5, 9],
+    ['rodx', 5, 6, 6, 6, 1.6, 13],              // the label, up where you see it
+    ['rodx', 5, 6, 6, 3.6, 1.7, 13]],
+    { S: [C.dataDk, 0.9], K: [C.tire, 0.85] });
   d('vest', 0.32, 0.22, [                       // the vest, hung square
     ['box', 2, 4, 0, 9, 8, 5, 13],
     ['box', 4, 4, 3, 7, 8, 5, 0],               // the arm gap reads from above
@@ -2756,10 +2769,14 @@ const ITEM_DEF = {};
     { S: [C.nAmber, 0.9], K: [DK, 0.9] });
   /* -------- the jewellery counter ---------------------------------------- */
   d('shades', 0.36, 0.18, [
-    ['box', 1, 5, 0, 4, 6, 2, 9],
-    ['box', 7, 5, 0, 10, 6, 2, 9],
-    ['box', 5, 5, 1, 6, 6, 1, 13]],
-    { K: [DK, 0.95], S: [C.nViolet, 0.9] });
+    ['box', 1, 4, 0, 4, 7, 2, 9],               // frames, and a rim on top
+    ['box', 7, 4, 0, 10, 7, 2, 9],
+    ['box', 2, 5, 2, 3, 6, 2, 13],              // the tint, inset behind the rim
+    ['box', 8, 5, 2, 9, 6, 2, 13],
+    ['box', 5, 5, 1, 6, 6, 1, 9],               // the bridge
+    ['rodx', 0, 0, 5, 1, 0.6, 11],              // and the temples, folded back
+    ['rodx', 11, 11, 5, 1, 0.6, 11]],
+    { K: [DK, 0.95], M: [MET, 0.7] });
   d('ring', 0.30, 0.28, [                       // the band, stone up
     ['cyl', 6, 6, 0, 3, 2.4, 13],
     ['cyl', 6, 6, 0, 3, 1.4, 0],
@@ -2807,11 +2824,13 @@ const ITEM_DEF = {};
     ['cyl', 11, 8, 1, 3, 0.6, 11]],
     { K: [DK, 0.9], M: [MET, 0.8], S: [C.nCyan, 1.0] });
   d('burner', 0.24, 0.34, [                     // the rattle-can
-    ['cyl', 6, 6, 0, 8, 2.6, 13],
-    ['cyl', 6, 6, 9, 9, 2.2, 9],
-    ['dot', 6, 6, 10, 11],
-    ['cyl', 6, 6, 3, 5, 2.7, 2]],
-    { S: [C.nMag, 0.9], K: [DK, 0.85], M: [MET, 0.8], W: [W, 0.9] });
+    ['cyl', 6, 6, 0, 8, 2.6, 11],               // the steel can
+    ['cyl', 6, 6, 0, 0, 2.6, 9],                // crimped base and shoulder
+    ['cyl', 6, 6, 8, 8, 2.6, 9],
+    ['cyl', 6, 6, 3, 5, 2.7, 13],               // the band, in whatever it sprays
+    ['cyl', 6, 6, 9, 9, 2.2, 9],                // the cap
+    ['dot', 6, 6, 10, 13]],                     // and a nozzle wearing the paint
+    { K: [DK, 0.85], M: [MET, 0.8], W: [W, 0.9] });
   d('sniffer', 0.34, 0.22, [                    // the chip, legs out
     ['box', 3, 4, 0, 8, 7, 1, 9],
     ['dot', 2, 5, 0, 11], ['dot', 2, 6, 0, 11],
@@ -2855,10 +2874,16 @@ const ITEM_DEF = {};
     ['box', 8, 5, 1, 11, 7, 3, 13]],
     { M: [MET, 0.9], K: [DK, 0.95], S: [DK, 0.9] });
   d('railgun', 0.54, 0.26, [                    // coil rings down the barrel
-    ['rodx', 0, 11, 6, 4, 0.7, 11],
-    ['cyl', 2, 6, 2, 6, 1.6, 13], ['cyl', 6, 6, 2, 6, 1.6, 13],
-    ['cyl', 10, 6, 2, 6, 1.6, 13]],
-    { M: [MET, 0.85], X: [C.nViolet, 1.0] });
+    ['rodx', 0, 11, 6, 4, 1.4, 11],             // a barrel you can actually see
+    ['box', 0, 5, 1, 3, 7, 4, 9],               // stock and grip
+    ['box', 2, 5, 0, 3, 7, 2, 9],
+    ['cyl', 5, 6, 2, 6, 1.9, 11],               // the coil housings, steel
+    ['cyl', 8, 6, 2, 6, 1.9, 11],
+    ['cyl', 11, 6, 2, 6, 1.9, 11],
+    ['cyl', 5, 6, 4, 4, 2.0, 13],               // charged rings between them
+    ['cyl', 8, 6, 4, 4, 2.0, 13],
+    ['cyl', 11, 6, 4, 4, 2.0, 13]],
+    { M: [MET, 0.85], K: [DK, 0.92], X: [C.nViolet, 1.0] });
   d('arcgun', 0.40, 0.30, [                     // prongs and a jar of weather
     ['box', 2, 4, 0, 9, 7, 4, 9],
     ['cyl', 4, 6, 5, 8, 1.2, 13],
@@ -2875,9 +2900,11 @@ const ITEM_DEF = {};
     ['rodx', 6, 10, 6, 2, 0.7, 11]],
     { S: [C.tlAmb, 0.9], M: [MET, 0.95] });
   d('katana', 0.56, 0.20, [                     // a long line with a guard
-    ['rodx', 0, 8, 6, 4, 0.7, 11],
-    ['cyl', 8.5, 6, 2, 6, 1.3, 13],
-    ['box', 9, 5, 3, 11, 7, 4, 9]],
+    ['rodx', 0, 8, 6, 4, 1.2, 11],              // the blade, and it is steel
+    ['rodx', 0, 8, 6, 5, 0.4, 13],              // the humming edge, and only that
+    ['cyl', 8.5, 6, 2, 6, 1.5, 11],             // the tsuba
+    ['box', 9, 5, 3, 11, 7, 4, 9],              // wrapped grip
+    ['dot', 10, 6, 4, 13]],                     // one bead at the pommel
     { M: [MET, 0.95], K: [DK, 0.9], X: [C.nPink, 1.0] });
   d('maul', 0.44, 0.30, [                       // all head
     ['rodx', 0, 8, 6, 2, 0.7, 9],
@@ -2890,11 +2917,13 @@ const ITEM_DEF = {};
     ['dot', 5, 5, 1, 2], ['dot', 6, 6, 1, 2]],
     { S: [C.nAmber, 0.95], K: [DK, 0.9], W: [W, 1.0] });
   d('deck', 0.52, 0.16, [                       // the kickdeck on its wheels
-    ['box', 0, 4, 3, 11, 7, 4, 13],
-    ['box', 0, 4, 4, 1, 7, 4, 13], ['box', 10, 4, 4, 11, 7, 4, 13],
+    ['box', 0, 4, 3, 11, 7, 3, 6],              // seven-ply maple, seen edge on
+    ['box', 0, 4, 4, 11, 7, 4, 9],              // griptape over the top of it
+    ['box', 0, 4, 4, 1, 7, 4, 9], ['box', 10, 4, 4, 11, 7, 4, 9],
+    ['box', 3, 5, 3, 8, 6, 3, 13],              // the graphic, on the underside
     ['rodx', 2, 3, 4, 1, 1.0, 2], ['rodx', 8, 9, 4, 1, 1.0, 2],
     ['rodx', 2, 3, 8, 1, 1.0, 2], ['rodx', 8, 9, 8, 1, 1.0, 2]],
-    { S: [C.nViolet, 0.9], W: [W, 0.95], M: [MET, 0.8] });
+    { S: [TR, 0.85], K: [DK, 0.95], W: [W, 0.95], M: [MET, 0.8] });
 })();
 
 
@@ -7766,6 +7795,10 @@ const snifSeen = new Set();
   coat that cost the most, then shoes, then the ice. Roles carry the colour,
   so a puffer is violet and a workjacket is amber without a second model.
 ============================================================================*/
+/* what each garment is actually made of, matching the item you picked up -
+   the shell colour of its voxel model, not a second opinion */
+const COAT_COL = { puffer: C.dataDk, vest: C.nAmber, workjacket: C.tlAmb,
+                   tracksuit: C.nCyan, hoodie: C.rail };
 const BODY_W = 0.62, BODY_H = 1.76, BODY_DEP = 0.55;
 const BODY_GW = 14, BODY_GD = 8, BODY_GH = 26;
 /* roles: S skin, P trousers, T shoes, B shirt, K coat, X ice, W trim */
@@ -7838,11 +7871,7 @@ function playerBodyArt(){
   BODY_KEY = key;
   const outer = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
                   .find(id => worn.indexOf(id) >= 0);
-  const coat = outer ? (OUTFIT_COL[outer] !== undefined
-                        ? [C.nViolet, C.nGreen, C.tlAmb, C.nCyan, C.rail]
-                          [['puffer','vest','workjacket','tracksuit','hoodie'].indexOf(outer)]
-                        : C.rail)
-                     : C.jacket || C.rail;
+  const coat = (outer && COAT_COL[outer]) || C.rail;
   BODY_SL = slots({ S: [player.skinC || C.skinA || C.metal, 0.92],
                     P: [C.pants, 0.84], T: [C.tire, 0.8],
                     B: [player.shirtC || C.nWhite, 0.86],
@@ -11709,16 +11738,58 @@ function doorTag(bldId){
   if (u && USES[u] && USES[u].trade) return TRADE_TAG[USES[u].trade] || null;
   return u && !USES[u].kind ? ['?', H_DIM] : null;   // a door onto nothing yet
 }
+/* One map cell covers a patch of city, and at anything past the closest zoom
+   that patch is many tiles wide. Reading a single tile out of the middle of
+   it meant a tower was drawn only if the lattice happened to land on it - so
+   panning re-diced every block and the structures appeared to squirm. The
+   cell now takes the MAJORITY type under its whole footprint: a block stays
+   a block, a street stays a street, and the picture is the same picture
+   however you arrive at it. Ties go to the heavier structure. */
+const MAP_RANK = new Int8Array(16);
+(function(){ MAP_RANK[T_BLD] = 6; MAP_RANK[T_WATER] = 5; MAP_RANK[T_BRIDGE] = 4;
+             MAP_RANK[T_CROSS] = 3; MAP_RANK[T_ROAD] = 3; MAP_RANK[T_WALK] = 2;
+             MAP_RANK[T_PATH] = 1; MAP_RANK[T_LOT] = 0; })();
+const _mapCnt = new Int32Array(16), _mapSeen = new Int32Array(16);
+function mapTileAt(wx, wy, sw, sh){
+  const nx = sw < 2 ? 1 : sw < 3 ? 2 : sw < 4 ? 3 : 4;
+  const ny = sh < 2 ? 1 : sh < 3 ? 2 : sh < 4 ? 3 : 4;
+  if (nx === 1 && ny === 1){                   // one tile under it, one answer
+    const tx = (wx + sw * 0.5) | 0, ty = (wy + sh * 0.5) | 0;
+    return inMap(tx, ty) ? tType[ty * MAP + tx] : -1;
+  }
+  let best = -1, bn = 0, nt = 0;
+  for (let j = 0; j < ny; j++){
+    const ty = (wy + (j + 0.5) * sh / ny) | 0;
+    for (let i = 0; i < nx; i++){
+      const tx = (wx + (i + 0.5) * sw / nx) | 0;
+      if (!inMap(tx, ty)) continue;
+      const t = tType[ty * MAP + tx];
+      if (!_mapCnt[t]) _mapSeen[nt++] = t;
+      const c = ++_mapCnt[t];
+      if (c > bn || (c === bn && best >= 0 && MAP_RANK[t] > MAP_RANK[best])){
+        bn = c; best = t;
+      }
+    }
+  }
+  while (nt) _mapCnt[_mapSeen[--nt]] = 0;      // clear only what we touched
+  return bn ? best : -1;
+}
 function drawMapMode(m){
   const cols = R.cols, rows = R.rows;
   hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
   const za = m.z * 1.8;                        // cells are tall; rows cover more
+  // Pin the sample lattice to the world rather than the screen, so panning
+  // slides the map rigidly instead of resampling it under your thumb.
+  const ox = Math.round(m.cx / m.z) * m.z, oy = Math.round(m.cy / za) * za;
   for (let r = 1; r < rows - 1; r++){
-    const ty = (m.cy + (r - rows / 2) * za) | 0;
+    const wy = oy + (r - rows / 2) * za;
     for (let x = 0; x < cols; x++){
-      const tx = (m.cx - (x - cols / 2) * m.z) | 0;   // east left, like the view
-      if (!inMap(tx, ty)) continue;
-      const t = tType[ty * MAP + tx];
+      // east right, the same way round as the view and as every symbol that
+      // gets drawn on top of this - these two used to disagree, and the
+      // terrain was mirrored under the doors, landmarks and the player
+      const wx = ox + (x - cols / 2) * m.z;
+      const t = mapTileAt(wx, wy, m.z, za);
+      if (t < 0) continue;
       if (t === T_BLD) hudCell(x, r, '#', H_GRY);
       else if (t === T_WATER) hudCell(x, r, '~', H_BLU);
       else if (t === T_BRIDGE) hudCell(x, r, '=', H_DIM);
@@ -14053,7 +14124,8 @@ function drawMinimap(x0, y0){
     hudStr(x0 + 1, y0 + 1 + j, line, H_GRY);
   }
   const plot = (wx, wy, ch, col) => {
-    const i = hw - Math.round(wx - cxT), j = hh + Math.round((wy - cyT) * 0.5);
+    // east right, matching the tiles printed above and the view itself
+    const i = hw + Math.round(wx - cxT), j = hh + Math.round((wy - cyT) * 0.5);
     if (i >= 0 && i < MW && j >= 0 && j < MH) hudStr(x0 + 1 + i, y0 + 1 + j, ch, col);
   };
   for (const c of cars) if (Math.abs(c.x - cam.x) < hw && Math.abs(c.y - cam.y) < hh * 2) plot(c.x, c.y, 'o', H_YEL);
@@ -14089,11 +14161,11 @@ function drawMinimap(x0, y0){
   }
   // The tracked quest, visible even when it is somewhere else: on the window
   // it pulses, off it it pins to the border as an arrow pointing the way.
-  // Deltas are taken in SCREEN space, so the map's mirrored x costs nothing.
+  // Deltas are taken in SCREEN space, so the arrow follows the plotted mark.
   const qm = questTarget();
   if (qm){
     const pulse = ((Date.now() / 300) | 0) & 1;
-    const i = hw - Math.round(qm.x - cxT), j = hh + Math.round((qm.y - cyT) * 0.5);
+    const i = hw + Math.round(qm.x - cxT), j = hh + Math.round((qm.y - cyT) * 0.5);
     if (i >= 0 && i < MW && j >= 0 && j < MH)
       hudStr(x0 + 1 + i, y0 + 1 + j, pulse ? '!' : '*', H_YEL);
     else {
