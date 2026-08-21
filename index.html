@@ -1226,6 +1226,7 @@ function buildCity(seed){
   placeWeaponCaches();
   initHomes();
   initDealership();
+  clearWaypoint(true);
   myCar = null;                                 // respawned lazily from the save
   bakeSolidProps();
 }
@@ -4504,10 +4505,18 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.code] = 0; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
-function onCanvasClick(){
+function onCanvasClick(e){
   if (TOUCH.on) return;                      // taps are handled by the touch layer
   audioUnlock();
   const m = topMode();
+  if (m && m.name === 'map' && e && e.target && !document.pointerLockElement){
+    // the cursor is visible, so the click means a place
+    const r = e.target.getBoundingClientRect();
+    const px = (e.clientX - r.left) * (e.target.width / r.width);
+    const py = (e.clientY - r.top) * (e.target.height / r.height);
+    m.tap(((px - R.ox) / R.cellW) | 0, ((py - R.oy) / R.cellH) | 0);
+    return;
+  }
   if (m && m.name === 'pause') modeStack.length = 0;    // click through the pause card
   if (!document.pointerLockElement) tryPointerLock();
 }
@@ -4919,11 +4928,36 @@ function updateCam(dt){
     cam.z = 1.12;
     return;
   }
-  if (blockedAt(cam.x, cam.y, cam.rad)){        // wedged: ease back to open ground
-    const spot = freeSpotNear(cam.x, cam.y);
-    const dx = spot[0] - cam.x, dy = spot[1] - cam.y;
-    const l = Math.hypot(dx, dy) || 1, step = Math.min(l, 6 * dt);
-    cam.x += dx / l * step; cam.y += dy / l * step;
+  if (blockedAt(cam.x, cam.y, cam.rad)){
+    // Two very different kinds of stuck. Real geometry - a wall, a cart -
+    // eases you back to open ground. But a BODY pressed against yours used
+    // to take this same path, and freeSpotNear could point anywhere the
+    // crowd was not - so brushing a vendor at a sprint yanked the camera
+    // across the street. Bodies now just push apart, gently, in place.
+    if (tileBlocked(cam.x, cam.y, cam.rad) || propBlocked(cam.x, cam.y, cam.rad)){
+      const spot = freeSpotNear(cam.x, cam.y);
+      const dx = spot[0] - cam.x, dy = spot[1] - cam.y;
+      const l = Math.hypot(dx, dy) || 1, step = Math.min(l, 6 * dt);
+      cam.x += dx / l * step; cam.y += dy / l * step;
+    } else {
+      let ax = 0, ay = 0;
+      for (const a of actors){
+        if (!a.solid || !!a.interior !== !!inside) continue;
+        const dx = cam.x - a.x, dy = cam.y - a.y;
+        const rr = cam.rad + a.r, d2 = dx * dx + dy * dy;
+        if (d2 < rr * rr && d2 > 1e-6){
+          const d = Math.sqrt(d2);
+          ax += dx / d; ay += dy / d;
+        }
+      }
+      const l = Math.hypot(ax, ay);
+      if (l > 0.001){
+        const nx = cam.x + ax / l * 2.4 * dt, ny = cam.y + ay / l * 2.4 * dt;
+        if (!tileBlocked(nx, ny, cam.rad) && !propBlocked(nx, ny, cam.rad)){
+          cam.x = nx; cam.y = ny;
+        }
+      }
+    }
   }
   if (skating){ skateFrame(dt); return; }
   airT = 0;
@@ -7653,6 +7687,55 @@ let enfT = 40, camWhisperT = 20;
   any live camera, out of the light - and the trail goes cold.
 ============================================================================*/
 let heli = null, heliT = 60, hideT = 0, swatT = 0;
+/*------------------------------ the red line --------------------------------
+  Click the city map (or press ENTER on its crosshair) and a red line draws
+  itself on the pavement from your feet to the spot - a dotted A* route,
+  recomputed as you walk, that ends when you arrive.
+============================================================================*/
+let waypoint = null, wayG = null, waySet = [], wayOn = false, wayT = 0;
+function setWaypoint(wx, wy){
+  // snap to the nearest walkable tile so the line has somewhere to end
+  let tx = -1, ty = -1;
+  outer:
+  for (let r = 0; r <= 8; r++)
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++){
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = (wx | 0) + dx, y = (wy | 0) + dy;
+        if (inMap(x, y) && walkG[y * MAP + x]){ tx = x; ty = y; break outer; }
+      }
+  if (tx < 0){ toast('nothing to walk on there'); return false; }
+  waypoint = { x: tx + 0.5, y: ty + 0.5 };
+  wayT = 0;
+  toast('waypoint set - follow the red line');
+  sfx('ui_select', { vol: 0.5, rate: 1.2 });
+  return true;
+}
+function clearWaypoint(quiet){
+  waypoint = null; wayOn = false;
+  if (wayG) for (const i of waySet) wayG[i] = 0;
+  waySet.length = 0;
+  if (!quiet) toast('you have arrived');
+}
+function wayTick(dt){
+  if (!waypoint || inside) return;
+  if (Math.hypot(waypoint.x - cam.x, waypoint.y - cam.y) < 3){
+    clearWaypoint(); sfx('ui_select', { vol: 0.6, rate: 0.8 }); return;
+  }
+  wayT -= dt;
+  if (wayT > 0) return;
+  wayT = 1.0;
+  const sx0 = clamp(cam.x | 0, 0, MAP - 1), sy0 = clamp(cam.y | 0, 0, MAP - 1);
+  const path = walkG[sy0 * MAP + sx0]
+    ? astar(sx0, sy0, waypoint.x | 0, waypoint.y | 0, 90000) : null;
+  if (!wayG) wayG = new Uint8Array(MAP * MAP);
+  for (const i of waySet) wayG[i] = 0;
+  waySet.length = 0;
+  if (path){
+    for (const c of path){ wayG[c] = 1; waySet.push(c); }
+    wayOn = true;
+  } else wayOn = false;                          // unroutable: the dots wait
+}
 function enfCap(){
   const c = player.corruption;
   return c >= 6 ? 6 : c >= 4 ? 3 : c >= 2 ? 2 : 0;
@@ -10160,10 +10243,15 @@ function stampIntersectionIds(){
       const tc = tType[ry * MAP + rx];     // the crossing must actually exist
       if (tc !== T_CROSS && tc !== T_ROAD) continue;
       const id = xingId(k2, k);
-      const x0 = k2 * P + RW, y0 = k * P + RW;   // SE corner of the crossing
+      // dead centre of the crossing: the one place in the city nothing is
+      // ever built on, planted in, or parked over
+      const y0 = k * P + (RW >> 1);
+      const x0 = k2 * P + (RW >> 1) - (id.length >> 1);
       let ok = true;
-      for (let i = 0; i < id.length; i++)
-        if (tType[y0 * MAP + x0 + i] !== T_WALK){ ok = false; break; }
+      for (let i = 0; i < id.length; i++){
+        const tt = tType[y0 * MAP + x0 + i];
+        if (tt !== T_CROSS && tt !== T_ROAD){ ok = false; break; }
+      }
       if (!ok) continue;
       // the raycast view mirrors east-west relative to world axes, so the
       // paint goes down as a mirror image: reversed run, flipped glyphs
@@ -10207,6 +10295,10 @@ function openMap(){
         case 'KeyD': case 'ArrowRight': this.cx -= step; break;
         case 'KeyQ': case 'BracketLeft':  this.z = Math.min(8, this.z * 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'KeyE': case 'BracketRight': this.z = Math.max(1, this.z / 2); sfx('ui_move', { vol: 0.4 }); break;
+        case 'Enter':                          // drop the line at the crosshair
+          setWaypoint(this.cx, this.cy); break;
+        case 'KeyX':
+          clearWaypoint(true); toast('waypoint cleared'); break;
         case 'KeyM': case 'Escape': case 'Space': case 'Tab':
           popMode(); sfx('ui_back', { vol: 0.5 }); break;
       }
@@ -10221,7 +10313,11 @@ function openMap(){
         if (cy <= 2) this.onKey('KeyQ'); else this.onKey('KeyE');
         return;
       }
-      if (cy >= R.rows - 3) this.onKey('Escape');
+      if (cy >= R.rows - 3){ this.onKey('Escape'); return; }
+      // anywhere else: that is where you want to go
+      const wx = this.cx - (cx - R.cols / 2) * this.z;
+      const wy = this.cy + (cy - R.rows / 2) * this.z * 1.8;
+      setWaypoint(wx, wy);
     },
     draw(){ drawMapMode(this); }
   });
@@ -10315,11 +10411,26 @@ function drawMapMode(m){
       if (m.z <= 2) hudStr(x + 2, y, l.name, H_YEL);
     }
   // the player, and the trail you should follow
+  // the pan crosshair: where ENTER will drop the line
+  hudCell(cols >> 1, (rows >> 1), '+', H_DIM);
+  if (waypoint){
+    const wxs = sx(waypoint.x), wys = sy(waypoint.y);
+    if (wxs >= 1 && wxs < cols - 1 && wys >= 2 && wys < rows - 2)
+      hudCell(wxs, wys, 'O', H_RED);
+  }
   const px2 = sx(cam.x), py2 = sy(cam.y);
   if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
+    const pc2 = ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT;
+    const ring = [[-3, 0, '('], [3, 0, ')'], [0, -2, '-'], [0, 2, '-'],
+                  [-2, -1, '.'], [2, -1, '.'], [-2, 1, '.'], [2, 1, '.']];
+    for (const [dx2, dy2, ch2] of ring){
+      const rx2 = px2 + dx2, ry2 = py2 + dy2;
+      if (rx2 >= 0 && rx2 < cols && ry2 >= 1 && ry2 < rows - 1) hudCell(rx2, ry2, ch2, pc2);
+    }
     const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
-    hudCell(px2, py2, dirCh, ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT);
+    hudCell(px2, py2, dirCh, pc2);
   }
+
   const qt = questTarget();
   if (qt){
     const pulse = ((Date.now() / 300) | 0) & 1;     // world is paused in here
@@ -10339,7 +10450,7 @@ function drawMapMode(m){
   hudStr(2, 0, ' CITY MAP  x' + m.z + ' ', H_GRN);
   hudStr(cols - 8, 1, '[ + ]', H_GRN);
   hudStr(cols - 8, 3, '[ - ]', H_GRN);
-  const foot = 'WASD/drag pan   Q/E zoom   M close';
+  const foot = 'WASD pan   Q/E zoom   tap/ENTER set waypoint   X clear   M close';
   hudStr((cols - foot.length) >> 1, rows - 1, foot, H_DIM);
 }
 
@@ -10644,7 +10755,22 @@ function floorSample(wx, wy, ix, iy){
   }
   const rx = wx - Math.floor(wx / P) * P, ry = wy - Math.floor(wy / P) * P;
   const fx = wx - ix, fy = wy - iy;
+  if (wayOn && wayG[iy * MAP + ix]){            // the red line home, on ANY ground
+    const cfx = fx - 0.5, cfy = fy - 0.5;
+    if (cfx * cfx + cfy * cfy < 0.10){ _wb = C.camRed; _wd = 0.95; _wwet = 1; return; }
+  }
   if (t === T_ROAD || t === T_CROSS){
+    const pc = signFloor[iy * MAP + ix];        // the crossing's own number
+    if (pc !== undefined){
+      const gl = MINIFONT[pc];
+      if (gl && fx >= 0.14 && fy >= 0.10){
+        const gc = 2 - (((fx - 0.14) * 4.17) | 0), gr = ((fy - 0.10) * 6.25) | 0;
+        if (gc >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
+          _wb = C.nAmber; _wd = 0.95; _wwet = 1;
+          return;
+        }
+      }
+    }
     // A pedestrianised boulevard: the same slabs as the sidewalk, with an
     // inlaid strip running down the spine where the centre line used to be.
     _wb = C.walk; _wd = 0.27 + hash3(ix, iy, 5) * 0.09;
@@ -10660,17 +10786,6 @@ function floorSample(wx, wy, ix, iy){
     return;
   }
   if (t === T_WALK){
-    const pc = signFloor[iy * MAP + ix];       // intersection id, painted on
-    if (pc !== undefined){                     // the slabs like road markings
-      const gl = MINIFONT[pc];
-      if (gl && fx >= 0.14 && fy >= 0.10){
-        const gc = 2 - (((fx - 0.14) * 4.17) | 0), gr = ((fy - 0.10) * 6.25) | 0;
-        if (gc >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
-          _wb = C.nAmber; _wd = 0.95; _wwet = 1;
-          return;
-        }
-      }
-    }
     _wb = C.walk; _wd = 0.27 + hash3(ix, iy, 5) * 0.09;
     const jx = (wx * 0.5) % 1, jy = (wy * 0.5) % 1;
     if (jx < 0.05 || jy < 0.05) _wd = 0.44;
@@ -12477,9 +12592,16 @@ function drawMinimap(x0, y0){
       hudStr(x0 + 1 + ci, y0 + 1 + cj, pulse ? ch : '!', H_YEL);
     }
   }
+  if (waypoint) plot(waypoint.x, waypoint.y, 'O', H_RED);
   if (!(drug && drug.fx.ghost)){                // a ghost is not on the grid
+    const pc2 = ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT;
+    // the ring makes the arrow impossible to lose
+    plot(cam.x - 2, cam.y, '(', pc2); plot(cam.x + 2, cam.y, ')', pc2);
+    plot(cam.x, cam.y - 2, '-', pc2); plot(cam.x, cam.y + 2, '-', pc2);
+    plot(cam.x - 1, cam.y - 2, '.', pc2); plot(cam.x + 1, cam.y - 2, '.', pc2);
+    plot(cam.x - 1, cam.y + 2, '.', pc2); plot(cam.x + 1, cam.y + 2, '.', pc2);
     const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
-    plot(cam.x, cam.y, dirCh, ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT);
+    plot(cam.x, cam.y, dirCh, pc2);
   }
 }
 let fps = 60;
@@ -12869,7 +12991,7 @@ function simulate(dt){
     fxs[i].t -= dt;
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
-  if (!inside){ heliFrame(dt); hideFrame(dt); }
+  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); }
   if (player.car && !myCar && DEALER)           // the save remembers the keys
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
                player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
