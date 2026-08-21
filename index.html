@@ -1222,6 +1222,25 @@ function buildCity(seed){
   placeStreetItems();
   placeProps();
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
+  bakeSolidProps();
+}
+
+/* Solid furniture is baked out of the walk grid once the placer has run, so
+   A* routes a pedestrian around a bench rather than through it, and the
+   end-of-frame legality check throws nobody stands in a cart. The walk-through
+   kinds (pickups, crops, stair markers) stay walkable, as they are for the
+   player. Runtime drops are all pickups, so the bake never goes stale. */
+function bakeSolidProps(){
+  for (const p of props){
+    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;
+    const yaw = p.yaw === undefined ? (p.yaw = propFacing(p)) : p.yaw;
+    const fb = footBox(p.k, yaw);
+    const x0 = Math.floor(p.x - fb[0] * 0.5 + 1e-6), x1 = Math.floor(p.x + fb[0] * 0.5 - 1e-6);
+    const y0 = Math.floor(p.y - fb[1] * 0.5 + 1e-6), y1 = Math.floor(p.y + fb[1] * 0.5 - 1e-6);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++)
+        if (inMap(x, y)) walkG[y * MAP + x] = 0;
+  }
 }
 
 // cart dimensions: the model, its collision box and its footprint all read
@@ -7519,8 +7538,18 @@ function drawMapMode(m){
   }
   const qt = questTarget();
   if (qt){
+    const pulse = ((Date.now() / 300) | 0) & 1;     // world is paused in here
     const x = sx(qt.x), y = sy(qt.y);
-    if (x >= 0 && x < cols && y >= 1 && y < rows - 1) hudCell(x, y, '!', H_YEL);
+    if (x >= 1 && x < cols - 1 && y >= 2 && y < rows - 2){
+      hudCell(x, y, pulse ? '!' : '*', H_YEL);
+      if (qt.name && x + 2 + qt.name.length < cols - 1)
+        hudStr(x + 2, y, qt.name, H_YEL);
+    } else {                                        // off the edge: point at it
+      const cx2 = clamp(x, 1, cols - 2), cy2 = clamp(y, 2, rows - 3);
+      const dx2 = x - cx2, dy2 = y - cy2;
+      const ch = Math.abs(dx2) >= Math.abs(dy2) ? (dx2 < 0 ? '<' : '>') : (dy2 < 0 ? '^' : 'v');
+      hudCell(cx2, cy2, pulse ? ch : '!', H_YEL);
+    }
   }
   // chrome
   hudStr(2, 0, ' CITY MAP  x' + m.z + ' ', H_GRN);
@@ -9632,8 +9661,22 @@ function drawMinimap(x0, y0){
       if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
         plot(a.x, a.y, pulse ? '@' : 'o', H_RED);
   }
+  // The tracked quest, visible even when it is somewhere else: on the window
+  // it pulses, off it it pins to the border as an arrow pointing the way.
+  // Deltas are taken in SCREEN space, so the map's mirrored x costs nothing.
   const qm = questTarget();
-  if (qm) plot(qm.x, qm.y, '!', H_YEL);
+  if (qm){
+    const pulse = ((Date.now() / 300) | 0) & 1;
+    const i = hw - Math.round(qm.x - cxT), j = hh + Math.round((qm.y - cyT) * 0.5);
+    if (i >= 0 && i < MW && j >= 0 && j < MH)
+      hudStr(x0 + 1 + i, y0 + 1 + j, pulse ? '!' : '*', H_YEL);
+    else {
+      const ci = clamp(i, 0, MW - 1), cj = clamp(j, 0, MH - 1);
+      const di = i - ci, dj = j - cj;
+      const ch = Math.abs(di) >= Math.abs(dj) ? (di < 0 ? '<' : '>') : (dj < 0 ? '^' : 'v');
+      hudStr(x0 + 1 + ci, y0 + 1 + cj, pulse ? ch : '!', H_YEL);
+    }
+  }
   if (!(drug && drug.fx.ghost)){                // a ghost is not on the grid
     const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
     plot(cam.x, cam.y, dirCh, H_BLU);
