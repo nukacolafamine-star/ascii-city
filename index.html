@@ -1227,6 +1227,7 @@ function buildCity(seed){
   initHomes();
   initDealership();
   initMainQuest();
+  initWorks();
   clearWaypoint(true);
   myCar = null;                                 // respawned lazily from the save
   bakeSolidProps();
@@ -3515,7 +3516,11 @@ function buildDoors(){
         if (!inMap(x, y) || tB[y * MAP + x] !== b.id || tH[y * MAP + x] <= 0) continue;
         for (let d = 0; d < 4; d++){
           const nx = x + DIRV[d][0], ny = y + DIRV[d][1];
-          if (!inMap(nx, ny) || tType[ny * MAP + nx] !== T_WALK) continue;
+          if (!inMap(nx, ny)) continue;
+          const tf = tType[ny * MAP + nx];
+          // pavement, a yard, or a footpath all serve as a doorstep - the
+          // suburbs ring their houses in lots, and lots deserve doors too
+          if (tf !== T_WALK && tf !== T_LOT && tf !== T_PATH) continue;
           cand.push([x, y, d]);
         }
       }
@@ -3936,6 +3941,14 @@ function buildInterior(bld, door, floor){
     a.interior = 1;
     if (kind === 'shop'){ a.tree = makeShopTree(trade); a.dialog = null; }
   }
+  // the top of THE WORKS always keeps its terminal - the switch lives there
+  if (typeof WORKS !== 'undefined' && WORKS && bld.id === WORKS.bld){
+    const flsW = bldFloors(bld);
+    if (floor === flsW[flsW.length - 1] &&
+        !ip.some(q => q.k === PK_FURN && q.fid === 'terminal'))
+      ip.push({ x: IOX + (rw >> 1) + 0.5, y: IOY + 1.6, k: PK_FURN,
+                fid: 'terminal', s: 0, r: 0.5, yaw: Math.PI });
+  }
   // stairs, when the building has anywhere else to go
   let stairs = null;
   if (bldFloors(bld).length > 1){
@@ -3985,6 +3998,11 @@ function gotoFloor(f){
   props = room.props; signs = [];
   indexProps(); indexSpriteProps();
   inside.floor = f; inside.exit = room.exit; inside.stairs = room.stairs;
+  {
+    const flsT = bldFloors(buildings[inside.bld]);
+    if (f === flsT[flsT.length - 1]) mqDungeonTop();
+  }
+  mqWorksFloor();
   inside.shop = room.shop;
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0;
   fade = 1;
@@ -4034,6 +4052,7 @@ function enterInterior(door){
     worldDelta.seen[door.b] = room.shop;
   }
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
+  if (mqLive('mq10') && bld.dist === D_DOWN) player.qvar.mq10seen = 1;   // recon done
   if (skating) toast('deck up - no riding indoors');
   wasSkating = skating; skating = false; airT = 0; skV = 0; grind = null; skTrick = null;
   viewD = 13; fade = 1;
@@ -4115,9 +4134,14 @@ function probeInteract(){
       else if (p.fid === 'cabinet')
         probeConsider(p.x, p.y, { kind: 'stash', prompt: '[E]  THE STASH' });
     }
-    else if (p.k === PK_FURN && inside && p.fid === 'terminal')
-      probeConsider(p.x, p.y, { kind: 'shift', desk: 1,
-        prompt: '[E]  WORK A DESK SHIFT - 6h, +60 cr, it takes something' });
+    else if (p.k === PK_FURN && inside && p.fid === 'terminal'){
+      if (mqLive('mq29') && WORKS && inside.bld === WORKS.bld &&
+          !actors.some(a => a.interior && a.brain === 'hostile' && a.hp > 0))
+        probeConsider(p.x, p.y, { kind: 'theswitch', prompt: '[E]  THE SWITCH' });
+      else
+        probeConsider(p.x, p.y, { kind: 'shift', desk: 1,
+          prompt: '[E]  WORK A DESK SHIFT - 6h, +60 cr, it takes something' });
+    }
     else if (p.k === PK_FURN && inside && p.fid === 'cratepile')
       probeConsider(p.x, p.y, { kind: 'shift', desk: 0,
         prompt: '[E]  HAUL FREIGHT - 6h, +90 cr, it takes more' });
@@ -4168,6 +4192,8 @@ function tryInteract(){
     openDialog(t.p.ident.name, [pedLine(t.p)]);
   } else if (t.kind === 'door'){
     if (t.exit) exitInterior(); else enterInterior(t.door);
+  } else if (t.kind === 'theswitch'){
+    openTheChoice();
   } else if (t.kind === 'shift'){
     workShift(t.desk);
   } else if (t.kind === 'buyhome'){
@@ -4184,6 +4210,7 @@ function tryInteract(){
   } else if (t.kind === 'metro'){
     useMetro();
   } else if (t.kind === 'cut'){                 // the hacksaw versus the flock
+    if (mqLive('mq22') && atSpot(mqSpot(721, D_IND), 10)) player.qvar.mq22cut = 1;
     player.qvar.vandal = (player.qvar.vandal || 0) + 1;
     if (t.p.k === PK_CAM){
       player.qvar.camCut = (player.qvar.camCut || 0) + 1;
@@ -4420,11 +4447,45 @@ function spawnActors(){
       a: 'tee', b: 'boba' }
   ];
   if (HIDEOUT){
-    const rk = spawnActor('citizen', HIDEOUT.x, HIDEOUT.y, {
-      name: 'ROOK', brain: 'still', shirt: C.carC, skin: C.dataDk, tree: rookTree() });
-    rk.range = 2;
-    spawnActor('citizen', HIDEOUT.x + 1.2, HIDEOUT.y, {
-      name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: vesperTree() });
+    if (player.qvar.betrayed){
+      // the cell knows what you chose; its leader is done talking
+      const rk = spawnActor('razor', HIDEOUT.x, HIDEOUT.y, {
+        name: 'ROOK', brain: 'hostile', hp: 220, shirt: C.carC, skin: C.dataDk });
+      rk.atk = 12; rk.spd = 2.4;
+    } else {
+      const rk = spawnActor('citizen', HIDEOUT.x, HIDEOUT.y, {
+        name: 'ROOK', brain: 'still', shirt: C.carC, skin: C.dataDk, tree: rookTree() });
+      rk.range = 2;
+      if (!player.qvar.vesperDead)
+        spawnActor('citizen', HIDEOUT.x + 1.2, HIDEOUT.y, {
+          name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: vesperTree() });
+    }
+  }
+  {
+    const isp = mqSpot(711, D_DOWN);
+    spawnActor('citizen', isp.x, isp.y, {
+      name: 'MERIDIAN MANAGER', brain: 'still', shirt: C.nWhite,
+      tree: { entry(){
+          if (player.qvar.mq21code) return 'after';
+          if (mqLive('mq21')) return 'lean';
+          return 'idle';
+        },
+        idle: { text: 'I do not talk to street level. No offence. Well - some offence.' },
+        lean: { text: 'You\u2019re one of THEM. Look - I have a life. Two lives, actually, and both of them are mortgaged. What do you want.',
+          opts: [
+            { t: 'The access code. Name your price', next: 'price' },
+            { t: '(show the weapon) The code. Now.',
+              if: () => weaponId() !== 'fist',
+              do(){ player.qvar.mq21code = 1; crimeEvent(1, 'menace');
+                    toast('he gives it up - and will remember this'); }, next: 'gave' },
+            { t: 'Never mind' }] },
+        price: { text: 'Two hundred. And you never saw my face, because I intend to keep it.',
+          opts: [{ t: 'Pay the 200', if: () => player.credits >= 200,
+                   do(){ player.credits -= 200; player.qvar.mq21code = 1;
+                         toast('the code is yours'); }, next: 'gave' },
+                 { t: 'Too rich' }] },
+        gave: { text: 'It rotates monthly. You have until it does. We are done knowing each other.' },
+        after: { text: 'We are done knowing each other. Please.' } } });
   }
   if (DEALER){
     const v = spawnActor('citizen', DEALER.lot.x, DEALER.lot.y, {
@@ -5981,7 +6042,8 @@ function initHomes(){
   const ap = pick(D_IND, b => -Math.abs((b.x1 - b.x0) - 5) + hash3(b.id, 91, 1) * 0.5);
   if (ap){ HOMES.apartment = { bld: ap.b.id, price: 800, tier: 1,
     name: 'THE WALK-UP', x: ap.d.x, y: ap.d.y }; ap.d.name = 'THE WALK-UP'; }
-  const su = pick(D_SUB, b => (b.x1 - b.x0) + hash3(b.id, 92, 1));
+  const su = pick(D_SUB, b => (b.x1 - b.x0) + hash3(b.id, 92, 1)) ||
+             pick(D_RES, b => (b.x1 - b.x0) + hash3(b.id, 92, 1));
   if (su){ HOMES.suburb = { bld: su.b.id, price: 0, tier: 2,
     name: 'THE ROWHOUSE', x: su.d.x, y: su.d.y }; su.d.name = 'THE ROWHOUSE'; }
   const ph = pick(D_DOWN, b => b.h);
@@ -6297,7 +6359,52 @@ function rookTree(){
       if (mqLive('mq7')) return 'wait7';
       if (q.mq8 === undefined) return 'give8';
       if (mqLive('mq8')) return 'wait8';
-      return 'act1done';
+      // Act 2
+      if (q.mq9 === undefined) return 'act1done';
+      if (mqLive('mq9')) return 'seeVesper';
+      if (q.mq10 === undefined) return 'give10';
+      if (mqLive('mq10')) return 'wait10';
+      if (q.mq11 === undefined) return 'give11';
+      if (mqLive('mq11')) return 'wait11';
+      if (q.mq12 === undefined) return 'give12';
+      if (mqLive('mq12') && q.mq12 === 1) return 'turn12';
+      if (mqLive('mq12')) return 'wait12';
+      if (q.mq13 === undefined) return 'give13';
+      if (mqLive('mq13')) return 'seeVesper';
+      if (q.mq14 === undefined) return 'give14';
+      if (mqLive('mq14')) return 'wait14';
+      if (q.mq15 === undefined) return 'give15';
+      if (mqLive('mq15')) return 'wait15';
+      if (q.mq16 === undefined) return 'give16';
+      if (mqLive('mq16')) return 'wait16';
+      // Act 3
+      if (q.mq17 === undefined) return 'give17';
+      if (mqLive('mq17')) return 'plan';
+      if (q.mq18 === undefined) return 'give18';
+      if (mqLive('mq18') && q.mq18 === 1) return 'turn18';
+      if (mqLive('mq18')) return 'wait18';
+      if (q.mq19 === undefined) return 'give19';
+      if (mqLive('mq19')) return 'wait19';
+      if (q.mq20 === undefined) return 'give20';
+      if (mqLive('mq20')) return 'wait20';
+      if (q.mq21 === undefined) return 'give21';
+      if (mqLive('mq21')) return 'wait21';
+      if (q.mq22 === undefined) return 'give22';
+      if (mqLive('mq22')) return 'wait22';
+      if (q.mq23 === undefined) return 'give23';
+      if (mqLive('mq23')) return 'seeVesper';
+      if (q.mq24 === undefined) return 'give24';
+      if (mqLive('mq24')) return 'wait24';
+      if (q.mq25 === undefined) return 'act3done';
+      if (q.mq26 === undefined) return 'give26';
+      if (mqLive('mq26')) return 'wait26';
+      if (q.mq27 === undefined) return 'give27';
+      if (mqLive('mq27')) return 'wait27';
+      if (q.mq28 === undefined) return 'give28';
+      if (mqLive('mq28')) return 'wait28';
+      if (q.mq29 === undefined) return 'give29';
+      if (mqLive('mq29')) return 'wait29';
+      return 'act3done';
     },
     meet: { text: 'So the watcher sends me a stray. I am ROOK. This is the cell - what is left of it. We are going to turn this city\u2019s lights off and watch which half of it actually knows how to live in the dark. You in, or are you sightseeing?',
       opts: [{ t: 'I\u2019m in', do(){ mqStart('mq2'); player.qvar.mq2Base = player.qvar.vandal || 0;
@@ -6346,16 +6453,89 @@ function rookTree(){
                startChase(); }, next: 'runline' }] },
     runline: { text: 'GO.' },
     wait8: { text: 'Ride here. Now.' },
-    act1done: { text: 'You made it. First blood, first run, first time you cannot go back. Rest up - VESPER will want to talk before the real work starts. Act two begins when you are ready.',
-      opts: [{ t: 'Talk to VESPER', next: 'toVesper' }] },
-    toVesper: { text: 'She is by the window. She is always by the window.' }
+    act1done: { text: 'You made it. First blood, first run, first time you cannot go back. VESPER wants a word before the real work starts - she always does.',
+      opts: [{ t: 'What real work', do(){ mqStart('mq9'); }, next: 'toVesper' }] },
+    toVesper: { text: 'She is by the window. She is always by the window. Go on.' },
+    seeVesper: { text: 'VESPER is waiting. I do not do the soft part. Go and talk to her.' },
+    give10: { text: 'Now the real work. Downtown, a corpo lobby - walk it, count the cameras, tell me where they cannot see. Do not touch anything.',
+      opts: [{ t: 'Recon. Got it', do(){ mqStart('mq10'); } }] },
+    wait10: { text: 'Any downtown building. Walk in, look up, remember. That is all.' },
+    give11: { text: 'There is a relay downtown that feeds three blocks of cameras. Kill it - a signal jammer at the marked spot buys us a blind hour.',
+      opts: [{ t: 'Dead air it is', do(){ mqStart('mq11'); } }] },
+    wait11: { text: 'The relay is marked. Jam it. One hour of no eyes.' },
+    give12: { text: 'We need a maintenance keycard, and the only one left is in a tower the city gave up on. Climb it, take what is at the top. Bring the card.',
+      opts: [{ t: 'Which tower', do(){ mqStart('mq12'); }, next: 'wait12' }] },
+    wait12: { text: 'The condemned tower is marked. The top floor keeps a warden. Kill it, take the card.' },
+    turn12: { text: 'You have the card AND you are still breathing. VESPER owes me twenty for that bet.',
+      opts: [{ t: 'Here', do(){ mqDone('mq12'); }, next: 'give13' }] },
+    give13: { text: 'VESPER has been chewing on something since you got back. Go let her chew at you instead of me.',
+      opts: [{ t: 'I’ll find her', do(){ mqStart('mq13'); } }] },
+    give14: { text: 'You are too useful to sleep in doorways now. I put a rowhouse in your name out in the suburbs - somewhere to lose a tail, and lose yourself. Go see it.',
+      opts: [{ t: 'A house?', do(){ mqStart('mq14'); if (typeof grantHome === 'function') grantHome('suburb'); }, next: 'houseline' }] },
+    houseline: { text: 'Do not get comfortable. Comfortable people stop cutting cameras.' },
+    wait14: { text: 'The rowhouse is marked, in the suburbs. Go put your feet up. Once.' },
+    give15: { text: 'The tower job is close. First, go dark a whole downtown block for us - four more cameras, clean and quiet.',
+      opts: [{ t: 'Four cameras', do(){ mqStart('mq15'); player.qvar.mq15Base = player.qvar.camCut || 0; } }] },
+    wait15: { text: () => 'Cameras cut: ' + ((player.qvar.camCut || 0) - (player.qvar.mq15Base || 0)) + ' of 4.' },
+    give16: { text: 'This is the one. A corpo tower, top floor, the access we have been building toward. Get in and get up - but their cameras are LIVE. Every eye that finds you sends security. Do not be seen, or fight what seeing you costs.',
+      opts: [{ t: 'Going in', do(){ mqStart('mq16'); }, next: 'wait16' }] },
+    wait16: { text: 'The tower is marked. Reach the top. Stay out of the cameras or pay for it.' },
+    give17: { text: 'You earned the whole truth, so here it is. The city’s power does not come from a plant. It comes from ONE room, under downtown, and it runs everything - the grid, the towers, the cameras, all of it. We shut that room off and the corps go dark permanently. Meet me and I will show you the way in.',
+      opts: [{ t: 'One room runs everything?', do(){ mqStart('mq17'); }, next: 'plan' }] },
+    plan: { text: 'One room. VESPER has the schematics half-read and she does not like what she is finding. Ignore that for now - we have work.',
+      opts: [{ t: 'What work', do(){ mqDone('mq17'); }, next: 'give18' }] },
+    give18: { text: 'The full schematics are in another condemned tower - the corps hide their worst secrets where nobody will look twice. Bring them to me.',
+      opts: [{ t: 'On it', do(){ mqStart('mq18'); }, next: 'wait18' }] },
+    wait18: { text: 'The tower is marked. The schematics are at the top, same as always.' },
+    turn18: { text: 'These are... more than a wiring diagram. VESPER is right to be nervous. Set it aside.',
+      opts: [{ t: 'Here', do(){ mqDone('mq18'); }, next: 'give19' }] },
+    give19: { text: 'Whatever guards that room will not go down to a lead pipe. The city has serious weapons hidden in its bones, if you know where the plant of the world sits. Find one and bring it here.',
+      opts: [{ t: 'I’ll find one', do(){ mqStart('mq19'); } }] },
+    wait19: { text: () => mqHasSpecial() ? 'You found something with teeth. Good. Bring it to me.'
+                                         : 'The specials are LEFT places - behind the turbines, under the blossoms, wherever nobody looks. Find one.',
+      opts: [{ t: 'Delivered', if: () => mqHasSpecial() && atSpot(HIDEOUT, 6),
+               do(){ mqDone('mq19'); }, next: 'give20' }] },
+    give20: { text: 'VESPER will not let the schematics go. Fine - go WITH her. There is a substation in the belt she wants to see with her own eyes. Humour her.',
+      opts: [{ t: 'I’ll take her', do(){ mqStart('mq20'); } }] },
+    wait20: { text: 'The substation is marked in the belt. Go with VESPER. Listen to her, even.' },
+    give21: { text: 'Last access code sits with a corpo middle-manager who drinks downtown. Lean on him - however you like. Bring the code.',
+      opts: [{ t: 'I’ll lean', do(){ mqStart('mq21'); } }] },
+    wait21: { text: 'The insider is marked downtown. Get the code. I do not care how.' },
+    give22: { text: 'Before the real thing, we test the method. One substation in the belt - saw or jammer, kill it clean, prove we can.',
+      opts: [{ t: 'Dry run', do(){ mqStart('mq22'); } }] },
+    wait22: { text: 'The test box is marked. Cut it or jam it. Prove the plan.' },
+    give23: { text: 'VESPER has stopped talking to me entirely. She still talks to you. Find out what is wrong before it costs us.',
+      opts: [{ t: 'I’ll go to her', do(){ mqStart('mq23'); } }] },
+    give24: { text: () => 'She said she has to tell you something. Not here. Not with me listening. She named a roof on the strip. I do not like it, but... go. Come back and tell me it was nothing.',
+      opts: [{ t: 'A roof on the strip', do(){ mqStart('mq24'); } }] },
+    wait24: { text: 'She is on the strip roof, waiting for you. Alone, she said. Go.' },
+    act3done: { text: '...VESPER is dead. On a roof, with a hole in her and your name half out of her mouth. Do not tell me it was random. Nothing in this city is random. We finish what she died for - come back when you can stand, and we take the power room.',
+      opts: [{ t: 'I can stand', do(){ mqStart('mq25'); mqDone('mq25', 4, 25); }, next: 'give26' },
+             { t: 'Not yet' }] },
+    give26: { text: 'Then hear the end of it. The room is under the second spire downtown - THE WORKS, the crews used to call it. There is a service door at street level. Find it. Do not go in without me saying so.',
+      opts: [{ t: 'I’ll find the door', do(){ mqStart('mq26'); } }] },
+    wait26: { text: 'The works is marked. Find the service door. Look, do not enter.' },
+    give27: { text: 'They doubled the outside detail the day after the roof. That is not a coincidence either. Four of them. Clear the approach - loud is fine now. Loud is all we have left.',
+      opts: [{ t: 'Four of them', do(){ mqStart('mq27'); } }] },
+    wait27: { text: () => 'The detail: ' + (player.qvar.mq27kills || 0) + ' of 4 down.' },
+    give28: { text: 'This is the one she died for. Every floor of that tower is held, and the top is HELD - whatever the corps keep between themselves and that room, it is up there. Take the weapon you found. Take everything. Go to the top.',
+      opts: [{ t: 'To the top', do(){ mqStart('mq28'); } }] },
+    wait28: { text: 'The works. The top. Nothing else matters now.' },
+    give29: { text: 'The room is yours and the switch is in it. You know what I want. You know what she wanted. I am not in that room. YOU are. Decide.',
+      opts: [{ t: '(go to the switch)', do(){ mqStart('mq29'); } }] },
+    wait29: { text: 'The switch. Top of the works. It is only ever been your hand.' }
   };
 }
 /*----------------------------- VESPER, the friend --------------------------
   In Act 1 she is colour and warmth; her own arc opens in Act 2. */
 function vesperTree(){
   return {
-    entry(){ return (player.qvar.act || 0) >= 1 ? 'known' : 'first'; },
+    entry(){
+      if (mqLive('mq9')) return 'mq9';
+      if (mqLive('mq13')) return 'mq13';
+      if (mqLive('mq23')) return 'mq23';
+      return (player.qvar.act || 0) >= 1 ? 'known' : 'first';
+    },
     first: { text: 'You\u2019re the new one. I\u2019m VESPER. Do not let ROOK convince you this is all cold math - some of us remember why we started. Get us our power back and maybe I stop flinching at the dark.',
       opts: [{ t: 'Why the blackouts?', next: 'why' },
              { t: 'See you around', }] },
@@ -6364,8 +6544,234 @@ function vesperTree(){
     known: { text: () => ['Careful out there. ROOK counts jobs; I count who comes back.',
                           'You keep coming back. Most do not. I have decided to find that reassuring.',
                           'The dark is easier with somebody in it. Do not tell ROOK I said that.']
-             [((player.qvar.vandal || 0) + mqStep()) % 3] }
+             [((player.qvar.vandal || 0) + mqStep()) % 3] },
+    // mq9: the first real conversation
+    mq9: { text: 'Before ROOK spends you on something worse - I wanted to say it out loud once. I did not join this to hurt people. I joined because my mother read by candlelight in a city full of towers that never go dark. If we do this right, nobody freezes. Promise me you will remember there is a right way.',
+      opts: [{ t: 'I’ll remember', do(){ if (mqLive('mq9')) mqDone('mq9'); }, next: 'mq9b' }] },
+    mq9b: { text: 'Then we understand each other. Go see ROOK - he is pretending he is not waiting.' },
+    // mq13: she is starting to worry
+    mq13: { text: 'The keycard you pulled - I traced what it opens. It is not a fuse box. It is a CORE. The power does not come from a plant, it comes from... I do not have the word for it yet. Just - watch ROOK. He knew before I did. He is not surprised by ANY of this.',
+      opts: [{ t: 'You’re scaring me', do(){ if (mqLive('mq13')) mqDone('mq13'); }, next: 'mq13b' },
+             { t: 'ROOK wants the towers down, that’s all',
+               do(){ if (mqLive('mq13')) mqDone('mq13'); }, next: 'mq13c' }] },
+    mq13b: { text: 'Good. Be scared with me. It is lonely being the only one.' },
+    mq13c: { text: 'Maybe. I hope you are right. Go on - he has a house to give you. He gives people things right before he asks too much of them.' },
+    // mq23: she has gone quiet
+    mq23: { text: 'I cannot say it here. The walls in this place have ROOK’s ears. Meet me somewhere he is not - a roof, on the strip, I will send it to your map. Come ALONE. What I found... if I am right, we are not turning off a power plant. We are turning off the WORLD. Please. Just come.',
+      opts: [{ t: 'I’ll be there', do(){ if (mqLive('mq23')) mqDone('mq23'); }, next: 'mq23b' }] },
+    mq23b: { text: 'Alone. I mean it. And if ROOK asks - you have not seen me.' }
   };
+}
+/*----------------------- the death of VESPER (mq24) ------------------------
+  She meets you on the roof and begins to tell you what she learned. She
+  never finishes. This is a scripted scene, not a dialog tree, because the
+  point is that YOU do not get to choose the last line either. */
+function vesperRoofScene(){
+  const beats = [
+    'VESPER is already there, back to the ledge, schematics rolled under one arm.',
+    '"You came alone. Good. Okay. Okay - listen."',
+    '"The core isn’t a generator. It’s a - it runs EVERYTHING, not just the lights,',
+    'the whole - the ground, the sky, us, it’s all being RUN, and ROOK knows,',
+    'ROOK has always known, and if you cut it you don’t free anyone you-"',
+    'A sound like a coin dropped on glass. VESPER stops.',
+    'She looks down at herself. So do you. There is more red than there should be.',
+    '"...oh," she says. Just that. "oh."',
+    'She folds. You never see where the shot came from. You never will.',
+    'The schematics slide off the roof and are gone before she is.',
+    'The strip keeps blinking. It does not know. It does not know anything.'
+  ];
+  openScene('THE ROOF', beats, () => {
+    player.qvar.mq24met = 1;
+    player.qvar.vesperDead = 1;
+    // VESPER is gone from the world
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].name === 'VESPER') actors.splice(i, 1);
+    if (mqLive('mq24')) advanceQuest('mq24');    // to the "get away" leg
+    toast('lie low. the rowhouse. do not go back to the cell yet');
+    hurtT = Math.max(hurtT, 0.5);
+    sfx('hurt', { vol: 0.5, rate: 0.5 });
+  });
+}
+/*------------------------------ Act 4 jobs ---------------------------------
+  The grief, the descent, the room, the choice. mq25-30 close the line at
+  thirty. The WORKS is a real tower downtown - the second-tallest, so the
+  penthouse keeps its view - and while mq28 runs, every floor of it fights
+  back. At the top there is a switch, and the switch is the whole story.
+============================================================================*/
+let WORKS = null;
+function initWorks(){
+  WORKS = null;
+  let best = null, bh = -1;
+  const skip = HOMES && HOMES.penthouse ? HOMES.penthouse.bld : -1;
+  for (const d of doors){
+    const b = buildings.find(bb => bb.id === d.b);
+    if (!b || b.dist !== D_DOWN || b.id === skip || isDungeon(b)) continue;
+    if (bldFloors(b).length < 3) continue;
+    if (b.h > bh){ bh = b.h; best = { bld: b.id, x: d.x, y: d.y }; }
+  }
+  WORKS = best;
+}
+function toWorks(){ return WORKS && { x: WORKS.x, y: WORKS.y, name: 'THE WORKS' }; }
+const MQ4 = {
+  mq25: { name: 'STAND UP', act: 4,
+    stages: [{ log: 'bury it. then stand up. ROOK is waiting at THE HIDEOUT',
+      target: toHideout }] },
+  mq26: { name: 'THE WAY DOWN', act: 4,
+    stages: [{ log: 'find the service door to THE WORKS - the tower that runs everything',
+      target: toWorks,
+      auto(){ return WORKS && Math.hypot(WORKS.x - cam.x, WORKS.y - cam.y) < 6; } }] },
+  mq27: { name: 'CLEAR THE APPROACH', act: 4,
+    stages: [{ log: 'the works entrance is guarded - put down the security detail (4)',
+      target: toWorks,
+      auto(){ return (player.qvar.mq27kills || 0) >= 4; } }] },
+  mq28: { name: 'THE WORKS', act: 4,
+    stages: [{ log: 'fight your way up THE WORKS - every floor is held, the top is HELD',
+      target: toWorks,
+      auto(){ return !!player.qvar.mq28top; } }] },
+  mq29: { name: 'THE SWITCH', act: 4,
+    stages: [{ log: 'the room is yours. the switch is in front of you. decide',
+      target: toWorks }] },
+  mq30: { name: 'THE COST', act: 4,
+    stages: [{ log: 'you chose the people. the cell will not forgive it - get out and get HOME',
+      target(){ return HOMES && HOMES.suburb
+        ? { x: HOMES.suburb.x, y: HOMES.suburb.y, name: 'THE ROWHOUSE' } : toHideout(); },
+      auto(){ return HOMES && HOMES.suburb &&
+        Math.hypot(HOMES.suburb.x - cam.x, HOMES.suburb.y - cam.y) < 6; } }] }
+};
+/* while mq28 runs, the works fights back floor by floor */
+function mqWorksFloor(){
+  if (!WORKS || !inside || inside.bld !== WORKS.bld) return;
+  if (!mqLive('mq28') && !mqLive('mq29')) return;
+  const fls = bldFloors(buildings[inside.bld]);
+  const top = inside.floor === fls[fls.length - 1];
+  if (mqLive('mq28')){
+    const n = top ? 2 : 2;
+    for (let i = 0; i < n; i++){
+      const a = spawnClearInterior('enforcer');
+      if (a){ a.aggro = 1; a.atk = 10; a.interior = 1; }
+    }
+    if (top){
+      const c = spawnClearInterior('enforcer');
+      if (c){ c.name = 'THE CUSTODIAN'; c.hp = 260; c.maxHp = 260;
+              c.atk = 14; c.spd = 2.1; c.aggro = 1; c.interior = 1; }
+      toast('THE CUSTODIAN turns from the switch. it was waiting');
+    } else toast('the floor is held - fight through');
+  }
+}
+/* the custodian falling opens the room */
+function mqWorksKill(a){
+  if (a.name === 'THE CUSTODIAN' && mqLive('mq28')){
+    player.qvar.mq28top = 1;
+    toast('the room is yours. the switch hums at the far wall');
+  }
+  if (mqLive('mq27') && a.kind === 'enforcer' && !inside &&
+      WORKS && Math.hypot(WORKS.x - cam.x, WORKS.y - cam.y) < 30)
+    player.qvar.mq27kills = (player.qvar.mq27kills || 0) + 1;
+}
+/* mq27: the detail stands at the doors when you arrive */
+function mqWorksGuards(){
+  if (!mqLive('mq27') || player.qvar.mq27spawned) return;
+  if (!WORKS || Math.hypot(WORKS.x - cam.x, WORKS.y - cam.y) > 24) return;
+  player.qvar.mq27spawned = 1;
+  for (let i = 0; i < 4; i++){
+    const t = randWalkNear(WORKS.x, WORKS.y, 2, 8);
+    if (t){ const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
+      { name: 'WORKS SECURITY', brain: 'hostile', hp: 55, shirt: C.carC, skin: C.dataDk });
+      a.aggro = 1; a.atk = 10; }
+  }
+  toast('the detail sees you coming');
+}
+/*------------------------------- the choice --------------------------------*/
+function openTheChoice(){
+  pushMode({
+    name: 'dialog', pausesWorld: true, title: 'THE SWITCH',
+    tree: {
+      start: { text: 'The switch is older than anything else in the room, and the room is older than the city. Two positions. It is ON. VESPER\u2019s voice, from a roof: if you cut it you don\u2019t free anyone. ROOK\u2019s voice, from every day since: the towers break first. Your hand is already on it.',
+        opts: [
+          { t: 'CUT THE POWER. finish what the cell started',
+            do(){ endTheWorld(); } },
+          { t: 'LEAVE IT ON. the people keep their light',
+            do(){
+              player.qvar.betrayed = 1;
+              mqDone('mq29', 4, 29);
+              mqStart('mq30');
+              // the cell was watching; it knows before your hand leaves the switch
+              for (let i = 0; i < 2; i++){
+                const a = spawnClearInterior('razor');
+                if (a){ a.name = 'THE CELL'; a.hp = 60; a.atk = 10;
+                        a.aggro = 1; a.interior = 1; }
+              }
+              toast('your earpiece: ROOK, very quiet: "you were the one I trusted."');
+              sfx('hurt', { vol: 0.5, rate: 0.45 });
+            } },
+          { t: 'step back. not yet' }
+        ] },
+    },
+    node: 'start', cursor: 0, t0: performance.now(), nodeT: performance.now(), lastSig: null,
+    cur(){ return this.tree[this.node]; },
+    visibleOpts(){ const n = this.cur(); return (n.opts || []).filter(o => !o.if || o.if()); },
+    sig(opts){ return opts.map(o => o.t).join('\x1f'); },
+    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= nodeText(this.cur()).length; },
+    go(id){ if (!id || !this.tree[id]){ popMode(); return; } this.node = id; },
+    onKey(code){
+      const opts = this.pageDone() ? this.visibleOpts() : [];
+      if (code === 'KeyW' || code === 'ArrowUp'){
+        if (opts.length) this.cursor = (this.cursor + opts.length - 1) % opts.length;
+      } else if (code === 'KeyS' || code === 'ArrowDown'){
+        if (opts.length) this.cursor = (this.cursor + 1) % opts.length;
+      } else if (code === 'Space' || code === 'Enter'){
+        if (!this.pageDone()){ this.t0 = -1; return; }
+        const o = opts[Math.min(this.cursor, opts.length - 1)];
+        if (o){ popMode(); if (o.do) o.do(); }
+      } else if (code === 'Escape') popMode();
+    },
+    draw(){ drawTree(this); }
+  });
+}
+/*------------------------- the end of everything ---------------------------*/
+function endTheWorld(){
+  player.qvar.ended = 1;
+  openScene('THE SWITCH', [
+    'You cut the power.',
+    'The hum you never once noticed in all your time here stops.',
+    'The towers go first. Then the signs. Then the rain, mid-fall.',
+    'Then the pavement. Then the dark itself, which turns out to have been lit.',
+    'ROOK was wrong. VESPER was right. It was never a grid.',
+    'It was the thing running the ground, the sky, the crowds, the noise,',
+    'the whole small world - and you.',
+    'There is no city to save now. There is no city.',
+    'There is no'
+  ], () => {
+    pushMode({
+      name: 'theend', pausesWorld: true, t0: performance.now(),
+      onKey(code){
+        if (performance.now() - this.t0 < 4000) return;
+        if (code === 'KeyN'){ modeStack.length = 0; newWorld((Math.random() * 1e9) | 0); }
+        if (code === 'Escape' || code === 'Enter'){ modeStack.length = 0; openSavesMenu(); }
+      },
+      draw(){
+        const cols = R.cols, rows = R.rows;
+        for (let i = 0; i < gBuf.length; i++) gBuf[i] = 0;
+        hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
+        if (performance.now() - this.t0 > 4000){
+          hudStr((cols - 1) >> 1, rows >> 1, ' ', H_DIM);
+          hudStr((cols - 30) >> 1, rows - 4, 'N  a new universe    ESC  saves', H_DIM);
+        }
+      }
+    });
+  });
+}
+/* the cell hunts a traitor, forever */
+function cellAmbushTick(){
+  if (!player.qvar.betrayed || inside) return;
+  const have = actors.filter(a => a.name === 'CELL RAZOR' && a.hp > 0).length;
+  if (have >= 3 || Math.random() > 0.012) return;
+  const t = randWalkNear(cam.x, cam.y, 16, 28);
+  if (!t) return;
+  const a = spawnActor('razor', t[0] + 0.5, t[1] + 0.5,
+    { name: 'CELL RAZOR', brain: 'hostile', hp: 55 });
+  a.atk = 9; a.spd = 2.5; a.aggro = 1;
+  toast('the cell found you');
 }
 /* The pause menu is a hallway of doors now, not a wall of dials: each group
    of controls lives behind its own button, one green rule between each. */
@@ -7163,6 +7569,8 @@ function burnTag(){
 function startJammer(){
   if (jamT > 0){ toast('already jamming'); return false; }
   jamT = 60;
+  if (mqLive('mq11') && atSpot(mqSpot(691, D_DOWN), 12)) player.qvar.mq11jam = 1;
+  if (mqLive('mq22') && atSpot(mqSpot(721, D_IND), 10)) player.qvar.mq22cut = 1;
   for (const a of actors) if (a.kind === 'enforcer') a.aggro = 0;
   toast('sixty seconds of static - move');
   sfx('ui_select', { rate: 0.5, vol: 0.7 });
@@ -7575,6 +7983,144 @@ const WHEELS_QUESTS = {
 };
 Object.assign(QUESTS, WHEELS_QUESTS);
 Object.assign(QUESTS, MQ1);
+/*--------------------------- Acts 2 and 3 jobs -----------------------------*/
+const MQ2 = {
+  mq9:  { name: 'THE SOFTER ONE', act: 2,
+    stages: [{ log: 'VESPER wants a word before the real work - talk to her at THE HIDEOUT',
+      target: toHideout }] },
+  mq10: { name: 'RECON', act: 2,
+    stages: [{ log: 'walk a downtown lobby and note the camera coverage - enter any DOWNTOWN building',
+      target(){ return mqSpot(681, D_DOWN); },
+      auto(){ return player.qvar.mq10seen; } }] },
+  mq11: { name: 'DEAD AIR', act: 2,
+    stages: [{ log: 'jam the relay: use a SIGNAL JAMMER at the marked spot downtown',
+      target(){ return mqSpot(691, D_DOWN); },
+      auto(){ return player.qvar.mq11jam && atSpot(mqSpot(691, D_DOWN), 12); } }] },
+  mq12: { name: 'THE KEYCARD', act: 2,
+    stages: [{ log: 'a keycard is locked in a CONDEMNED tower - climb it and take the prize',
+      target(){ return mqDungeon(); },
+      auto(){ return player.qvar.mq12card; } },
+      { log: 'bring the keycard back to ROOK', target: toHideout }] },
+  mq13: { name: 'BY THE WINDOW', act: 2,
+    stages: [{ log: 'VESPER left the window - find and hear her out at THE HIDEOUT',
+      target: toHideout }] },
+  mq14: { name: 'SOMEWHERE TO LOSE', act: 2,
+    stages: [{ log: 'ROOK set you up with a safehouse in the suburbs - go see THE ROWHOUSE',
+      target(){ return HOMES && HOMES.suburb ? { x: HOMES.suburb.x, y: HOMES.suburb.y, name: 'THE ROWHOUSE' } : toHideout(); },
+      auto(){ return HOMES && HOMES.suburb && Math.hypot(HOMES.suburb.x - cam.x, HOMES.suburb.y - cam.y) < 6; } }] },
+  mq15: { name: 'CLEAN CUTS', act: 2,
+    stages: [{ log: 'blind a downtown block: cut 4 more cameras',
+      auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq15Base || 0) >= 4; } }] },
+  mq16: { name: 'INSIDE THE TOWER', act: 2,
+    stages: [{ log: 'infiltrate the corpo tower - reach the top floor. cameras raise the alarm',
+      target(){ return mqDungeon(); },
+      auto(){ return player.qvar.mq16top; } }] },
+  mq17: { name: 'THE PLAN', act: 3,
+    stages: [{ log: 'ROOK will finally tell you the whole plan - meet at THE HIDEOUT',
+      target: toHideout }] },
+  mq18: { name: 'SCHEMATICS', act: 3,
+    stages: [{ log: 'steal the grid schematics from a CONDEMNED tower',
+      target(){ return mqDungeon(); },
+      auto(){ return player.qvar.mq18plans; } },
+      { log: 'take the schematics to ROOK', target: toHideout }] },
+  mq19: { name: 'SOMETHING WITH TEETH', act: 3,
+    stages: [{ log: 'the power room will be guarded - find one of the city\u2019s hidden SPECIAL weapons',
+      target: toHideout,
+      auto(){ return mqHasSpecial() && atSpot(HIDEOUT, 6); } }] },
+  mq20: { name: 'WHAT IT FEEDS', act: 3,
+    stages: [{ log: 'VESPER found something in the schematics - go with her to the substation',
+      target(){ return mqSpot(701, D_IND); },
+      auto(){
+        if (atSpot(mqSpot(701, D_IND), 8) && !player.qvar.mq20scene &&
+            !(topMode() && topMode().name === 'scene')){
+          player.qvar.mq20scene = 1;
+          openScene('THE SUBSTATION', [
+            'VESPER walks the fence line with the schematics open across both arms.',
+            '"See the feed lines? They don\u2019t come FROM anywhere. They just... start."',
+            '"A power plant takes something in. Coal, sun, water, anything. This takes NOTHING in."',
+            '"Every line on this page ends at the core and none of them begin."',
+            'She folds the pages very slowly, like they might go off.',
+            '"ROOK says cut it and the towers die. But if nothing feeds it, then it isn\u2019t',
+            'a generator. It\u2019s a heart. And I want to know whose."',
+            'She does not talk on the walk back.'
+          ], () => { if (mqLive('mq20')) mqDone('mq20', undefined, 20); });
+        }
+        return false;
+      } }] },
+  mq21: { name: 'THE INSIDER', act: 3,
+    stages: [{ log: 'lean on a corpo insider downtown for the last access code',
+      target(){ return mqSpot(711, D_DOWN); },
+      auto(){ return !!player.qvar.mq21code; } }] },
+  mq22: { name: 'DRY RUN', act: 3,
+    stages: [{ log: 'kill one substation as a test - use a HACKSAW or JAMMER at the marked box',
+      target(){ return mqSpot(721, D_IND); },
+      auto(){ return player.qvar.mq22cut && atSpot(mqSpot(721, D_IND), 10); } }] },
+  mq23: { name: 'SHE IS AFRAID', act: 3,
+    stages: [{ log: 'VESPER has gone quiet and will not say why - find her at THE HIDEOUT',
+      target: toHideout }] },
+  mq24: { name: 'THE THING SHE FOUND', act: 3,
+    stages: [{ log: 'VESPER asked to meet ALONE, away from the cell - go to the marked roof',
+      target(){ return mqSpot(731, D_STRIP); },
+      auto(){
+        if (atSpot(mqSpot(731, D_STRIP), 6) && !player.qvar.mq24met &&
+            !(topMode() && topMode().name === 'scene'))
+          vesperRoofScene();                     // the scene advances the stage
+        return false;
+      } },
+      { log: 'get away - the cell cannot know what you saw. lie low at THE ROWHOUSE',
+      target(){ return HOMES && HOMES.suburb ? { x: HOMES.suburb.x, y: HOMES.suburb.y, name: 'THE ROWHOUSE' } : toHideout(); },
+      auto(){ return HOMES && HOMES.suburb && Math.hypot(HOMES.suburb.x - cam.x, HOMES.suburb.y - cam.y) < 6; } }] }
+};
+Object.assign(QUESTS, MQ2);
+Object.assign(QUESTS, MQ4);
+/* a condemned tower to send the player into, remembered once chosen */
+let mqDgnBld = null;
+function mqDungeon(){
+  if (mqDgnBld === null){
+    let best = null, bd = 1e9;
+    for (const d of doors){
+      const b = buildings.find(bb => bb.id === d.b);
+      if (!b || !isDungeon(b)) continue;
+      const dd = Math.hypot(d.x - HIDEOUT.x, d.y - HIDEOUT.y);
+      if (dd < bd){ bd = dd; mqDgnBld = { x: d.x, y: d.y }; }
+    }
+    if (mqDgnBld === null) mqDgnBld = HIDEOUT;
+  }
+  return { x: mqDgnBld.x, y: mqDgnBld.y, name: 'THE CONDEMNED TOWER' };
+}
+function mqHasSpecial(){
+  return ['railgun', 'arcgun', 'nailer', 'katana', 'maul'].some(w => invCount(w) > 0);
+}
+/* the top of a dungeon reached during mq12/mq16/mq18 sets that job's flag */
+function mqDungeonTop(){
+  if (mqLive('mq12')) player.qvar.mq12card = 1;
+  if (mqLive('mq16')) player.qvar.mq16top = 1;
+  if (mqLive('mq18')) player.qvar.mq18plans = 1;
+}
+/* a camera catching you during mq16 spawns a wave */
+function mqTowerSeen(){
+  if (!mqLive('mq16') || !inside) return;
+  if (player.qvar.mq16waveT && worldTime - player.qvar.mq16waveT < 20) return;
+  player.qvar.mq16waveT = worldTime;
+  for (let i = 0; i < 2; i++){
+    const a = spawnClearInterior('enforcer');
+    if (a){ a.aggro = 1; a.atk = 10; a.interior = 1; }
+  }
+  toast('the tower saw you - security is moving');
+  sfx('shot', { vol: 0.6, rate: 0.6 });
+}
+function spawnClearInterior(kind){
+  if (!inside) return null;
+  // interiors live at the IOX/IOY origin, not at the street footprint
+  for (let t = 0; t < 40; t++){
+    const x = IOX + 1 + Math.random() * 13;
+    const y = IOY + 1 + Math.random() * 13;
+    if (inMap(x | 0, y | 0) && walkG[(y | 0) * MAP + (x | 0)])
+      return spawnActor(kind, x, y, { name: 'SECURITY', brain: 'hostile', hp: 45,
+                                      shirt: C.carC, skin: C.dataDk });
+  }
+  return null;
+}
 function vanceTree(){
   return {
     entry(){
@@ -7645,6 +8191,13 @@ function advanceQuest(id){
     player.quests[id] = 'done';
     sfx('ui_select', { vol: 0.7, rate: 0.7 });
     toast('completed: ' + q.name);
+    if (id === 'mq30'){                        // the line closes on a betrayal
+      player.qvar.act = 4;
+      const rk = actors.find(a => a.name === 'ROOK');
+      if (rk){ rk.brain = 'hostile'; rk.tree = null; rk.dialog = null;
+               rk.hp = 220; rk.maxHp = 220; rk.atk = 12; rk.spd = 2.4; rk.aggro = 0; }
+      toast('the lights stay on. the cell hunts you now. the city is yours to keep');
+    }
     if (player.track === id)
       player.track = Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
   } else {
@@ -7684,6 +8237,12 @@ function quipTick(){                            // the street has opinions
 function checkQuests(){
   corruptionTick();
   quipTick();
+  if (mqLive('mq16') && inside){
+    for (const q of props)
+      if (q.k === PK_CAM && !q.dead &&
+          Math.hypot(q.x - cam.x, q.y - cam.y) < 9 &&
+          sightClear(q.x, q.y, cam.x, cam.y)){ mqTowerSeen(); break; }
+  }
   for (const id in player.quests){
     const s = player.quests[id];
     if (typeof s !== 'number') continue;
@@ -8131,6 +8690,7 @@ function hideFrame(dt){
   }
 }
 function corruptionTick(){                    // polled every half second
+  if (!inside){ mqWorksGuards(); cellAmbushTick(); }
   if (player.corruption <= 0 || inside || jamT > 0) return;
   camWhisperT -= 0.5;
   if (camWhisperT <= 0){
@@ -8542,6 +9102,7 @@ function fireWeapon(){
 }
 function killActor(a){
   actors.splice(actors.indexOf(a), 1);
+  if (typeof mqWorksKill === 'function') mqWorksKill(a);
   if (a.brain !== 'hostile'){
     // a working person, murdered for the till: the till is real, and so is
     // what it does to your name
@@ -8564,7 +9125,8 @@ function killActor(a){
 /* who a bullet or a blade may touch: hostiles always; working actors too,
    unless the story needs them alive */
 const VITAL = new Set(['THE WATCHER', 'THE FIXER', 'CHEMIST', 'DRIFTER',
-                       'STALL COOK', 'VANCE', 'REGISTRAR', 'SKYPARK ATTENDANT']);
+                       'STALL COOK', 'VANCE', 'REGISTRAR', 'SKYPARK ATTENDANT',
+                       'ROOK', 'VESPER', 'MERIDIAN MANAGER']);
 function actorTargetable(a){
   if (a.brain === 'hostile') return true;
   return !VITAL.has(a.name);
