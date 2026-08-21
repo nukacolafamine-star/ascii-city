@@ -1223,7 +1223,38 @@ function buildCity(seed){
   placeStreetItems();
   placeProps();
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
+  placeWeaponCaches();
   bakeSolidProps();
+}
+
+/* The special weapons are not for sale. They are LEFT places - tucked behind
+   the plant of the city where only somebody poking around would look - and
+   each cache spawns once per city, remembered through worldDelta like any
+   other pickup. Quests will hand out their own copies later; these are the
+   finders-keepers set. */
+function placeWeaponCaches(){
+  const tuck = (want, id) => {
+    const cands = props.filter(q => q.k === want);
+    if (!cands.length) return;
+    const c = cands[(hash3(worldSeed, ITEMS[id].price + id.length, 977) * cands.length) | 0];
+    // just behind it, off the walkway side
+    for (let ring = 1; ring <= 2; ring++)
+      for (let a = 0; a < 8; a++){
+        const th = a * Math.PI / 4;
+        const x = c.x + Math.cos(th) * ring * 0.8, y = c.y + Math.sin(th) * ring * 0.8;
+        if (!inMap(x | 0, y | 0)) continue;
+        if (tType[(y | 0) * MAP + (x | 0)] === T_BLD) continue;
+        props.push({ x, y, k: PK_ITEM, s: 0, r: 0, item: id, qty: 1,
+                     key: 'cache_' + id });
+        return;
+      }
+  };
+  if (!worldDelta.taken.cache_railgun) tuck(PK_TURBINE, 'railgun');  // out in the wilds
+  if (!worldDelta.taken.cache_arcgun)  tuck(PK_ROCK, 'arcgun');
+  if (!worldDelta.taken.cache_nailer)  tuck(PK_METRO, 'nailer');
+  if (!worldDelta.taken.cache_katana)  tuck(PK_SAKURA, 'katana');    // under the blossom
+  if (!worldDelta.taken.cache_maul)    tuck(PK_TURBINE, 'maul');
+  if (!worldDelta.taken.cache_holdout) tuck(PK_BIN, 'holdout');      // someone ditched it
 }
 
 /* Solid furniture is baked out of the walk grid once the placer has run, so
@@ -2488,6 +2519,61 @@ const ITEM_DEF = {};
     ['cyl', 6, 6, 3, 5, 2.5, 13],
     ['cyl', 6, 6, 7, 7, 1.0, 9]],
     { M: [MET, 0.9], S: [C.tlAmb, 0.95], K: [DK, 0.9] });
+  d('holdout', 0.26, 0.16, [                    // palm gun
+    ['rodx', 3, 9, 6, 3, 0.9, 11],
+    ['box', 6, 5, 0, 8, 7, 3, 9]],
+    { M: [MET, 0.9], K: [DK, 0.9] });
+  d('revolver', 0.36, 0.24, [                   // the cylinder is the point
+    ['rodx', 1, 10, 6, 4, 1.0, 11],
+    ['cyl', 5.5, 6, 3, 5, 1.8, 9],
+    ['box', 8, 5, 0, 10, 7, 3, 13]],
+    { M: [MET, 0.9], K: [DK, 0.9], S: [C.camRed, 0.9] });
+  d('smg', 0.40, 0.26, [                        // box, mag, stub barrel
+    ['box', 1, 4, 4, 10, 7, 6, 9],
+    ['rodx', 9, 11, 6, 5, 0.8, 11],
+    ['box', 4, 5, 0, 6, 7, 3, 13],
+    ['box', 1, 5, 2, 2, 6, 4, 9]],
+    { K: [DK, 0.9], M: [MET, 0.9], S: [C.tlAmb, 0.9] });
+  d('shotgun', 0.48, 0.20, [                    // twin tubes over a stock
+    ['rodx', 0, 8, 5, 4, 0.8, 11],
+    ['rodx', 0, 8, 7, 4, 0.8, 11],
+    ['box', 9, 4, 1, 11, 8, 4, 13]],
+    { M: [MET, 0.9], S: [TR, 0.9] });
+  d('rifle', 0.54, 0.20, [                      // long, scoped
+    ['rodx', 0, 11, 6, 3, 0.8, 11],
+    ['box', 4, 5, 4, 7, 7, 5, 9],
+    ['box', 8, 5, 1, 11, 7, 3, 13]],
+    { M: [MET, 0.9], K: [DK, 0.95], S: [DK, 0.9] });
+  d('railgun', 0.54, 0.26, [                    // coil rings down the barrel
+    ['rodx', 0, 11, 6, 4, 0.7, 11],
+    ['cyl', 2, 6, 2, 6, 1.6, 13], ['cyl', 6, 6, 2, 6, 1.6, 13],
+    ['cyl', 10, 6, 2, 6, 1.6, 13]],
+    { M: [MET, 0.85], X: [C.nViolet, 1.0] });
+  d('arcgun', 0.40, 0.30, [                     // prongs and a jar of weather
+    ['box', 2, 4, 0, 9, 7, 4, 9],
+    ['cyl', 4, 6, 5, 8, 1.2, 13],
+    ['dot', 8, 5, 6, 2], ['dot', 9, 6, 8, 2], ['dot', 7, 7, 9, 2]],
+    { K: [DK, 0.9], X: [C.nCyan, 1.0], W: [W, 1.0] });
+  d('nailer', 0.36, 0.26, [                     // industrial, strip-fed
+    ['box', 1, 4, 3, 9, 7, 6, 13],
+    ['rodx', 9, 11, 6, 5, 0.8, 11],
+    ['box', 3, 5, 0, 5, 7, 2, 9],
+    ['box', 5, 4, 1, 8, 7, 2, 11]],
+    { K: [DK, 0.85], M: [MET, 0.9], S: [C.nAmber, 0.95] });
+  d('knife', 0.28, 0.14, [                      // the boxcutter, blade out
+    ['box', 1, 5, 1, 6, 7, 3, 13],
+    ['rodx', 6, 10, 6, 2, 0.7, 11]],
+    { S: [C.tlAmb, 0.9], M: [MET, 0.95] });
+  d('katana', 0.56, 0.20, [                     // a long line with a guard
+    ['rodx', 0, 8, 6, 4, 0.7, 11],
+    ['cyl', 8.5, 6, 2, 6, 1.3, 13],
+    ['box', 9, 5, 3, 11, 7, 4, 9]],
+    { M: [MET, 0.95], K: [DK, 0.9], X: [C.nPink, 1.0] });
+  d('maul', 0.44, 0.30, [                       // all head
+    ['rodx', 0, 8, 6, 2, 0.7, 9],
+    ['box', 8, 4, 0, 11, 8, 5, 11],
+    ['dot', 9, 4, 6, 13], ['dot', 10, 7, 6, 13]],
+    { K: [TR, 0.9], M: [MET, 0.9], X: [C.nCyan, 1.0] });
   d('deck', 0.52, 0.16, [                       // the kickdeck on its wheels
     ['box', 0, 4, 3, 11, 7, 4, 13],
     ['box', 0, 4, 4, 1, 7, 4, 13], ['box', 10, 4, 4, 11, 7, 4, 13],
@@ -5389,8 +5475,30 @@ const ITEMS = {
   // ---- weapons ----
   pistol:  { name: 'ZIP PISTOL', pcol: C.rail, stack: 1, cat: 'weapon', price: 90,
              hint: 'LMB or CTRL fires; feeds on ammo' },
+  holdout: { name: 'SLEEVE HOLDOUT', pcol: C.metal, stack: 1, cat: 'weapon', price: 60,
+             hint: 'small, quick, forgettable - the point' },
+  revolver:{ name: 'JUDGE REVOLVER', pcol: C.camRed, stack: 1, cat: 'weapon', price: 260,
+             hint: 'six opinions, all final' },
+  smg:     { name: 'HORNET SMG', pcol: C.tlAmb, stack: 1, cat: 'weapon', price: 340,
+             hint: 'a swarm in a box; eats ammo alive' },
+  shotgun: { name: 'DOORBELL SHOTGUN', pcol: C.trunk, stack: 1, cat: 'weapon', price: 420,
+             hint: 'answers everything at close range' },
+  rifle:   { name: 'LONGWIRE RIFLE', pcol: C.dataDk, stack: 1, cat: 'weapon', price: 520,
+             hint: 'reaches across a district; slow to ask twice' },
+  railgun: { name: 'MAGLEV LANCE', pcol: C.nViolet, stack: 1, cat: 'weapon', price: 0,
+             hint: 'a tram rail with a trigger - pierces everything in the line' },
+  arcgun:  { name: 'TESLA JACK', pcol: C.nCyan, stack: 1, cat: 'weapon', price: 0,
+             hint: 'the bolt takes friends with it' },
+  nailer:  { name: 'REBAR NAILER', pcol: C.nAmber, stack: 1, cat: 'weapon', price: 0,
+             hint: 'pins a target to the moment' },
+  knife:   { name: 'BOXCUTTER', pcol: C.metal, stack: 1, cat: 'weapon', price: 45,
+             hint: 'fast, quiet, close' },
+  katana:  { name: 'VIBRO KATANA', pcol: C.nPink, stack: 1, cat: 'weapon', price: 0,
+             hint: 'one arc, everyone in it' },
+  maul:    { name: 'SHOCK MAUL', pcol: C.nCyan, stack: 1, cat: 'weapon', price: 0,
+             hint: 'the ground remembers where it lands' },
   ammo:    { name: 'AMMO', pcol: C.tlAmb, stack: 24, cat: 'weapon', price: 3,
-             hint: 'rounds for the zip pistol' },
+             hint: 'every gun in the city eats the same rounds' },
   pipe:    { name: 'LEAD PIPE', pcol: C.rail, stack: 1, cat: 'weapon', price: 70,
              hint: 'fast swings, a shove, a stagger - and quiet' },
   bat:     { name: 'NAIL BAT', pcol: C.trunk, stack: 1, cat: 'weapon', price: 220,
@@ -6179,7 +6287,8 @@ const SHOP_TYPES = {
   jeweler:    { name: 'JEWELER',
                 stock: ['shades', 'ring', 'chain', 'watch'] },
   armory:     { name: 'ARMORY',
-                stock: ['ammo', 'pipe', 'bat', 'pistol'] },
+                stock: ['ammo', 'knife', 'pipe', 'holdout', 'bat', 'pistol',
+                        'revolver', 'smg', 'shotgun', 'rifle'] },
   tools:      { name: 'TOOLS & TRINKETS',
                 stock: ['saw', 'burner', 'jammer', 'firecracker', 'shim', 'sniffer', 'camjack', 'deck', 'battery'] },
   dispensary: { name: 'DISPENSARY',
@@ -6565,9 +6674,10 @@ function weaponId(){
   const w = player.weapon;
   if (w === 'fist') return 'fist';
   if (w && invCount(w)) return w;
-  if (invCount('pistol')) return 'pistol';
-  if (invCount('bat')) return 'bat';
-  if (invCount('pipe')) return 'pipe';
+  for (const id of ['railgun', 'rifle', 'shotgun', 'smg', 'revolver', 'pistol',
+                    'arcgun', 'nailer', 'holdout', 'katana', 'maul', 'bat',
+                    'pipe', 'knife'])
+    if (invCount(id)) return id;
   return 'fist';
 }
 function equipWeapon(id){
@@ -6583,6 +6693,15 @@ function meleeStats(){                        // the swing you are holding
   if (w === 'pipe')                           // fast swings, honest dents
     return { d: 9, r: 4, reach: 2.0, cool: 0.50, kb: 0.45, stun: 0.25,
              beats: [0.10, 0.16, 0.34], id: 'pipe' };
+  if (w === 'knife')                          // fast, quiet, close
+    return { d: 7, r: 4, reach: 1.8, cool: 0.30, kb: 0.15, stun: 0,
+             beats: [0.06, 0.10, 0.22], id: 'knife' };
+  if (w === 'katana')                         // one arc, everyone in it
+    return { d: 26, r: 8, reach: 2.6, cool: 0.70, kb: 0.6, stun: 0.3,
+             beats: [0.16, 0.22, 0.46], id: 'katana', arc: 1 };
+  if (w === 'maul')                           // the ground remembers
+    return { d: 30, r: 8, reach: 2.2, cool: 1.2, kb: 1.4, stun: 0.8,
+             beats: [0.30, 0.40, 0.78], id: 'maul', aoe: 3 };
   return { d: 5, r: 3, reach: 1.7, cool: 0.40, kb: 0.25, stun: 0,
            beats: [0.08, 0.13, 0.30], id: 'fist' };
 }
@@ -6606,7 +6725,53 @@ function punch(){
 }
 function strikeLand(){
   const m = meleeStats();
+  if (m.arc){                                  // the katana: a cone, not a poke
+    let struck = 0;
+    const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+    const cut = (a, ped) => {
+      const dmg = m.d + ((Math.random() * m.r) | 0);
+      addFx(a.x, a.y, 1.1); addFx(a.x - vy * 0.4, a.y + vx * 0.4, 0.6);
+      if (ped){ damagePed(a, dmg); return; }
+      a.stunT = Math.max(a.stunT || 0, m.stun);
+      a.hp -= dmg; a.aggro = 1; a.hitT = 0.15;
+      if (a.hp <= 0) killActor(a);
+    };
+    for (const a of actors){
+      if (!!a.interior !== !!inside || a.hp === undefined || a.hp <= 0) continue;
+      const rx = a.x - cam.x, ry = a.y - cam.y, f = rx * vx + ry * vy;
+      if (f < 0.2 || f > m.reach) continue;
+      if (Math.abs(vy * rx - vx * ry) > 1.6) continue;
+      cut(a, false); struck++;
+    }
+    if (!inside) for (const p2 of gridQuery(pedGrid, cam.x, cam.y, 4, _q1)){
+      if (p2.off) continue;
+      const rx = p2.x - cam.x, ry = p2.y - cam.y, f = rx * vx + ry * vy;
+      if (f < 0.2 || f > m.reach) continue;
+      if (Math.abs(vy * rx - vx * ry) > 1.6) continue;
+      cut(p2, true); struck++;
+    }
+    if (struck){
+      hitStopT = 0.09 + struck * 0.02; cam.pitch -= 0.5;
+      sfx('hit', { rate: 1.6, vol: 0.7 }); sfx('footstep', { rate: 2.6, vol: 0.3 });
+    } else sfx('footstep', { vol: 0.3, rate: 2.8 });
+    return;
+  }
   const hit = characterInSights(m.reach, 0.7);
+  if (m.aoe && hit){                           // the maul: the floor answers too
+    for (const a of actors){
+      if (a === hit.a || !!a.interior !== !!inside) continue;
+      if (a.hp === undefined || a.hp <= 0) continue;
+      const d2 = (a.x - cam.x) ** 2 + (a.y - cam.y) ** 2;
+      if (d2 > m.aoe * m.aoe) continue;
+      const l = Math.sqrt(d2) || 1;
+      const nx = a.x + (a.x - cam.x) / l * 1.2, ny = a.y + (a.y - cam.y) / l * 1.2;
+      if (inMap(nx | 0, ny | 0) && walkG[(ny | 0) * MAP + (nx | 0)]){ a.x = nx; a.y = ny; }
+      a.stunT = Math.max(a.stunT || 0, 0.6);
+      addFx(a.x, a.y, 0.8);
+    }
+    flash = Math.max(flash, 0.25);             // the shock reads on screen
+    cam.pitch -= 1.4;
+  }
   if (!hit){ sfx('ui_back', { vol: 0.18, rate: 1.6 }); return; }   // an airy miss
   const a = hit.a;
   const dmg = m.d + ((Math.random() * m.r) | 0);
@@ -6638,13 +6803,32 @@ function strikeLand(){
   }
 }
 let unarmedT = 0, shotCool = 0;
+/* Every gun in the city, one table. dmg is [base, spread]; pellets fan out;
+   rail pierces the whole line; chain arcs to bystanders; pin stakes the
+   target in place. All of them feed on the same ammo. */
+const GUNS = {
+  pistol:  { dmg: 9,  rng: 6, cool: 0.35, range: 34, kick: 1.3, rate: 0.95, snd: 0.8 },
+  holdout: { dmg: 6,  rng: 4, cool: 0.22, range: 22, kick: 0.7, rate: 1.45, snd: 0.55 },
+  revolver:{ dmg: 18, rng: 8, cool: 0.75, range: 40, kick: 2.6, rate: 0.66, snd: 0.95 },
+  smg:     { dmg: 5,  rng: 4, cool: 0.10, range: 26, kick: 0.45, rate: 1.2, snd: 0.6 },
+  shotgun: { dmg: 7,  rng: 4, cool: 0.95, range: 15, kick: 3.2, rate: 0.5, snd: 1.0,
+             pellets: 5, spreadW: 1.6 },
+  rifle:   { dmg: 26, rng: 8, cool: 1.15, range: 72, kick: 2.4, rate: 0.45, snd: 0.9 },
+  railgun: { dmg: 60, rng: 10, cool: 1.6, range: 90, kick: 4.0, rate: 0.3, snd: 1.0,
+             rail: 1 },
+  arcgun:  { dmg: 14, rng: 6, cool: 0.8, range: 24, kick: 1.0, rate: 1.9, snd: 0.7,
+             chain: 3 },
+  nailer:  { dmg: 10, rng: 5, cool: 0.30, range: 28, kick: 0.9, rate: 1.6, snd: 0.65,
+             pin: 2.2 }
+};
 function fireWeapon(){
   if (topMode() || worldFrozen()) return;
   if (cam.riding){ toast('not from up here'); return; }
   if (sitting){ toast('not from the bench'); return; }
   if (shotCool > 0) return;                   // the zip pistol is not a minigun
   handsBusy();
-  const armed = weaponId() === 'pistol' && invCount('pistol') > 0;
+  const wid = weaponId(), G = GUNS[wid];
+  const armed = !!G && invCount(wid) > 0;
   if (!armed || invCount('ammo') === 0){
     if (!armed && worldTime > unarmedT && meleeStats().id === 'fist'){
       unarmedT = worldTime + 12;
@@ -6655,27 +6839,81 @@ function fireWeapon(){
     return;
   }
   invTake('ammo', 1);
-  shotCool = 0.35;
+  shotCool = G.cool;
   muzzleT = 0.09;
-  cam.pitch = clamp(cam.pitch + 1.3, -R.rows * 0.62, R.rows * 0.62);
-  sfx('shot', { vol: 0.8, rate: 0.95 + Math.random() * 0.1 });
+  cam.pitch = clamp(cam.pitch + G.kick, -R.rows * 0.62, R.rows * 0.62);
+  sfx('shot', { vol: G.snd, rate: G.rate * (0.97 + Math.random() * 0.06) });
   panicHere(cam.x, cam.y, 120);
   for (const a of actors)                       // gunfire carries
     if (a.brain === 'hostile' && Math.hypot(a.x - cam.x, a.y - cam.y) < 15) a.aggro = 1;
-  const hit = characterInSights(34);
-  if (hit && hit.ped){
-    damagePed(hit.a, 9 + ((Math.random() * 6) | 0));
-  } else if (hit){
-    const a = hit.a;
-    a.hp -= 9 + ((Math.random() * 6) | 0);
+  const roll = () => G.dmg + ((Math.random() * G.rng) | 0);
+  const wound = (a, ped, dmg) => {
+    if (ped){ damagePed(a, dmg); return; }
+    a.hp -= dmg;
     a.aggro = 1; a.hitT = 0.15;
+    if (G.pin){ a.stunT = Math.max(a.stunT || 0, G.pin); a.pinX = a.x; a.pinY = a.y; }
     addFx(a.x, a.y, 1.25);
     sfx('hit', { vol: 0.7 });
     if (a.hp <= 0) killActor(a);
-  } else {
-    const wd = wallDist(34);
-    if (wd < 34) addFx(cam.x + Math.cos(cam.ang) * (wd - 0.05),
-                       cam.y + Math.sin(cam.ang) * (wd - 0.05), 1.3);
+  };
+  if (G.rail){
+    // the lance: everything on the line takes it, and the line is visible
+    const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+    const wd = Math.min(G.range, wallDist(G.range));
+    for (let t = 2; t < wd; t += 2.2) addFx(cam.x + vx * t, cam.y + vy * t, 0.55);
+    let n = 0;
+    const seen = new Set();
+    for (let pass = 0; pass < 6; pass++){       // peel targets front to back
+      const hit = characterInSights(wd, 0.6);
+      if (!hit || seen.has(hit.a)) break;
+      seen.add(hit.a); n++;
+      wound(hit.a, hit.ped, roll());
+      if (hit.a.hp !== undefined && hit.a.hp > 0) break;   // a survivor blocks it
+    }
+    if (n > 1) toast('clean through');
+    return;
+  }
+  if (G.chain){
+    const hit = characterInSights(G.range, 0.5);
+    if (hit){
+      wound(hit.a, hit.ped, roll());
+      // the bolt leaps: nearest others within six tiles, weakening each hop
+      let from = hit.a, dmg = roll();
+      const struck = new Set([hit.a]);
+      for (let c = 0; c < G.chain; c++){
+        let nb = null, bd = 36;
+        for (const a of actors){
+          if (struck.has(a) || a.interior || a.hp === undefined || a.hp <= 0) continue;
+          const d2 = (a.x - from.x) ** 2 + (a.y - from.y) ** 2;
+          if (d2 < bd){ bd = d2; nb = a; }
+        }
+        if (!nb) break;
+        struck.add(nb);
+        dmg = Math.max(4, (dmg * 0.6) | 0);
+        addFx((from.x + nb.x) / 2, (from.y + nb.y) / 2, 0.7);
+        addFx(nb.x, nb.y, 1.0);
+        sfx('hit', { vol: 0.4, rate: 2.2 });
+        wound(nb, false, dmg);
+        from = nb;
+      }
+    } else {
+      const wd = wallDist(G.range);
+      if (wd < G.range) addFx(cam.x + Math.cos(cam.ang) * (wd - 0.05),
+                              cam.y + Math.sin(cam.ang) * (wd - 0.05), 1.3);
+    }
+    return;
+  }
+  const pellets = G.pellets || 1;
+  let landed = 0;
+  for (let i = 0; i < pellets; i++){
+    const hw = G.spreadW ? G.spreadW * (0.3 + 0.7 * Math.random()) : 0.45;
+    const hit = characterInSights(G.range, hw);
+    if (hit){ wound(hit.a, hit.ped, roll()); landed++; }
+  }
+  if (!landed){
+    const wd = wallDist(G.range);
+    if (wd < G.range) addFx(cam.x + Math.cos(cam.ang) * (wd - 0.05),
+                            cam.y + Math.sin(cam.ang) * (wd - 0.05), 1.3);
   }
 }
 function killActor(a){
@@ -6998,6 +7236,331 @@ const VM_GUN = [
 ];
 /* an idle fist, boxer guard - knuckle ridge, finger seams, thumb, cuff folds */
 const GUN_SIGHT_COL = VM_GUN[0].indexOf('|');   // the front sight post
+/* Every gun shares the same pair of hands - the grip does not change, the
+   thing gripped does. Each top is stacked onto the arms base; row 0 carries
+   the .|. sight post the reticle code aligns to. */
+const GUN_ARMS = VM_GUN.slice(10);              // the two-hand grip and jacket
+const gunArt = (top) => top.concat(GUN_ARMS);
+const VM_GUNS = {
+  pistol: VM_GUN,
+  holdout: gunArt([
+  '             .|.              ',
+  '            (=#=)             ',
+  '           |=====|            ',
+  '          |#=====#|           ',
+  '         |%%#===#%%|          ',
+  '        |%%%[o]%%%%|          ']),
+  revolver: gunArt([
+  '             .|.              ',
+  '            (===)             ',
+  '           |=====|            ',
+  '          |#=====#|           ',
+  '        ((#o=====o#))         ',
+  '       ((o%%=====%%o))        ',
+  '       ((%%%#===#%%%))        ',
+  '        ((%%[===]%%))         ',
+  '         |%%%#=#%%%|          ',
+  '        |%%%%[o]%%%%|         ']),
+  smg: gunArt([
+  '             .|.              ',
+  '        _____(=)_____         ',
+  '       |=============|        ',
+  '       |==#==========|        ',
+  '      |#===[ooo]====#|        ',
+  '      |#=============|        ',
+  '       |%%%#=====#%%|         ',
+  '        |%%[#####]%%|         ',
+  '        |%%[#####]%%|         ',
+  '        |%%%[###]%%%|         ']),
+  shotgun: gunArt([
+  '            .|.               ',
+  '          (O) (O)             ',
+  '          (O) (O)             ',
+  '          (O) (O)             ',
+  '         |=======|            ',
+  '         |==###==|            ',
+  '        |#=======#|           ',
+  '        |%%=====%%|           ',
+  '       |%%%#===#%%%|          ',
+  '        |%%%[o]%%%%|          ']),
+  rifle: gunArt([
+  '             .|.              ',
+  '             (=)              ',
+  '             |=|              ',
+  '             |=|              ',
+  '            |===|             ',
+  '        [o==|===|==o]         ',
+  '        [===|===|===]         ',
+  '           |#===#|            ',
+  '          |%%===%%|           ',
+  '         |%%#===#%%|          ',
+  '        |%%%[===]%%%|         ',
+  '        |%%%%[o]%%%%|         ']),
+  railgun: gunArt([
+  '             .|.              ',
+  '          ~~(===)~~           ',
+  '         ((=======))          ',
+  '          ~~|===|~~           ',
+  '         ((=======))          ',
+  '          ~~|===|~~           ',
+  '         ((=======))          ',
+  '          |#=====#|           ',
+  '         |%%~===~%%|          ',
+  '        |%%%[~o~]%%%|         ']),
+  arcgun: gunArt([
+  '        *    .|.    *         ',
+  '         \\  (=~=)  /          ',
+  '        ~*~ |=~=| ~*~         ',
+  '          \\_|=~=|_/           ',
+  '         |#==~~~==#|          ',
+  '         |#=======#|          ',
+  '          |%%~~~%%|           ',
+  '         |%%[~~~]%%|          ',
+  '        |%%%[~o~]%%%|         ']),
+  nailer: gunArt([
+  '             .|.              ',
+  '     ________(=)________      ',
+  '    |==================|      ',
+  '    |==#############===|      ',
+  '    |==================|      ',
+  '       |#==========#|         ',
+  '        |%%======%%|          ',
+  '        |%%%[oo]%%%|          ',
+  '        |%%%%[]%%%%|          '])
+};
+const GUN_SIGHTS = {};
+for (const gid in VM_GUNS) GUN_SIGHTS[gid] = VM_GUNS[gid][0].indexOf('|');
+/*--------------------------- new blades and hammers ------------------------
+  The boxcutter works like the pipe - one hand, a forehand and a distinct
+  backhand. The vibro katana is two-handed and leaves its own light behind:
+  the ~ trail rides the smear frames. The shock maul is all wind-up and
+  consequence. Anchor tables are shared where the arc shape matches.
+============================================================================*/
+const VM_KNIFE_HOLD = [
+  '                      /#/     ',
+  '                     /=/      ',
+  '                    /=/       ',
+  '                   /=/        ',
+  '                 _(=/_        ',
+  '               _(n@nn@n)_     ',
+  '              (n@n@#n@n@n)    ',
+  '              (ss)ss)ss)ss)   ',
+  '               (jj.jjjj.jj)   ',
+  '               |jj/jj,jjjj|   ',
+  '               |jjjjjjjjjj|   ',
+  '               |jjjjjjjjjj|   '
+];
+const VM_KNIFE_WIND = [
+  '               ____/#=====/   ',
+  '           _(n@nn@n)/         ',
+  '          (n@n@#n@n@n)        ',
+  '          (ss)ss)ss)ss)       ',
+  '          (jj.jjjjj.jj)       ',
+  '          |jj/jj,jjjjj|       ',
+  '          |jjjjjjjjjjj|       '
+];
+const VM_KNIFE_SMEAR = [
+  '   -- ---- ----               ',
+  '  ---- /#=====/ ----          ',
+  '   -- _(n@nn@n)_  --          ',
+  '     (n@n@#n@n@n)             ',
+  '     (ss)ss)ss)ss)            ',
+  '     (jjjjjjjjjj)_            ',
+  '      (jjj,jjjjjjj)           ',
+  '      |jjjjjjjjjjj|           '
+];
+const VM_KNIFE_HIT = [
+  '  \\  *  /                     ',
+  ' =*=/#========-               ',
+  '  /  *  \\   _(n@nn@n)_        ',
+  '           (n@n@#n@n@n)       ',
+  '           (ss)ss)ss)ss)      ',
+  '           (jjjj,jjjjj)_      ',
+  '            (jjjjjjjjjjj)     ',
+  '            |jjjj,jjjjjj|     ',
+  '            |jjjjjjjjjjj|     '
+];
+const VM_KNIFE_REC = [
+  '        ______                ',
+  '     __(nnnnnn)__             ',
+  '    (n@n@n@n@n@nn)            ',
+  '    (ss)ss)ss)ss)s)           ',
+  '   _(sssssssssss,s)           ',
+  ' _(=/jj.jjjjjjj.jj)           ',
+  ' /#/ |jj,jjjj\\jjjj|           ',
+  '     (jjj/jjjjjjjj)           ',
+  '     |jjjjjjjjjjjj|           '
+];
+const VM_KAT_HOLD = [
+  '                        __//  ',
+  '                      _//~    ',
+  '                    _//~      ',
+  '                  _//~        ',
+  '                _//~          ',
+  '              _//~            ',
+  '            _//~              ',
+  '           |=|                ',
+  '          _(#)_               ',
+  '        _(n@ww@n)_            ',
+  '       (n@n@##n@n@n)          ',
+  '       (ss)ss)ss)ss)          ',
+  '      _(n@n@ww@n@n@n)_        ',
+  '     (n@n@n@##n@n@n@nn)       ',
+  '     (ss)ss)ss)ss)ss)s)       ',
+  '     (jj.jjjjjjjjj.jjj)       ',
+  '     |jj/jjjj,jjjjjjjj|       ',
+  '     |jjjjjjjjjjjjjjjj|       '
+];
+const VM_KAT_WIND = [
+  '            _____//========// ',
+  '        __//~~~~~~~~~~~//     ',
+  '       |=|_//                 ',
+  '      _(#)_                   ',
+  '    _(n@ww@n)_                ',
+  '   (n@n@##n@n@n)              ',
+  '   (ss)ss)ss)ss)              ',
+  '  _(n@n@ww@n@n@n)_            ',
+  ' (n@n@n@##n@n@n@nn)           ',
+  ' (ss)ss)ss)ss)ss)s)           ',
+  ' (jj.jjjjjjjjj.jjj)           ',
+  ' |jj/jjjj,jjjjjjjj|           ',
+  ' |jjjjjjjjjjjjjjjj|           '
+];
+const VM_KAT_SMEAR = [
+  ' ~~~~ ~~~~~~ ~~~~~~ ~~~~      ',
+  '  ~~~~~~ ~~~~~~ ~~~~~~ ~~~    ',
+  ' ~~ __//==============//_ ~~  ',
+  '  ~//~~~~~~~~~~~~~~~//  ~~~   ',
+  '   |=|_                       ',
+  '  _(#)_                       ',
+  '_(n@ww@n)_                    ',
+  '(n@n@##n@n)                   ',
+  '(ss)ss)ss)s)                  ',
+  '(jjjjjjjjjj)_                 ',
+  ' (jjj,jjjjjjj)_               ',
+  '  (jjjjjjjjjjjj)              ',
+  '  |jjjjj,jjjjjj|              '
+];
+const VM_KAT_HIT = [
+  '  \\   ~   /                   ',
+  ' ~*~ //==========================//',
+  '  /  ~~~~~~~~~~~~~~~~~~~~~~~~~//  ',
+  '   ~   ~    _(n@ww@n)_        ',
+  '    ~      (n@n@##n@n@n)      ',
+  '           (ss)ss)ss)ss)      ',
+  '          _(n@n@ww@n@n@n)_    ',
+  '         (n@n@n@##n@n@n@nn)   ',
+  '         (ss)ss)ss)ss)ss)s)   ',
+  '         (jjjjjjj,jjjjjjjj)_  ',
+  '          (jjjj/jjjjjjjjjjjj) ',
+  '          |jjjj,jjjjjjjjjjjj| ',
+  '          |jjjjjjjjjjjjjjjjj| '
+];
+const VM_KAT_REC = [
+  '              ______          ',
+  '           __(nnnnnn)__       ',
+  '          (n@n@n@n@n@nn)      ',
+  '          (ss)ss)ss)ss)s)     ',
+  '     ____(sssssssssss,ss)     ',
+  '  _//~~~#ssssssssssss:ss)     ',
+  ' //~ |=|/jj.jjjjjjjjj.jj)     ',
+  '     (#) |jj,jjjjjj/jjjj|     ',
+  '         (jjjj/jjjjjjjjj)     ',
+  '         |jjjjjjjjjjjjjj|     ',
+  '         |jjjjjjjjjjjjjj|     '
+];
+const VM_MAUL_HOLD = [
+  '                  [======]    ',
+  '                  [=~~~~=]    ',
+  '                  [=~##~=]    ',
+  '                  [=~~~~=]    ',
+  '                  [======]    ',
+  '                    |==|      ',
+  '                    |==|      ',
+  '                    |==|      ',
+  '                  _(|==|)_    ',
+  '                _(n@ww@n)_    ',
+  '               (n@n@##n@n@n)  ',
+  '               (ss)ss)ss)ss)  ',
+  '              _(n@n@ww@n@n)_  ',
+  '             (n@n@n@##n@n@nn) ',
+  '             (ss)ss)ss)ss)ss) ',
+  '             (jj.jjjjjj.jjjj) ',
+  '             |jj/jjj,jjjjjjj| ',
+  '             |jjjjjjjjjjjjjj| '
+];
+const VM_MAUL_WIND = [
+  '        [======]              ',
+  '        [=~~~~=]___           ',
+  '        [=~##~=]===|__        ',
+  '        [=~~~~=]      |==__   ',
+  '        [======]        _(n@ww@n)_',
+  '                       (n@n@##n@n@n)',
+  '                       (ss)ss)ss)ss)',
+  '                      _(n@n@ww@n@n)_ ',
+  '                     (n@n@n@##n@n@nn)',
+  '                     (ss)ss)ss)ss)ss)',
+  '                     (jj.jjjjjj.jjjj)',
+  '                     |jj/jjj,jjjjjjj|',
+  '                     |jjjjjjjjjjjjjj|'
+];
+const VM_MAUL_SMEAR = [
+  '   ----- ------- ------       ',
+  ' ------- ------- --------     ',
+  ' --- [======]__ -------       ',
+  ' --  [=~~~~=]==|__  ----      ',
+  '  -- [=~##~=]     |==_  --    ',
+  '     [======]  _(n@ww@n)_     ',
+  '              (n@n@##n@n@n)   ',
+  '              (ss)ss)ss)ss)   ',
+  '              (jjjjjjjjjjj)_  ',
+  '               (jjj,jjjjjjjj) ',
+  '               |jjjjjjjjjjjj| ',
+  '               |jjjjjjjjjjjj| '
+];
+const VM_MAUL_HIT = [
+  ' \\\\   *    //                 ',
+  '  [======] *  * ~ *           ',
+  ' =[=~##~=]= ~ * ~ *           ',
+  '  [======] * ~  *             ',
+  ' //  |==|_ \\\\                 ',
+  '        |====|__              ',
+  '          _(n@ww@n)_          ',
+  '         (n@n@##n@n@n)        ',
+  '         (ss)ss)ss)ss)        ',
+  '         (jjjjjj,jjjjj)_      ',
+  '          (jjjj/jjjjjjjj)_    ',
+  '           (jjjjjjjjjjjjjj)   ',
+  '           |jjjj,jjjjjjjjj|   ',
+  '           |jjjjjjjjjjjjjj|   '
+];
+const VM_MAUL_REC = [
+  '             ______           ',
+  '          __(nnnnnn)__        ',
+  '         (n@n@n@n@n@nn)       ',
+  '         (ss)ss)ss)ss)s)      ',
+  '    _____(sssssssssss,s)      ',
+  ' [======]sssssssssss:ss)      ',
+  ' [=~##~=]jj.jjjjjjjj.jj)      ',
+  ' [======]|jj,jjjjj/jjjj|      ',
+  '   |==|  (jjjj/jjjjjjjj)      ',
+  '   |==|  |jjjjjjjjjjjjj|      ',
+  '         |jjjjjjjjjjjjj|      '
+];
+const KNIFE_SET = [VM_KNIFE_WIND, shiftArt(VM_KNIFE_WIND, 2, -1),
+                   VM_KNIFE_SMEAR, shiftArt(VM_KNIFE_SMEAR, -3, 0),
+                   VM_KNIFE_HIT, shiftArt(VM_KNIFE_HIT, -1, 1),
+                   VM_KNIFE_REC, shiftArt(VM_KNIFE_REC, -2, 1)];
+const KNIFE_SET_B = KNIFE_SET.map(a => mirrorView(a));
+const KAT_SET = [VM_KAT_WIND, shiftArt(VM_KAT_WIND, 2, -1),
+                 VM_KAT_SMEAR, shiftArt(VM_KAT_SMEAR, -4, 0),
+                 VM_KAT_HIT, shiftArt(VM_KAT_HIT, -1, 1),
+                 VM_KAT_REC, shiftArt(VM_KAT_REC, -2, 1)];
+const MAUL_SET = [VM_MAUL_WIND, shiftArt(VM_MAUL_WIND, 2, -1),
+                  VM_MAUL_SMEAR, shiftArt(VM_MAUL_SMEAR, -4, 0),
+                  VM_MAUL_HIT, shiftArt(VM_MAUL_HIT, -1, 1),
+                  VM_MAUL_REC, shiftArt(VM_MAUL_REC, -2, 1)];
+
 const VM_FIST_R = [
   '       ______       ',
   '    __(nnnnnn)_     ',
@@ -7086,6 +7649,25 @@ const PUNCH_SET_L = [VM_PUNCH_WIND_L, shiftArt(VM_PUNCH_WIND_L, -2, -1),
 /* bludgeons ride in the right hand: a rest pose and a full swing each */
 const CM_MELEE = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT,
                    '%': H_GRY, '#': H_DRK, w: H_YEL, '-': H_GRY, '*': H_YEL };
+const CM_KAT  = Object.assign({}, CM_MELEE, { '~': H_PUR, '/': H_GRY, '=': H_GRY });
+const CM_MAUL = Object.assign({}, CM_MELEE, { '~': H_BLU, '[': H_GRY, ']': H_GRY });
+/* which art set and anchor table each swing uses; B sets alternate */
+const MELEE_VM = {
+  bat:    { set: () => BAT_SET,   ax: () => BAT_AX,  cm: () => CM_MELEE, tr: 0.62 },
+  pipe:   { set: () => punchLeft ? PIPE_SET_B : PIPE_SET,
+            ax:  () => punchLeft ? PIPE_AX_B : PIPE_AX, cm: () => CM_MELEE, tr: 0.56 },
+  knife:  { set: () => punchLeft ? KNIFE_SET_B : KNIFE_SET,
+            ax:  () => punchLeft ? PIPE_AX_B : PIPE_AX, cm: () => CM_MELEE, tr: 0.50 },
+  katana: { set: () => KAT_SET,  ax: () => BAT_AX,  cm: () => CM_KAT,  tr: 0.60 },
+  maul:   { set: () => MAUL_SET, ax: () => BAT_AX,  cm: () => CM_MAUL, tr: 0.62 }
+};
+const MELEE_HOLD = {
+  bat:    { art: () => VM_BAT_HOLD,   tr: 0.62, anchor: 'c', off: -0.44, cm: () => CM_MELEE },
+  pipe:   { art: () => VM_PIPE_HOLD,  tr: 0.54, anchor: 'r', off: 0.03,  cm: () => CM_MELEE },
+  knife:  { art: () => VM_KNIFE_HOLD, tr: 0.44, anchor: 'r', off: 0.05,  cm: () => CM_MELEE },
+  katana: { art: () => VM_KAT_HOLD,   tr: 0.62, anchor: 'c', off: -0.40, cm: () => CM_KAT },
+  maul:   { art: () => VM_MAUL_HOLD,  tr: 0.62, anchor: 'c', off: -0.42, cm: () => CM_MAUL }
+};
 /* the kickdeck, seen down its own length: the nose narrows away from
    you, the tail flares near, and every trick has its own motion */
 const CM_DECK = { '=': H_DRK, '%': H_PUR, '#': H_DRK, o: H_GRY, x: H_JKT,
@@ -10817,14 +11399,10 @@ function hudPass(){
                  : e < b1 + (b2 - b1) * 0.4 ? 4 : e < b2 ? 5
                  : e < b2 + (punchDur - b2) * 0.5 ? 6 : 7;
         let art, cmA = CM_ARM, axf;
-        if (mw.id === 'bat'){ cmA = CM_MELEE; art = BAT_SET[ph]; axf = BAT_AX[ph]; }
-        else if (mw.id === 'pipe'){
-          cmA = CM_MELEE;                   // forehand, then the whip back
-          art = punchLeft ? PIPE_SET_B[ph] : PIPE_SET[ph];
-          axf = punchLeft ? PIPE_AX_B[ph] : PIPE_AX[ph];
-        }
+        const mv = MELEE_VM[mw.id];
+        if (mv){ art = mv.set()[ph]; axf = mv.ax()[ph]; cmA = mv.cm(); }
         else art = punchLeft ? PUNCH_SET_L[ph] : PUNCH_SET[ph];
-        let tr = Math.round(rows * (mw.id === 'bat' ? 0.62 : 0.56));
+        let tr = Math.round(rows * (mv ? mv.tr : 0.56));
         if (axf !== undefined) tr = fitTr(art, tr, cols);   // keep it on screen
         const tw = Math.round(tr * viewW(art) / art.length);
         let ax;
@@ -10839,36 +11417,35 @@ function hudPass(){
           ax = punchLeft ? 3 + ins : cols - tw - 3 - ins;
         }
         drawViewArt(art, ax, rows - tr, tr, cmA);
-      } else if (weaponId() === 'pistol'){
+      } else if (GUNS[weaponId()]){
+        const gid = weaponId();
+        const gart = VM_GUNS[gid] || VM_GUN;
         const tr = Math.round(rows * 0.60);
         // work out where the front sight will actually land once the art is
         // grounded and scaled, then hang the gun so the post sits on the
         // crosshair instead of beside it
-        const ga = groundArt(VM_GUN), gah = ga.length, gaw = viewW(ga);
+        const ga = groundArt(gart), gah = ga.length, gaw = viewW(ga);
         const gtr = Math.min(tr, Math.round(gah * 3.5));
         const gtc = Math.max(2, Math.round(gtr * gaw / gah));
-        const sightX = Math.round((GUN_SIGHT_COL + 0.5) * gtc / gaw - 0.5);
+        const sightX = Math.round(((GUN_SIGHTS[gid] !== undefined
+                        ? GUN_SIGHTS[gid] : GUN_SIGHT_COL) + 0.5) * gtc / gaw - 0.5);
         // recoil in stages: the buck, the settle, the return
         const kick = muzzleT > 0.06 ? 3 : muzzleT > 0.03 ? 2 : muzzleT > 0 ? 1 : 0;
         const gx = (cols >> 1) - sightX, gy = rows - tr + bob + kick;
-        drawViewArt(VM_GUN, gx, gy, tr, CM_GUN);
+        drawViewArt(gart, gx, gy, tr, CM_GUN);
         if (muzzleT > 0)                        // the flash leaves the bore
           drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
                       (cols >> 1) - 3, gy - 3, 3, CM_MUZ);
       } else {
         const mw = meleeStats();
-        if (mw.id === 'bat'){
-          // squared up: both fists on the grip, barrel over the right shoulder
-          const tr = Math.round(rows * 0.62);
-          const tw = drawnW(VM_BAT_HOLD, tr);
-          drawViewArt(VM_BAT_HOLD, (cols >> 1) - Math.round(tw * 0.44),
-                      rows - tr + (bob ? 0 : 1), tr, CM_MELEE);
-        } else if (mw.id === 'pipe'){
-          // one hand, low and off to the right; the elbow reaches back across
-          const tr = Math.round(rows * 0.54);
-          const tw = drawnW(VM_PIPE_HOLD, tr);
-          drawViewArt(VM_PIPE_HOLD, cols - tw - Math.round(cols * 0.03),
-                      rows - tr + (bob ? 0 : 1), tr, CM_MELEE);
+        const mh = MELEE_HOLD[mw.id];
+        if (mh){
+          const tr = Math.round(rows * mh.tr);
+          const tw = drawnW(mh.art(), tr);
+          const ax = mh.anchor === 'c'
+            ? (cols >> 1) + Math.round(tw * mh.off)
+            : cols - tw - Math.round(cols * mh.off);
+          drawViewArt(mh.art(), ax, rows - tr + (bob ? 0 : 1), tr, mh.cm());
         } else {
           const tr = Math.round(rows * 0.34);
           const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
@@ -10906,7 +11483,7 @@ function hudPass(){
     const hpn = clamp(Math.round(player.hp / player.maxHp * 12), 0, 12);
     const hpTxt = drug && drug.fx.numb ? '??' : String(player.hp);
     const w = weaponId();
-    const ammo = w === 'pistol' ? '  AMMO ' + invCount('ammo')
+    const ammo = GUNS[w] ? '  AMMO ' + invCount('ammo')
                : w === 'fist' ? '' : '  ' + ITEMS[w].name.toUpperCase().slice(0, 10);
     const strip = 'HP ' + '#'.repeat(hpn) + '.'.repeat(12 - hpn) + ' ' +
                   hpTxt + '/' + player.maxHp + ammo;
