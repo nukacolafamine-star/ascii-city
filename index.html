@@ -396,6 +396,15 @@ let tType = new Uint8Array(MAP * MAP);
 let tH    = new Float32Array(MAP * MAP);
 let tB    = new Int16Array(MAP * MAP);
 let walkG = new Uint8Array(MAP * MAP);   // 0 blocked, else step cost x10
+/* Where the CHANNEL is, as opposed to where the water shows. A bridge writes
+   its deck over the river tiles and the water was simply gone underneath -
+   so the deep pass, finding a bridge tile where it expected water, drew the
+   stone channel wall and plugged the river with masonry at every crossing.
+   The riverbed is recorded once when it is cut, and nothing overwrites it. */
+const riverBed = new Uint8Array(MAP * MAP);
+function inChannel(ix, iy){
+  return tType[iy * MAP + ix] === T_WATER || riverBed[iy * MAP + ix] === 1;
+}
 let buildings = [], props = [], signs = [], stalls = [];
 
 function residue(r){ return r < RW ? 0 : (r < RW + SW || r >= P - SW ? 1 : 2); }
@@ -535,6 +544,7 @@ function carveRiver(){
     for (let y = Math.max(0, Math.floor(mid - hw)); y <= Math.min(MAP - 1, Math.ceil(mid + hw)); y++){
       const id = y * MAP + x;
       tType[id] = T_WATER; tH[id] = 0; tB[id] = -1;
+      riverBed[id] = 1;                        // the water still runs here
     }
   }
 }
@@ -1172,6 +1182,7 @@ function buildCity(seed){
   // whether the building is the hideout - so a stale id from the city before
   // this one gets its door blanked as well. Forget it before anything reads it.
   HIDEOUT = null;
+  riverBed.fill(0);
   blockUsed.fill(0);
   tH.fill(0); tB.fill(-1);
   for (let y = 0; y < MAP; y++)
@@ -12791,6 +12802,24 @@ function skyPass(){
 }
 
 /*------------------------- floor / ground plane ----------------------------*/
+/* Two perpendicular sines cross into a field of blobs. Waves instead run as
+   long crests parallel to the banks, so the coordinate that varies fast is
+   the one across the channel, and it meanders slowly along it. Lifted out of
+   floorSample so the deep pass can shade the river where the surface tile
+   says BRIDGE - the water runs under a deck, it does not stop at one. */
+function waterShade(wx, wy){
+  const cross = wy - riverMid(wx);
+  const band = cross * 1.05
+             + Math.sin(wx * 0.055 + worldTime * 0.33) * 1.8
+             + Math.sin(wx * 0.131 - worldTime * 0.61) * 0.7;
+  const w1 = Math.sin(band * 1.55 + worldTime * 0.85)
+           + 0.55 * Math.sin(band * 3.7 - worldTime * 1.55);
+  _wb = w1 > 0.45 ? C.water : C.waterD;
+  _wd = 0.23 + w1 * 0.10;
+  const gl = hash3((wx * 1.7) | 0, (wy * 1.7) | 0, 61);
+  if (gl > 0.952){ _wb = NEONC[(gl * 887) % NEONC.length | 0]; _wd = 0.52; }
+  _wwet = 2;                                  // water always reflects
+}
 function floorSample(wx, wy, ix, iy){
   const t = tType[iy * MAP + ix];
   _wwet = (t === T_ROAD || t === T_CROSS) ? 1 : 0;   // 1 wet-when-raining, 2 always
@@ -12841,23 +12870,7 @@ function floorSample(wx, wy, ix, iy){
     _wwet = 1;
     return;
   }
-  if (t === T_WATER){
-    // Two perpendicular sines cross into a field of blobs. Waves instead run
-    // as long crests parallel to the banks, so the coordinate that varies
-    // fast is the one across the channel, and it meanders slowly along it.
-    const cross = wy - riverMid(wx);
-    const band = cross * 1.05
-               + Math.sin(wx * 0.055 + worldTime * 0.33) * 1.8
-               + Math.sin(wx * 0.131 - worldTime * 0.61) * 0.7;
-    const w1 = Math.sin(band * 1.55 + worldTime * 0.85)
-             + 0.55 * Math.sin(band * 3.7 - worldTime * 1.55);
-    _wb = w1 > 0.45 ? C.water : C.waterD;
-    _wd = 0.23 + w1 * 0.10;
-    const gl = hash3((wx * 1.7) | 0, (wy * 1.7) | 0, 61);
-    if (gl > 0.952){ _wb = NEONC[(gl * 887) % NEONC.length | 0]; _wd = 0.52; }
-    _wwet = 2;                                  // water always reflects
-    return;
-  }
+  if (t === T_WATER){ waterShade(wx, wy); return; }
   if (t === T_BRIDGE){
     _wb = hash3(ix, iy, 23) > 0.5 ? C.deck : C.deckOld;
     _wd = 0.32 + hash3(ix, iy, 13) * 0.10;
@@ -12929,11 +12942,37 @@ function floorPass(){
         const wx2 = cam.x + rayX[x] * dW, wy2 = cam.y + rayY[x] * dW;
         const ix2 = wx2 | 0, iy2 = wy2 | 0;
         if (wx2 < 0 || wy2 < 0 || ix2 >= MAP || iy2 >= MAP) continue;
-        const tw = dW / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = dW;
-        if (tType[iy2 * MAP + ix2] === T_WATER){
-          floorSample(wx2, wy2, ix2, iy2);
-        } else {                                   // the channel wall
-          _wb = C.bank; _wd = 0.40 + hash3(ix2, iy2, 17) * 0.14; _wwet = 0;
+        /* The ray has dropped through the hole in the street. Walk the gap
+           between the lip and the bed and find the first bank it passes: THAT
+           is the wall it stops against. It used to be coloured from the tile
+           at the far end of the ray instead, which put the wall's depth and
+           its fog twenty tiles behind where the wall actually stands - a
+           three-metre cut bank rendered like distant haze, which is what made
+           the edges look like paper rather than ground. */
+        let wallD = -1, wix = ix2, wiy = iy2;
+        const span = dW - d;
+        const nStep = Math.min(40, Math.max(2, Math.ceil(span * 0.8)));
+        for (let sI = 1; sI <= nStep; sI++){
+          const ds = d + span * (sI / nStep);
+          const sx2 = cam.x + rayX[x] * ds, sy2 = cam.y + rayY[x] * ds;
+          const six = sx2 | 0, siy = sy2 | 0;
+          if (sx2 < 0 || sy2 < 0 || six >= MAP || siy >= MAP){ wallD = ds; break; }
+          if (!inChannel(six, siy)){ wallD = ds; wix = six; wiy = siy; break; }
+        }
+        if (wallD < 0){                            // clear all the way down
+          const tw = dW / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = dW;
+          // the bed is the bed whatever is built over it - shade the river,
+          // not whatever the surface tile happens to say
+          waterShade(wx2, wy2);
+          // a deck overhead puts the water in its shadow
+          if (tType[iy2 * MAP + ix2] === T_BRIDGE) _wd *= 0.62;
+        } else {                                   // the channel wall, in place
+          const tw = wallD / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = wallD;
+          const f = clamp((wallD - d) / Math.max(0.001, span), 0, 1);
+          _wb = f < 0.16 ? C.curb : C.bank;        // a kerbstone lip on the top
+          _wd = 0.46 - f * 0.14 + hash3(wix, wiy, 17) * 0.12;
+          if (((wiy * 3 + wix) & 3) === 0) _wd += 0.07;   // coursing in the stone
+          _wwet = 0;
         }
       } else {
         floorSample(wx, wy, ix, iy);
