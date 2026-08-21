@@ -832,13 +832,13 @@ function stampPark(bi, bj, bw, bh, kind){
       const r = rnd();
       if (nearBuilding(x, y, 1)) continue;
       if (kind === 'main'){
-        if (r < 0.030) props.push({ x: x + 0.5, y: y + 0.5, k: PK_APPLE, s: rnd(), r: 0.4 });
-        else if (r < 0.150) props.push({ x: x + 0.5, y: y + 0.5,
+        if (r < 0.022) props.push({ x: x + 0.5, y: y + 0.5, k: PK_APPLE, s: rnd(), r: 0.4 });
+        else if (r < 0.062) props.push({ x: x + 0.5, y: y + 0.5,
           k: rnd() < 0.55 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
       } else {
-        if (r < 0.085) props.push({ x: x + 0.5, y: y + 0.5,
+        if (r < 0.040) props.push({ x: x + 0.5, y: y + 0.5,
           k: rnd() < 0.55 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
-        else if (r < 0.110) props.push({ x: x + 0.5, y: y + 0.5, k: PK_BENCH, s: 0, r: 0.35 });
+        else if (r < 0.065) props.push({ x: x + 0.5, y: y + 0.5, k: PK_BENCH, s: 0, r: 0.35 });
       }
     }
   if (kind !== 'main'){
@@ -1220,6 +1220,88 @@ function buildCity(seed){
   buildSigns();
   buildDoors();
   placeStreetItems();
+  deoverlapProps();
+}
+
+/* Now that props are solids rather than flat cards, two of them sharing a
+   tile visibly interpenetrate. Every model declares how much room it wants
+   and the city is swept once at generation: the things that were placed
+   deliberately keep their spot, and anything scattered on top of them is
+   nudged clear or dropped. */
+const MODEL_CLEAR = [];
+(function(){
+  const c = (k, r) => { MODEL_CLEAR[k] = r; };
+  c(PK_TREE, 2.4);   c(PK_SAKURA, 2.4);  c(PK_TURBINE, 2.0);
+  c(PK_STALL, 0.9);  c(PK_METRO, 0.9);   c(PK_BENCH, 0.7);
+  c(PK_RACK, 0.6);   c(PK_ROCK, 0.5);    c(PK_PLAY, 0.4);
+  c(PK_STAIR, 0.4);  c(PK_BIN, 0.35);    c(PK_TLIGHT, 0.35);
+  c(PK_LAMP, 0.3);   c(PK_RAIL, 0.28);   c(PK_HYDR, 0.28);
+  c(PK_APPLE, 0.3);  c(PK_CAM, 0.25);    c(PK_ITEM, 0.2);
+  c(PK_CROP, 0.16);
+})();
+// placed on purpose first, scattered dressing last - and the first three
+// are never moved, because other systems know where they are
+const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_STALL, PK_BENCH, PK_CAM,
+                     PK_TLIGHT, PK_RAIL, PK_HYDR, PK_LAMP, PK_TURBINE,
+                     PK_APPLE, PK_PLAY, PK_BIN, PK_RACK, PK_CROP,
+                     PK_ROCK, PK_TREE, PK_SAKURA];
+function deoverlapProps(){
+  const CELL = 4, STRIDE = 4096;
+  const buckets = new Map();
+  const clearOf = q => MODEL_CLEAR[q.k] !== undefined ? MODEL_CLEAR[q.k]
+                     : Math.max(q.r || 0.2, 0.3);
+  const bkey = (x, y) => (((y / CELL) | 0) * STRIDE + ((x / CELL) | 0));
+  const put = q => {
+    const k = bkey(q.x, q.y);
+    let a = buckets.get(k); if (!a) buckets.set(k, a = []);
+    a.push(q);
+  };
+  const clashAt = (q, x, y, R) => {
+    const bx = (x / CELL) | 0, by = (y / CELL) | 0;
+    for (let jy = -1; jy <= 1; jy++)
+      for (let jx = -1; jx <= 1; jx++){
+        const a = buckets.get((by + jy) * STRIDE + (bx + jx));
+        if (!a) continue;
+        for (let i = 0; i < a.length; i++){
+          const o = a[i];
+          if (o === q) continue;
+          const dx = o.x - x, dy = o.y - y;
+          const rr = R + clearOf(o);
+          if (dx * dx + dy * dy < rr * rr) return true;
+        }
+      }
+    return false;
+  };
+  const rank = {};
+  for (let i = 0; i < CLEAR_ORDER.length; i++) rank[CLEAR_ORDER[i]] = i;
+  const order = props.slice().sort((a, b) =>
+    (rank[a.k] === undefined ? 99 : rank[a.k]) - (rank[b.k] === undefined ? 99 : rank[b.k]));
+  const pinned = { [PK_METRO]: 1, [PK_STAIR]: 1, [PK_ITEM]: 1 };
+  const keep = [];
+  let moved = 0, dropped = 0;
+  for (const q of order){
+    const R = clearOf(q);
+    if (!clashAt(q, q.x, q.y, R)){ keep.push(q); put(q); continue; }
+    if (pinned[q.k]){ keep.push(q); put(q); continue; }   // these hold their ground
+    let placed = false;
+    for (let ring = 1; ring <= 2 && !placed; ring++){
+      for (let a = 0; a < 8; a++){
+        const th = a * Math.PI / 4;
+        const nx = q.x + Math.cos(th) * ring * 0.55;
+        const ny = q.y + Math.sin(th) * ring * 0.55;
+        const ix = nx | 0, iy = ny | 0;
+        if (!inMap(ix, iy)) continue;
+        if (tType[iy * MAP + ix] !== tType[(q.y | 0) * MAP + (q.x | 0)]) continue;
+        if (clashAt(q, nx, ny, R)) continue;
+        q.x = nx; q.y = ny; placed = true; moved++;
+        break;
+      }
+    }
+    if (placed){ keep.push(q); put(q); }
+    else dropped++;
+  }
+  props = keep;
+  return { moved, dropped };
 }
 
 /*--------------------------- readable signage ------------------------------
@@ -7920,7 +8002,22 @@ function voxelize(art, depthScale, round){
       x = x1 + 1;
     }
   }
-  return (art._vox[key] = { aw, vd, ah, vox });
+  // the artwork usually has empty margins - find the real extent so rays
+  // are never marched through padding
+  let x0 = aw, x1 = -1, y0 = vd, y1 = -1, z0 = ah, z1 = -1;
+  for (let z = 0; z < ah; z++)
+    for (let y = 0; y < vd; y++)
+      for (let x = 0; x < aw; x++)
+        if (vox[(z * vd + y) * aw + x]){
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+          if (z < z0) z0 = z; if (z > z1) z1 = z;
+        }
+  if (x1 < 0){ x0 = y0 = z0 = 0; x1 = aw - 1; y1 = vd - 1; z1 = ah - 1; }
+  return (art._vox[key] = { aw, vd, ah, vox,
+    fx0: x0 / aw, fx1: (x1 + 1) / aw,
+    fy0: y0 / vd, fy1: (y1 + 1) / vd,
+    fz0: z0 / ah, fz1: (z1 + 1) / ah });
 }
 const FACE_DIM = [1.0, 0.84, 1.14];             // side, front/back, top
 function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
@@ -7931,7 +8028,12 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const m = voxelize(art, depthScale, !boxy);
   const aw = m.aw, vd = m.vd, ah = m.ah, vox = m.vox;
   const dW = wW * depthScale;
-  const rad = 0.5 * Math.max(wW, dW);
+  // the solid's true extent in its own frame
+  const bu0 = -wW * 0.5 + wW * m.fx0, bu1 = -wW * 0.5 + wW * m.fx1;
+  const bv0 = -dW * 0.5 + dW * m.fy0, bv1 = -dW * 0.5 + dW * m.fy1;
+  const bz0 = hW * (1 - m.fz1), bz1 = hW * (1 - m.fz0);
+  const rad = 0.5 * Math.max(bu1 - bu0, bv1 - bv0) +
+              Math.max(Math.abs(bu0 + bu1), Math.abs(bv0 + bv1)) * 0.5;
   const tNear = Math.max(0.2, tC - rad);
   // the cells this solid can possibly touch
   const tX = (dirY * relX - dirX * relY) / planeLen;
@@ -7943,7 +8045,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   // a solid below eye level shows its top at its FAR edge and its base at
   // its near one, so the row span has to cover both ends of its depth
   const tFar = tC + rad;
-  const eTop = cam.z - zb - hW, eBot = cam.z - zb;
+  const eTop = cam.z - zb - bz1, eBot = cam.z - zb - bz0;
   const rA = horizon + eTop * projRows / tNear, rB = horizon + eTop * projRows / tFar;
   const rC = horizon + eBot * projRows / tNear, rD = horizon + eBot * projRows / tFar;
   let r0 = Math.floor(Math.min(rA, rB, rC, rD)) - 1;
@@ -7957,9 +8059,11 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   // camera in the solid's own frame
   const ex = cam.x - ox, ey = cam.y - oy;
   const Ou =  ex * cy + ey * sy, Ov = -ex * sy + ey * cy, Oz = cam.z - zb;
-  const hu = wW * 0.5, hv = dW * 0.5;
+  const hu = wW * 0.5, hv = dW * 0.5;   // voxel space still spans the full box
   const sxw = wW / aw, syw = dW / vd, szw = hW / ah;
-  const step = Math.min(sxw, syw, szw) * 0.7;
+  // sample finely up close, coarsely at range - nobody can see the
+  // difference at thirty tiles and it is most of the cost
+  const step = Math.min(sxw, syw, szw) * (0.7 + tC * 0.05);
   const tn = tC / viewD, lvl = levelOf(tn), dm = densMul(tn);
   const lit = art.lit;
   const tCap = Math.min(viewD, tC + rad + 1);
@@ -7971,7 +8075,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
     for (let ax = 0; ax < 2 && colOk; ax++){
       const o = ax === 0 ? Ou : Ov;
       const d = ax === 0 ? Du : Dv;
-      const lo = ax === 0 ? -hu : -hv, hi = ax === 0 ? hu : hv;
+      const lo = ax === 0 ? bu0 : bv0, hi = ax === 0 ? bu1 : bv1;
       if (Math.abs(d) < 1e-9){ if (o < lo || o > hi) colOk = 0; continue; }
       let ta = (lo - o) / d, tb = (hi - o) / d;
       if (ta > tb){ const sw = ta; ta = tb; tb = sw; }
@@ -7986,9 +8090,9 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
       const k = (r - horizon) / projRows;       // the ray's fall per unit depth
       const Dz = -k;
       let t0 = cu0, t1 = cu1;                   // only the height slab is left
-      if (Math.abs(Dz) < 1e-9){ if (Oz < 0 || Oz > hW) continue; }
+      if (Math.abs(Dz) < 1e-9){ if (Oz < bz0 || Oz > bz1) continue; }
       else {
-        let ta = (0 - Oz) / Dz, tb = (hW - Oz) / Dz;
+        let ta = (bz0 - Oz) / Dz, tb = (bz1 - Oz) / Dz;
         if (ta > tb){ const sw = ta; ta = tb; tb = sw; }
         if (ta > t0) t0 = ta;
         if (tb < t1) t1 = tb;
@@ -7999,7 +8103,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
       const dt = step / L;
       let hit = -1, hx = 0, hy = 0, hz = 0, face = 0, ht = 0;
       let px = -1, py = -1, pz = -1;
-      for (let t = t0 + dt * 0.5, n = 0; t <= t1 && n < 96; t += dt, n++){
+      for (let t = t0 + dt * 0.5, n = 0; t <= t1 && n < 64; t += dt, n++){
         const u = Ou + Du * t, v = Ov + Dv * t, w = Oz + Dz * t;
         const ix = ((u + hu) / wW * aw) | 0;
         const iy = ((v + hv) / dW * vd) | 0;
@@ -8194,6 +8298,7 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
   MODEL_TURN[PK_BENCH] = Math.PI / 2;         // benches run along the kerb
+  MODEL_TURN[PK_STALL] = Math.PI / 2;         // carts open onto the pavement
 })();
 function propYaw(o){                          // square to the nearer roadway
   const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
