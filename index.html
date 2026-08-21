@@ -7881,7 +7881,166 @@ function visibleProps(){
   return _vis;
 }
 
-/*------------------------- solid props, not billboards ---------------------
+
+/*------------------------- volumetric models -------------------------------
+  Not billboards, and not crossed planes either - actual solids. Each sprite
+  is inflated into a voxel volume: every horizontal run of the artwork
+  becomes a rounded (or square) cross-section with real depth, so a torso is
+  a barrel, a leg is a post and a canopy is a blob. The volume is then ray
+  marched per screen cell in the object's own local frame, which means it
+  rotates with the thing it belongs to, occludes itself, occludes its
+  neighbours, and takes the same depth buffer the walls write to. Faces are
+  shaded by which side of a voxel the ray came through, the way the wall
+  pass shades its two sides.
+============================================================================*/
+function voxelize(art, depthScale, round){
+  const key = depthScale.toFixed(2) + (round ? 'r' : 'b');
+  if (!art._vox) art._vox = {};
+  if (art._vox[key]) return art._vox[key];
+  const aw = art.w, ah = art.h, data = art.data;
+  const vd = Math.max(2, Math.round(aw * depthScale));
+  const vox = new Uint8Array(aw * vd * ah);
+  for (let z = 0; z < ah; z++){
+    let x = 0;
+    while (x < aw){
+      if (!data[z * aw + x]){ x++; continue; }
+      let x1 = x;                                // one solid run of the row
+      while (x1 + 1 < aw && data[z * aw + x1 + 1]) x1++;
+      const cx = (x + x1 + 1) * 0.5, a = (x1 - x + 1) * 0.5;
+      const b = Math.max(0.6, a * vd / Math.max(0.001, aw * depthScale));
+      for (let xx = x; xx <= x1; xx++){
+        const role = data[z * aw + xx];
+        const nx = (xx + 0.5 - cx) / a;
+        for (let y = 0; y < vd; y++){
+          const ny = (y + 0.5 - vd * 0.5) / b;
+          const solid = round ? (nx * nx + ny * ny <= 1.0) : (Math.abs(ny) <= 1.0);
+          if (solid) vox[(z * vd + y) * aw + xx] = role;
+        }
+      }
+      x = x1 + 1;
+    }
+  }
+  return (art._vox[key] = { aw, vd, ah, vox });
+}
+const FACE_DIM = [1.0, 0.84, 1.14];             // side, front/back, top
+function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
+  const cols = R.cols, rows = R.rows;
+  const relX = ox - cam.x, relY = oy - cam.y;
+  const tC = relX * dirX + relY * dirY;
+  if (tC < 0.15 || tC - 1 > viewD) return;
+  const m = voxelize(art, depthScale, !boxy);
+  const aw = m.aw, vd = m.vd, ah = m.ah, vox = m.vox;
+  const dW = wW * depthScale;
+  const rad = 0.5 * Math.max(wW, dW);
+  const tNear = Math.max(0.2, tC - rad);
+  // the cells this solid can possibly touch
+  const tX = (dirY * relX - dirX * relY) / planeLen;
+  const ccC = cols * 0.5 * (1 + tX / tC);
+  const halfC = rad * (cols * 0.5 / planeLen) / tNear;
+  let c0 = Math.floor(ccC - halfC) - 1, c1 = Math.ceil(ccC + halfC) + 1;
+  if (c1 < 0 || c0 >= cols) return;
+  if (c0 < 0) c0 = 0; if (c1 > cols - 1) c1 = cols - 1;
+  let r0 = Math.floor(horizon + (cam.z - zb - hW) * projRows / tNear) - 1;
+  let r1 = Math.ceil(horizon + (cam.z - zb) * projRows / tNear) + 1;
+  if (r1 < -rows || r0 >= rows) return;
+  if (r0 < -rows) r0 = -rows; if (r1 > rows - 1) r1 = rows - 1;
+  if ((c1 - c0 + 1) * (r1 - r0 + 1) > 40000) return;   // never stall a frame
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  // camera in the solid's own frame
+  const ex = cam.x - ox, ey = cam.y - oy;
+  const Ou =  ex * cy + ey * sy, Ov = -ex * sy + ey * cy, Oz = cam.z - zb;
+  const hu = wW * 0.5, hv = dW * 0.5;
+  const sxw = wW / aw, syw = dW / vd, szw = hW / ah;
+  const step = Math.min(sxw, syw, szw) * 0.7;
+  const tn = tC / viewD, lvl = levelOf(tn), dm = densMul(tn);
+  const lit = art.lit;
+  const tCap = Math.min(viewD, tC + rad + 1);
+  for (let x = c0; x <= c1; x++){
+    const rx = rayX[x], ry = rayY[x];
+    const Du =  rx * cy + ry * sy, Dv = -rx * sy + ry * cy;
+    // the width and depth slabs depend only on the column - solve them once
+    let cu0 = 0.15, cu1 = tCap, colOk = 1;
+    for (let ax = 0; ax < 2 && colOk; ax++){
+      const o = ax === 0 ? Ou : Ov;
+      const d = ax === 0 ? Du : Dv;
+      const lo = ax === 0 ? -hu : -hv, hi = ax === 0 ? hu : hv;
+      if (Math.abs(d) < 1e-9){ if (o < lo || o > hi) colOk = 0; continue; }
+      let ta = (lo - o) / d, tb = (hi - o) / d;
+      if (ta > tb){ const sw = ta; ta = tb; tb = sw; }
+      if (ta > cu0) cu0 = ta;
+      if (tb < cu1) cu1 = tb;
+      if (cu0 > cu1) colOk = 0;
+    }
+    if (!colOk) continue;                       // this column misses entirely
+    for (let r = r0; r <= r1; r++){
+      const onScreen = r >= 0;
+      const idx = onScreen ? r * cols + x : -1;
+      const k = (r - horizon) / projRows;       // the ray's fall per unit depth
+      const Dz = -k;
+      let t0 = cu0, t1 = cu1;                   // only the height slab is left
+      if (Math.abs(Dz) < 1e-9){ if (Oz < 0 || Oz > hW) continue; }
+      else {
+        let ta = (0 - Oz) / Dz, tb = (hW - Oz) / Dz;
+        if (ta > tb){ const sw = ta; ta = tb; tb = sw; }
+        if (ta > t0) t0 = ta;
+        if (tb < t1) t1 = tb;
+        if (t0 > t1) continue;
+      }
+      if (onScreen && dBuf[idx] < t0 - 0.02) continue;   // a wall already won
+      const L = Math.hypot(rx, ry, k) || 1;
+      const dt = step / L;
+      let hit = -1, hx = 0, hy = 0, hz = 0, face = 0, ht = 0;
+      let px = -1, py = -1, pz = -1;
+      for (let t = t0 + dt * 0.5, n = 0; t <= t1 && n < 96; t += dt, n++){
+        const u = Ou + Du * t, v = Ov + Dv * t, w = Oz + Dz * t;
+        const ix = ((u + hu) / wW * aw) | 0;
+        const iy = ((v + hv) / dW * vd) | 0;
+        const iz = ((1 - w / hW) * ah) | 0;      // art row 0 is the top
+        if (ix < 0 || ix >= aw || iy < 0 || iy >= vd || iz < 0 || iz >= ah){
+          px = ix; py = iy; pz = iz; continue;
+        }
+        const role = vox[(iz * vd + iy) * aw + ix];
+        if (!role){ px = ix; py = iy; pz = iz; continue; }
+        hit = role; hx = ix; hy = iy; hz = iz;
+        face = ix !== px ? 0 : iy !== py ? 1 : 2;
+        ht = t;
+        break;
+      }
+      if (hit < 0) continue;
+      const t = ht;
+      let base, dens;
+      if (lit){
+        const ai = hz * aw + hx;
+        base = art.cm[ai]; dens = art.dn[ai];
+      } else {
+        base = sb[hit]; if (base < 0) base = dyn;
+        dens = sd[hit];
+      }
+      const g = Math.round(clamp(dens * FACE_DIM[face] * dm, 0, 1) * RMAX);
+      if (!g) continue;
+      if (onScreen){
+        if (dBuf[idx] < t - 0.02) continue;
+        gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
+        refBuf[idx] = 0;
+        srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
+        statCells++;
+      }
+      // and what the wet street gives back
+      const ur = projRows / t;
+      const mb = 2 * horizon + 2 * cam.z * ur;
+      const rr = Math.round(mb - r + refWob[x]);
+      if (rr > hzRow && rr < rows){
+        const j = rr * cols + x;
+        if (reflects(j)){
+          const ng = (g * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+          if (ng >= 1){ gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0; statCells++; }
+        }
+      }
+    }
+  }
+}
+
+/*------------------------- plane helpers (signage) -------------------------
   A billboard turns to face you, which is why street furniture used to
   swivel as you walked past it. These are drawn the way the signs are: as
   fixed vertical planes standing in the world, intersected per column,
@@ -8011,6 +8170,27 @@ function drawBox(cx, cy, zb, lenA, lenB, hW, artSide, artEnd, sb, sd, dyn, axis,
   }
 }
 
+/* how solid each thing is: depth as a fraction of its width, and whether
+   the cross-section is rounded (bodies, poles, foliage) or square
+   (furniture, crates, machines) */
+const MODEL_DEPTH = [];
+const MODEL_BOXY = [];
+(function(){
+  const set = (k, d, b) => { MODEL_DEPTH[k] = d; MODEL_BOXY[k] = b; };
+  set(PK_LAMP, 1.0, 0);   set(PK_TREE, 1.0, 0);    set(PK_HYDR, 1.0, 0);
+  set(PK_TLIGHT, 0.9, 0); set(PK_BIN, 0.95, 0);    set(PK_RAIL, 0.5, 1);
+  set(PK_STALL, 0.8, 1);  set(PK_BENCH, 0.75, 1);  set(PK_CAM, 0.9, 1);
+  set(PK_PLAY, 0.35, 1);  set(PK_METRO, 0.8, 1);   set(PK_APPLE, 1.0, 0);
+  set(PK_TURBINE, 0.5, 0);set(PK_ITEM, 0.9, 1);    set(PK_SAKURA, 1.0, 0);
+  set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
+  set(PK_RACK, 0.6, 1);
+})();
+function propYaw(o){                          // square to the nearer roadway
+  const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
+  const dx = rx < RW ? 0 : Math.min(rx - RW, P - rx);
+  const dy = ry < RW ? 0 : Math.min(ry - RW, P - ry);
+  return dx <= dy ? 0 : Math.PI / 2;
+}
 const drawList = [];
 const HIT_SB = new Int16Array(NROLE).fill(C.nWhite);   // struck: white silhouette
 const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
@@ -8063,21 +8243,19 @@ function spritePass(){
     const it = drawList[i], o = it.o;
     if (it.k === 0){
       if (cam.riding === o) continue;
-      // a real box: the long side along its heading, the nose across it
-      const along = Math.abs(o.dx) >= Math.abs(o.dy) ? 0 : 1;
-      const ahead = along === 0 ? o.dx : o.dy;
-      const nose = ahead >= 0 ? ART.carFront : ART.carRear;
-      drawBox(o.x, o.y, o.z, o.len, o.wid, 1.55, ART.carSide, nose,
-              o.sb, o.sd, 0, along, ahead < 0);
+      // the side profile extruded across the car's own width
+      drawModel(o.x, o.y, o.z, o.len, 1.55, ART.carSide, o.sb, o.sd, 0,
+                Math.atan2(o.dy, o.dx), o.wid / o.len, 1);
     } else if (it.k === 1){
       // a struck body flashes white; a body winding up to hit you glows red
       const sbUse = o.hitT > 0 ? HIT_SB : (o.windup > 0 ? WIND_SB : o.sb);
-      const flip = (o.dx * planeX + o.dy * planeY) > 0;
+      // a body, turned the way it is walking - the legs are real posts
+      const fy = Math.atan2(o.dy, o.dx) + Math.PI / 2;
       if (o.sit){
-        drawCross(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, 0, flip);
+        drawModel(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, 0, fy, 0.85, 0);
       } else {
         const fr = o.moving && ((o.phase | 0) & 1) ? 1 : 0;
-        drawCross(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, 0, flip);
+        drawModel(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, 0, fy, 0.85, 0);
       }
     } else if (it.k === 3){
       drawSprite(o.x, o.y, o.z, 0.36, 0.32, ART.spark,
@@ -8108,8 +8286,10 @@ function spritePass(){
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      drawCross(o.x, o.y, pz, def.w, def.h,
-                def.art, def.sl.base, def.sl.dens, dyn, false);
+      if (o.yaw === undefined) o.yaw = propYaw(o);
+      const dep = MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
+      drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
+                dyn, o.yaw, dep, MODEL_BOXY[o.k] ? 1 : 0);
     }
   }
 }
