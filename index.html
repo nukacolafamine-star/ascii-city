@@ -7888,6 +7888,12 @@ function openSettingsMenu(){
         adj(d){ if (!stepRes(d)) toast('grid: already at the limit'); } },
       { label: 'MINIMAP', value: () => showMap ? 'ON' : 'OFF',
         adj(){ showMap = !showMap; } },
+      { label: 'AUTO PATH', value: () => autoPath ? 'ON' : 'OFF',
+        hint: 'the red line draws itself to each new objective; your own line wins',
+        adj(){
+          autoPath = !autoPath;
+          if (autoPath){ autoPathKey = ''; autoPathTick(); }
+        } },
       { label: 'TOUCH CONTROLS', value: () => TOUCH.on ? 'ON' : 'OFF',
         hint: 'stick to move (rim = sprint), drag to look, tap menus directly',
         adj(){
@@ -9709,6 +9715,7 @@ function checkQuests(){
     const st = QUESTS[id] && QUESTS[id].stages[s];
     if (st && st.auto && st.auto()) advanceQuest(id);
   }
+  autoPathTick();
 }
 /* the watcher pays 25 a unit, quest or no quest - the buyer scrap hints at */
 function sellScrap(){
@@ -10022,7 +10029,32 @@ let heli = null, heliT = 60, hideT = 0, swatT = 0;
   recomputed as you walk, that ends when you arrive.
 ============================================================================*/
 let waypoint = null, wayG = null, waySet = [], wayOn = false, wayT = 0;
-function setWaypoint(wx, wy){
+/* AUTO PATH. When a new objective arrives the red line draws itself to it,
+   so the first thing you do with a job is not open the map. Draw your OWN
+   line and yours wins - the automatic one stays out of the way until the
+   objective changes, at which point it takes over again. Both of those fall
+   out of keying on the objective rather than on the marker's position: the
+   line is redrawn when the job changes, not when the man you are walking
+   toward takes a step. */
+let autoPath = true, autoPathKey = '';
+function questKey(){
+  const id = player.track;
+  if (!id || typeof player.quests[id] !== 'number') return '';
+  return id + '#' + player.quests[id];
+}
+function autoPathTick(){
+  const key = questKey();
+  if (key === autoPathKey) return;             // same job, leave the line alone
+  if (!autoPath || !key){ autoPathKey = key; return; }
+  // Most jobs are handed over indoors, where there is no street to draw on.
+  // Do NOT count the objective as dealt with - hold it until you are back
+  // out, or the walk you were given the line for happens without one.
+  if (inside) return;
+  autoPathKey = key;
+  const t = questTarget();
+  if (t) setWaypoint(t.x, t.y, t.name);
+}
+function setWaypoint(wx, wy, autoName){
   // snap to the nearest walkable tile so the line has somewhere to end
   let tx = -1, ty = -1;
   outer:
@@ -10033,14 +10065,21 @@ function setWaypoint(wx, wy){
         const x = (wx | 0) + dx, y = (wy | 0) + dy;
         if (inMap(x, y) && walkG[y * MAP + x]){ tx = x; ty = y; break outer; }
       }
-  if (tx < 0){ toast('nothing to walk on there'); return false; }
+  if (tx < 0){ if (!autoName) toast('nothing to walk on there'); return false; }
   waypoint = { x: tx + 0.5, y: ty + 0.5 };
   wayT = 0;
-  toast('waypoint set - follow the red line');
+  if (autoName){
+    toast('the line draws itself to ' + autoName);
+  } else {
+    // a line of your own takes the job's place until the job changes
+    autoPathKey = questKey();
+    toast('waypoint set - follow the red line');
+  }
   sfx('ui_select', { vol: 0.5, rate: 1.2 });
   return true;
 }
 function clearWaypoint(quiet){
+  if (!quiet) autoPathKey = questKey();        // cleared on purpose: stay cleared
   waypoint = null; wayOn = false;
   if (wayG) for (const i of waySet) wayG[i] = 0;
   waySet.length = 0;
