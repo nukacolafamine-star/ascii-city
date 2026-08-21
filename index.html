@@ -388,7 +388,8 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_RAIL = 5, PK_STALL = 6, PK_BENCH = 7, PK_CAM = 8, PK_PLAY = 9,
       PK_METRO = 10, PK_APPLE = 11, PK_TURBINE = 12, PK_ITEM = 13,
       PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17, PK_RACK = 18,
-      PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22;
+      PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22,
+      PK_FLOTSAM = 23;
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -1366,7 +1367,26 @@ function buildCity(seed){
   initWorks();
   clearWaypoint(true);
   myCar = null;                                 // respawned lazily from the save
+  stampFlotsam();
   bakeSolidProps();
+}
+/* Rubbish on the water. Placed after placeProps so the street placer never
+   sees it - it reasons about pavement and would either shove these onto the
+   bank or throw them away. Sparse: a river with a raft of bottles every ten
+   metres is a landfill. */
+function stampFlotsam(){
+  for (let x = 6; x < MAP - 6; x += 3){
+    const mid = riverMid(x), hw = riverHalf(x);
+    if (hash3(x, 0, 811) > 0.22) continue;
+    const t = (hash3(x, 1, 812) - 0.5) * 1.55;          // across the channel
+    const fy = mid + t * hw;
+    const fx = x + hash3(x, 2, 813) * 2.4;
+    const ix = fx | 0, iy = fy | 0;
+    if (!inMap(ix, iy) || tType[iy * MAP + ix] !== T_WATER) continue;
+    props.push({ x: fx, y: fy, k: PK_FLOTSAM, s: hash3(x, 3, 814),
+                 r: 0.7, z: -RIVER_DEPTH,
+                 fix: hash3(x, 4, 815) * Math.PI * 2 });
+  }
 }
 
 /* The special weapons are not for sale. They are LEFT places - tucked behind
@@ -1454,6 +1474,7 @@ const MODEL_FOOT = [];
   f(PK_HYDR, 0.9);        f(PK_CAM, 0.9);       f(PK_ITEM, 0.7);
   f(PK_RAIL, 0.95);       f(PK_CROP, 0.9);
   f(PK_HOOP, 1.9, 1.0);   f(PK_SWING, 3.4, 1.8); f(PK_CLIMB, 3.0, 3.0);
+  f(PK_FLOTSAM, 2.1, 2.1);
 })();
 /* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
    generators scatter by per-tile chance, which clumps. Minimum gap between
@@ -2391,6 +2412,117 @@ function climbArt(){
   };
   return { w: 16, h: 16, data: new Uint8Array(16 * 16), vol };
 }
+/*---------------------- what the river is carrying --------------------------
+  The water used to sprinkle single cells of random neon through itself to
+  suggest rubbish. At one glyph apiece they read as coloured squares, because
+  that is what they were. These are four actual solids drifting half sunk: a
+  pallet, an oil drum on its side, a raft of bottles and cans knotted into a
+  slick, and a tyre. Each is authored to sit with its waterline about a third
+  of the way up, so the river cuts across it.
+============================================================================*/
+function flotArt(w, h, vol){ return { w, h, data: new Uint8Array(w * h), vol }; }
+// a shipping pallet, slats gone grey, riding almost flat
+function palletArt(){
+  return flotArt(16, 8, function(aw, vd, ah){
+    const K = ROLE.K, M = ROLE.M;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x >= 0 && y >= 0 && z >= 0 && x < aw && y < vd && z < ah)
+        out[(z * vd + y) * aw + x] = r;
+    };
+    const zTop = (ah * 0.34) | 0, zBot = (ah * 0.62) | 0;
+    for (let x = 0; x < aw; x++)
+      for (let y = 0; y < vd; y++){
+        if ((x % 3) !== 2) set(x, y, zTop, K);          // top slats, gapped
+        if ((x % 3) !== 2) set(x, y, zTop + 1, K);
+      }
+    for (let x = 0; x < aw; x++)                        // the two bearers
+      for (const y of [1, (vd >> 1), vd - 2])
+        for (let z = zTop + 2; z <= zBot; z++) set(x, y, z, M);
+    return out;
+  });
+}
+// an oil drum on its side, one end open to the sky
+function drumArt(){
+  return flotArt(12, 12, function(aw, vd, ah){
+    const M = ROLE.M, X = ROLE.X, K = ROLE.K;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x >= 0 && y >= 0 && z >= 0 && x < aw && y < vd && z < ah)
+        out[(z * vd + y) * aw + x] = r;
+    };
+    const cy = (vd - 1) / 2, cz = ah * 0.46, rad = Math.min(vd, ah) * 0.34;
+    for (let x = 1; x < aw - 1; x++)
+      for (let y = 0; y < vd; y++)
+        for (let z = 0; z < ah; z++){
+          const dy = y + 0.5 - cy, dz = z + 0.5 - cz;
+          const d = Math.sqrt(dy * dy + dz * dz);
+          if (d > rad) continue;
+          const rib = (x % 4) === 1;                    // rolling hoops
+          set(x, y, z, d > rad - 1.1 ? (rib ? K : M) : (x < 2 ? K : M));
+        }
+    for (let y = 0; y < vd; y++)                        // a band of old paint
+      for (let z = 0; z < ah; z++){
+        const dy = y + 0.5 - cy, dz = z + 0.5 - cz;
+        if (Math.sqrt(dy * dy + dz * dz) <= rad && dz < -rad * 0.25){
+          set((aw >> 1) - 1, y, z, X); set(aw >> 1, y, z, X);
+        }
+      }
+    return out;
+  });
+}
+// bottles and cans knotted together in a slick of film
+function slickArt(){
+  return flotArt(14, 14, function(aw, vd, ah){
+    const W = ROLE.W, X = ROLE.X, K = ROLE.K;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x >= 0 && y >= 0 && z >= 0 && x < aw && y < vd && z < ah)
+        out[(z * vd + y) * aw + x] = r;
+    };
+    const zSurf = (ah * 0.52) | 0;
+    const cx = (aw - 1) / 2, cy = (vd - 1) / 2;
+    for (let y = 0; y < vd; y++)                        // the film it all sits in
+      for (let x = 0; x < aw; x++){
+        const dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy > (aw * 0.46) * (aw * 0.46)) continue;
+        if (((x * 5 + y * 3) & 3) === 0) continue;      // ragged at the edges
+        set(x, y, zSurf, K); set(x, y, zSurf + 1, K);
+      }
+    // bottles: short capsules lying on the film, cans between them
+    const put = (bx, by, len, role) => {
+      for (let i = 0; i < len; i++)
+        for (let z = zSurf - 2; z <= zSurf; z++){
+          set(bx + i, by, z, role); set(bx + i, by + 1, z, role);
+        }
+    };
+    put(2, 3, 5, W); put(7, 6, 4, X); put(3, 9, 6, W);
+    put(8, 2, 3, X); put(5, 11, 4, W);
+    return out;
+  });
+}
+// a tyre, half of it under
+function tyreArt(){
+  return flotArt(12, 12, function(aw, vd, ah){
+    const T = ROLE.T;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x >= 0 && y >= 0 && z >= 0 && x < aw && y < vd && z < ah)
+        out[(z * vd + y) * aw + x] = r;
+    };
+    const cx = (aw - 1) / 2, cy = (vd - 1) / 2, cz = (ah * 0.5) | 0;
+    const R = aw * 0.40, r2 = aw * 0.15;
+    for (let x = 0; x < aw; x++)
+      for (let y = 0; y < vd; y++)
+        for (let z = 0; z < ah; z++){
+          const dx = x + 0.5 - cx, dz = z + 0.5 - cz;
+          const ring = Math.sqrt(dx * dx + dz * dz) - R;
+          const dy = y + 0.5 - cy;
+          if (ring * ring + dy * dy <= r2 * r2) set(x, y, z, T);
+        }
+    return out;
+  });
+}
 function benchArt(){
   const vol = function(aw, vd, ah){
     const H = 0.95;                             // world height of the grid
@@ -2545,6 +2677,21 @@ PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
                      sl: slots({ M: [C.rail, 0.6], S: [C.nMag, 0.85],
                                  W: [C.nWhite, 0.8], P: [C.nViolet, 0.8] }) };
 // playground equipment: authored volumes, so they read from every angle
+ART.pallet = palletArt(); ART.drum = drumArt();
+ART.slick  = slickArt();  ART.tyre = tyreArt();
+/* Everything the river carries, on one kind - the variant comes off the
+   prop's own seed the way the market carts pick theirs. */
+const FLOTSAM = [
+  { art: ART.pallet, w: 1.9, h: 0.9, dep: 0.52,
+    sl: slots({ K: [C.deckOld, 0.72], M: [C.trunk, 0.8] }) },
+  { art: ART.drum,   w: 1.5, h: 1.5, dep: 1.0,
+    sl: slots({ M: [C.rail, 0.78], K: [C.tire, 0.85], X: [C.hydr, 0.9] }) },
+  { art: ART.slick,  w: 2.1, h: 0.7, dep: 1.0,
+    sl: slots({ K: [C.dataDk, 0.55], W: [C.nWhite, 0.7], X: [C.nGreen, 0.72] }) },
+  { art: ART.tyre,   w: 1.3, h: 1.3, dep: 0.42,
+    sl: slots({ T: [C.tire, 0.9] }) }
+];
+PROPDEF[PK_FLOTSAM] = FLOTSAM[0];
 PROPDEF[PK_HOOP]  = { art: ART.hoop,  w: 1.9, h: 3.4, dep: 0.85,
                       sl: slots({ M: [C.rail, 0.72], W: [C.nWhite, 0.92],
                                   X: [C.tlAmb, 1.0] }) };
@@ -12829,8 +12976,11 @@ function waterShade(wx, wy){
            + 0.55 * Math.sin(band * 3.7 - worldTime * 1.55);
   _wb = w1 > 0.45 ? C.water : C.waterD;
   _wd = 0.23 + w1 * 0.10;
+  // a thread of neon off the banks, caught on the ripple - a tint on the
+  // water rather than the lone coloured cells that used to stand in for
+  // rubbish. The rubbish is solid now and floats on top.
   const gl = hash3((wx * 1.7) | 0, (wy * 1.7) | 0, 61);
-  if (gl > 0.952){ _wb = NEONC[(gl * 887) % NEONC.length | 0]; _wd = 0.52; }
+  if (gl > 0.984){ _wd += 0.14; }
   _wwet = 2;                                  // water always reflects
 }
 function floorSample(wx, wy, ix, iy){
@@ -13753,7 +13903,15 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
   set(PK_HOOP, 0.45, 0);  set(PK_SWING, 0.16, 0); set(PK_CLIMB, 0.33, 0);
+  set(PK_FLOTSAM, 1.0, 0);
 })();
+/* How far a kind is worth marching at all. Small debris is sub-cell long
+   before the general 170-tile cut-off, and a river is a straight corridor a
+   kilometre long, so this bounds what a view down it can queue up. Measured
+   in one page with the rubbish switched in and out, it costs about nothing
+   either way - this is a ceiling, not a rescue. */
+const MODEL_FAR = [];
+MODEL_FAR[PK_FLOTSAM] = 95;
 /* How a cart stands: backed up against a building, counter looking out over
    the street at the frontage on the far side. That is what a real pitch is -
    you put your back to a wall so nobody comes round it, and you face the
@@ -13914,7 +14072,7 @@ function spritePass(){
     // renders is leaves directly overhead.
     const pw = (PROPDEF[p.k] && PROPDEF[p.k].w) || 1;
     const nearR = pw <= 2.6 ? -(pw * 0.5 + 0.3) : 0.15;
-    if (f < nearR || f > MD || f > 170) continue;
+    if (f < nearR || f > MD || f > (MODEL_FAR[p.k] || 170)) continue;
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + Math.min(pw * 0.6, 3)) continue;
     drawList.push({ d: f, k: 2, o: p });
   }
@@ -13970,10 +14128,16 @@ function spritePass(){
         if (idf) def = idf;                     // every item is its own solid
       } else if (o.k === PK_FURN){
         def = FURN_DEF[o.fid] || PROPDEF[PK_BIN];
+      } else if (o.k === PK_FLOTSAM){
+        def = FLOTSAM[(o.s * FLOTSAM.length) | 0] || FLOTSAM[0];
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
-                 (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      if (o.yaw === undefined) o.yaw = propFacing(o);
+                 (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0) +
+                 // and rubbish rides the swell it is sitting in
+                 (o.k === PK_FLOTSAM
+                    ? Math.sin(worldTime * 0.75 + o.x * 0.6 + o.y * 0.3) * 0.075 : 0);
+      if (o.k === PK_FLOTSAM) o.yaw = (o.fix || 0) + worldTime * (0.05 + o.s * 0.07);
+      else if (o.yaw === undefined) o.yaw = propFacing(o);
       const dep = def.dep !== undefined ? def.dep
                 : MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
       drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
