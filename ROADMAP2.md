@@ -24,10 +24,13 @@ Small, unblocking, or restructuring work that later phases hook into.
   CONTROLS (the old keys text), SETTINGS (bloom, char grid, minimap,
   touch), SOUNDS (all volume sliders), SAVES (save/load/new city), DEBUG
   (nearest landmark, substances, on-foot/skate flag, clock, weather).
-- [ ] **A4. Item voxel models.** A small voxel volume per ITEMS entry
-  (or per item family: food carton, bottle, syringe, tool, garment,
-  weapon) replacing the flat PK_ITEM card on the ground and in shop
-  displays. Reuse the stallVolume authored-volume path.
+- [ ] **A4. Item voxel models — one per item, no sharing.** Every single
+  ITEMS entry gets its own authored voxel volume (~40 of them): the cup
+  noodles is a cup with a lid and steam, the cola a can, the pistol a
+  pistol, each garment its own folded shape, each tool its own silhouette.
+  Replaces the flat PK_ITEM card on the ground and in shop displays.
+  Reuses the stallVolume authored-volume path. NOT a quick win — this is
+  a full art pass and each model gets verified in-engine.
 
 ## Phase B — world fabric
 Content infrastructure that the venues and the main quest consume.
