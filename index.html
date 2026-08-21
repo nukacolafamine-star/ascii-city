@@ -561,10 +561,18 @@ function carveBridge(k, worn){
     yBot = Math.max(yBot, Math.ceil(mid + hw) + 3);
   }
   const wx0 = worn ? x0 + 2 : x0, wx1 = worn ? x1 - 2 : x1;
+  /* Lay the whole deck. This used to convert only the tiles that were WATER
+     once it was two rows past the abutment, and the river MEANDERS - so the
+     span between the end of the approach and the water's edge at that column
+     stayed as street, and the deck came and went along its own length:
+     street, bridge, street, bridge, with a staircase of an edge where it met
+     the bank. Six transitions down every column where there should be two.
+     A bridge is a straight thing between two straight abutments; the ground
+     under the middle of it is nobody's business. Buildings are placed long
+     after this runs, so there is nothing here to pave over but road. */
   for (let y = Math.max(0, yTop); y <= Math.min(MAP - 1, yBot); y++)
     for (let x = Math.max(0, wx0); x <= Math.min(MAP - 1, wx1); x++){
       const id = y * MAP + x;
-      if (tType[id] !== T_WATER && tType[id] !== T_BRIDGE && y > yTop + 1 && y < yBot - 1) continue;
       tType[id] = T_BRIDGE; tH[id] = 0; tB[id] = -1;
     }
   // railings down both edges, and lamps along the primary deck
