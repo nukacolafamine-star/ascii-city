@@ -1291,6 +1291,36 @@ function deoverlapProps(){
       }
     return false;
   };
+  // Doorways stay walkable. A cart is three metres wide and will wall off an
+  // entrance its centre never comes near, so this is measured against the
+  // model's real footprint rather than the little collision circle.
+  const dbuck = new Map();
+  for (const d of doors)
+    for (let step = 0; step <= 1; step++){
+      const dx = d.x + d.nx * step, dy = d.y + d.ny * step;
+      const k = bkey(dx, dy);
+      let a = dbuck.get(k); if (!a) dbuck.set(k, a = []);
+      a.push(dx); a.push(dy);
+    }
+  // reach of the thing as the player will actually feel it: a cart's far
+  // corner, or a post's collision circle plus a body's width
+  const footOf = q => q.k === PK_STALL
+    ? Math.hypot(STALL_W, STALL_D) * 0.5 + 0.45
+    : Math.max(clearOf(q), (q.r || 0.3) + 0.4);
+  const blocksDoor = (q, x, y) => {
+    const F = footOf(q), F2 = F * F;
+    const bx = (x / CELL) | 0, by = (y / CELL) | 0;
+    for (let jy = -1; jy <= 1; jy++)
+      for (let jx = -1; jx <= 1; jx++){
+        const a = dbuck.get((by + jy) * STRIDE + (bx + jx));
+        if (!a) continue;
+        for (let i = 0; i < a.length; i += 2){
+          const dx = a[i] - x, dy = a[i + 1] - y;
+          if (dx * dx + dy * dy < F2) return true;
+        }
+      }
+    return false;
+  };
   const rank = {};
   for (let i = 0; i < CLEAR_ORDER.length; i++) rank[CLEAR_ORDER[i]] = i;
   const order = props.slice().sort((a, b) =>
@@ -1300,7 +1330,9 @@ function deoverlapProps(){
   let moved = 0, dropped = 0;
   for (const q of order){
     const R = clearOf(q);
-    if (!clashAt(q, q.x, q.y, R)){ keep.push(q); put(q); continue; }
+    if (!clashAt(q, q.x, q.y, R) && !blocksDoor(q, q.x, q.y)){
+      keep.push(q); put(q); continue;
+    }
     if (pinned[q.k]){ keep.push(q); put(q); continue; }   // these hold their ground
     let placed = false;
     for (let ring = 1; ring <= 3 && !placed; ring++){
@@ -1311,7 +1343,7 @@ function deoverlapProps(){
         const ix = nx | 0, iy = ny | 0;
         if (!inMap(ix, iy)) continue;
         if (tType[iy * MAP + ix] !== tType[(q.y | 0) * MAP + (q.x | 0)]) continue;
-        if (clashAt(q, nx, ny, R)) continue;
+        if (clashAt(q, nx, ny, R) || blocksDoor(q, nx, ny)) continue;
         q.x = nx; q.y = ny; placed = true; moved++;
         break;
       }
@@ -1706,6 +1738,8 @@ const ART = {
   flat art uses, so the colour slots and the neon `dyn` channel carry over.
 ============================================================================*/
 const STALL_H = 3.4, STALL_W = 3.0;    // tall enough to stand a cook up in
+const STALL_DEPTH = 0.85;              // depth as a fraction of the frontage
+const STALL_D = STALL_W * STALL_DEPTH; // ... and in world units, for collision
 function stallVolume(sp){
   const roof = ROLE[sp.roof], trim = ROLE[sp.trim], sign = ROLE[sp.sign],
         ctr = ROLE[sp.counter], front = ROLE[sp.front], back = ROLE[sp.back],
@@ -2047,8 +2081,13 @@ function stallTile(nx, ny){
     if (d < bd && d < 90){ bd = d; st = c; }
   }
   if (!st) return null;
+  // out in front of the counter - inside the cart is the cook's business
+  if (st.yaw === undefined) st.yaw = stallYaw(st);
+  const fx = Math.sin(st.yaw), fy = -Math.cos(st.yaw);
   for (let t = 0; t < 12; t++){
-    const x = (st.x + rr(-2.5, 2.5)) | 0, y = (st.y + rr(-2.5, 2.5)) | 0;
+    const out = 1.8 + rr(0, 1.8), side = rr(-1.6, 1.6);
+    const x = (st.x + fx * out - fy * side) | 0;
+    const y = (st.y + fy * out + fx * side) | 0;
     if (inMap(x, y) && walkG[y * MAP + x]) return [x, y];
   }
   return null;
@@ -3066,11 +3105,21 @@ function tileBlocked(x, y, rad){
   return false;
 }
 function propBlocked(x, y, rad){
-  const near = gridQuery(propGrid, x, y, 3, _q1);
+  const near = gridQuery(propGrid, x, y, 3.2, _q1);
   for (let i = 0; i < near.length; i++){
     const p = near[i];
     if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;
     if (grind && (p.k === PK_RAIL || p.k === PK_BENCH)) continue;   // walk-through kinds
+    if (p.k === PK_STALL){
+      // A cart is a box three metres across, not a post. A circle round its
+      // middle left both wings open and you walked straight through them.
+      if (p.yaw === undefined) p.yaw = stallYaw(p);
+      const c = Math.cos(p.yaw), sn = Math.sin(p.yaw);
+      const ex = x - p.x, ey = y - p.y;
+      if (Math.abs(ex * c + ey * sn) < STALL_W * 0.5 + rad &&
+          Math.abs(ey * c - ex * sn) < STALL_D * 0.5 + rad) return true;
+      continue;
+    }
     const dx = x - p.x, dy = y - p.y, rr2 = (rad + p.r) * (rad + p.r);
     if (dx * dx + dy * dy < rr2) return true;
   }
@@ -8411,24 +8460,29 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   const set = (k, d, b) => { MODEL_DEPTH[k] = d; MODEL_BOXY[k] = b; };
   set(PK_LAMP, 1.0, 0);   set(PK_TREE, 1.0, 0);    set(PK_HYDR, 1.0, 0);
   set(PK_TLIGHT, 0.9, 0); set(PK_BIN, 0.95, 0);    set(PK_RAIL, 0.5, 1);
-  set(PK_STALL, 0.85, 1);  set(PK_BENCH, 0.75, 1);  set(PK_CAM, 0.9, 1);
+  set(PK_STALL, STALL_DEPTH, 1);  set(PK_BENCH, 0.75, 1);  set(PK_CAM, 0.9, 1);
   set(PK_PLAY, 0.35, 1);  set(PK_METRO, 0.8, 1);   set(PK_APPLE, 1.0, 0);
   set(PK_TURBINE, 0.5, 0);set(PK_ITEM, 0.9, 1);    set(PK_SAKURA, 1.0, 0);
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
   MODEL_TURN[PK_BENCH] = Math.PI / 2;         // benches run along the kerb
 })();
-/* Which way a stall faces: out over the pavement, where the customers are.
-   Stalls are planted on the old kerb line, so one neighbour is roadway and
-   another is footway - the footway side is the front. */
+/* Which way a stall faces: its counter opens onto the nearest carriageway,
+   which is where the crowd is - the old roads are paving now and people walk
+   the full width of them. Read the map first, since that is the ground truth
+   about where the tarmac actually is; fall back to the block grid for a cart
+   that cannot see a road from where it stands. */
 function stallYaw(o){
   const gx = o.x | 0, gy = o.y | 0;
-  let fx = 0, fy = 0;
-  for (let d = 0; d < 4; d++){
-    const q = tileAt(gx + DIRV[d][0], gy + DIRV[d][1]);
-    if (q === T_WALK){ fx = DIRV[d][0]; fy = DIRV[d][1]; break; }
-  }
-  if (!fx && !fy){                              // no kerb: face the nearer road
+  let fx = 0, fy = 0, near = 99;
+  for (let d = 0; d < 4; d++)
+    for (let step = 1; step <= 4; step++){
+      const q = tileAt(gx + DIRV[d][0] * step, gy + DIRV[d][1] * step);
+      if (q !== T_ROAD && q !== T_CROSS) continue;
+      if (step < near){ near = step; fx = DIRV[d][0]; fy = DIRV[d][1]; }
+      break;                                    // nearest road this way; move on
+    }
+  if (!fx && !fy){                              // out of sight of one: use the grid
     const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
     const xn = rx - RW, xp = P - rx, yn = ry - RW, yp = P - ry;
     if (Math.min(xn, xp) <= Math.min(yn, yp)) fx = xn <= xp ? -1 : 1;
