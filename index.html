@@ -7940,11 +7940,19 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   let c0 = Math.floor(ccC - halfC) - 1, c1 = Math.ceil(ccC + halfC) + 1;
   if (c1 < 0 || c0 >= cols) return;
   if (c0 < 0) c0 = 0; if (c1 > cols - 1) c1 = cols - 1;
-  let r0 = Math.floor(horizon + (cam.z - zb - hW) * projRows / tNear) - 1;
-  let r1 = Math.ceil(horizon + (cam.z - zb) * projRows / tNear) + 1;
+  // a solid below eye level shows its top at its FAR edge and its base at
+  // its near one, so the row span has to cover both ends of its depth
+  const tFar = tC + rad;
+  const eTop = cam.z - zb - hW, eBot = cam.z - zb;
+  const rA = horizon + eTop * projRows / tNear, rB = horizon + eTop * projRows / tFar;
+  const rC = horizon + eBot * projRows / tNear, rD = horizon + eBot * projRows / tFar;
+  let r0 = Math.floor(Math.min(rA, rB, rC, rD)) - 1;
+  let r1 = Math.ceil(Math.max(rA, rB, rC, rD)) + 1;
   if (r1 < -rows || r0 >= rows) return;
   if (r0 < -rows) r0 = -rows; if (r1 > rows - 1) r1 = rows - 1;
-  if ((c1 - c0 + 1) * (r1 - r0 + 1) > 40000) return;   // never stall a frame
+  // a close, tall solid can cover the screen; drop its reflection rows
+  // rather than dropping the solid itself
+  if ((c1 - c0 + 1) * (r1 - r0 + 1) > 40000 && r0 < 0) r0 = 0;
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
   // camera in the solid's own frame
   const ex = cam.x - ox, ey = cam.y - oy;
@@ -8175,6 +8183,7 @@ function drawBox(cx, cy, zb, lenA, lenB, hW, artSide, artEnd, sb, sd, dyn, axis,
    (furniture, crates, machines) */
 const MODEL_DEPTH = [];
 const MODEL_BOXY = [];
+const MODEL_TURN = [];                        // extra quarter turns, per kind
 (function(){
   const set = (k, d, b) => { MODEL_DEPTH[k] = d; MODEL_BOXY[k] = b; };
   set(PK_LAMP, 1.0, 0);   set(PK_TREE, 1.0, 0);    set(PK_HYDR, 1.0, 0);
@@ -8184,6 +8193,7 @@ const MODEL_BOXY = [];
   set(PK_TURBINE, 0.5, 0);set(PK_ITEM, 0.9, 1);    set(PK_SAKURA, 1.0, 0);
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
+  MODEL_TURN[PK_BENCH] = Math.PI / 2;         // benches run along the kerb
 })();
 function propYaw(o){                          // square to the nearer roadway
   const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
@@ -8286,7 +8296,7 @@ function spritePass(){
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      if (o.yaw === undefined) o.yaw = propYaw(o);
+      if (o.yaw === undefined) o.yaw = propYaw(o) + (MODEL_TURN[o.k] || 0);
       const dep = MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
       drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
                 dyn, o.yaw, dep, MODEL_BOXY[o.k] ? 1 : 0);
