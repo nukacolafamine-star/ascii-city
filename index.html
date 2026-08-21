@@ -4223,39 +4223,142 @@ function buildInterior(bld, door, floor){
     const sp = clearSpot(x, y);
     return spawnActor(kind2, sp[0], sp[1], o);
   };
-  if (kind === 'office'){                           // desks in partitioned rows
-    for (let y = IOY + 2; y < IOY + rh - 2; y += 3){
-      for (let x = IOX + 1; x < IOX + rw - 3; x++)
-        if ((x - IOX) % 4 !== 0) lowWall(x, y);
-      furn(IOX + 2.5, y + 1.5, 'desk');
-      if (rnd() < 0.6) furn(IOX + 3.6, y + 1.5, 'chairx', 0);
-      if (rw > 9 && rnd() < 0.7) furn(IOX + rw - 2.5, y + 1.5, 'terminal');
+  /* Furniture wants its back to something. A fridge, a shelf, a wardrobe, a
+     couch - none of them are placed in the middle of a floor by anybody who
+     lives there. `wall` takes a side and a position along it, works out the
+     inset from the piece's OWN depth so it sits flush, and turns it to face
+     the room. `mid` is for the few things that genuinely belong out in the
+     open: a table, a rack, a stack of crates.
+       t runs 0..1 along the wall; both refuse a spot that is already taken,
+     and the south wall refuses the strip in front of the door. */
+  const WALL_YAW = { n: Math.PI, s: 0, w: Math.PI / 2, e: -Math.PI / 2 };
+  const WALL_FWD = { n: [0, 1], s: [0, -1], w: [1, 0], e: [-1, 0] };
+  const floorAt = (x, y) => inMap(x | 0, y | 0) && !!S.walkG[(y | 0) * MAP + (x | 0)];
+  /* furnFree asks whether a POINT is clear, which is the right question for
+     standing somebody up and the wrong one for setting a wardrobe down: a
+     two-metre piece placed half a metre from its neighbour passes it and
+     then overlaps. This measures both boxes. */
+  const fBox = (fid, yaw) => {
+    const F = FURN_DEF[fid];
+    const turned = Math.abs(Math.round((yaw || 0) / (Math.PI / 2))) % 2;
+    return turned ? [F.w * F.dep, F.w] : [F.w, F.w * F.dep];
+  };
+  const boxFree = (x, y, fid, yaw) => {
+    const a = fBox(fid, yaw);
+    for (const q of ip){
+      if (q.k !== PK_FURN) continue;
+      const b = fBox(q.fid, q.yaw);
+      if (Math.abs(x - q.x) < (a[0] + b[0]) * 0.5 + 0.15 &&
+          Math.abs(y - q.y) < (a[1] + b[1]) * 0.5 + 0.15) return false;
     }
-    furn(IOX + 1.5, IOY + 1.5, 'cabinet');
-    if (rnd() < 0.6) furn(IOX + rw - 2.5, IOY + rh - 1.6, 'cooler');
-    if (rnd() < 0.5) furn(IOX + 1.6, IOY + rh - 1.6, 'planter');
-    if (rnd() < 0.4) furn(IOX + (rw >> 1) + 0.5, IOY + 1.4, 'copier');
-    if (rnd() < 0.35) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 1.5, 'holoboard', 0);
+    return true;
+  };
+  const wallAt = (side, t, fid) => {
+    const F = FURN_DEF[fid];
+    if (!F) return false;
+    const half = F.w * F.dep * 0.5 + 0.16;
+    const spanX = Math.max(0.1, rw - 1.6), spanY = Math.max(0.1, rh - 1.6);
+    let x, y;
+    if (side === 'n'){ x = IOX + 0.8 + t * spanX; y = IOY + half; }
+    else if (side === 's'){ x = IOX + 0.8 + t * spanX; y = IOY + rh - half; }
+    else if (side === 'w'){ x = IOX + half;      y = IOY + 0.8 + t * spanY; }
+    else               { x = IOX + rw - half;    y = IOY + 0.8 + t * spanY; }
+    if (side === 's' && Math.abs(x - (doorX + 0.5)) < 1.7) return false;
+    if (!boxFree(x, y, fid, WALL_YAW[side]) || !floorAt(x, y)) return false;
+    // It has to stand on real floor AND have somewhere to face. A shelf half
+    // inside the shop counter, or a bed nose to nose with a cubicle divider,
+    // is not furniture - it is a mistake with a model. Check the whole strip
+    // in front of it, not one point past the far side of the obstruction.
+    const f = WALL_FWD[side];
+    for (let r = 0.55; r <= half + 0.8; r += 0.5)
+      if (!floorAt(x + f[0] * r, y + f[1] * r)) return false;
+    furn(x, y, fid, WALL_YAW[side]);
+    ip[ip.length - 1].set = 1;                  // put here on purpose
+    return true;
+  };
+  /* Slide along the wall for a spot that works rather than dropping the
+     piece: a flat with no bed in it is worse than a bed a metre over. */
+  const wall = (side, t, fid) => {
+    for (let k = 0; k < 8; k++){
+      const off = ((k + 1) >> 1) * 0.13 * (k % 2 ? -1 : 1);
+      const tt = clamp(t + off, 0.02, 0.98);
+      if (wallAt(side, tt, fid)) return true;
+    }
+    return false;
+  };
+  const mid = (tx, ty, fid, yaw) => {
+    const x = IOX + 0.9 + tx * Math.max(0.1, rw - 1.8);
+    const y = IOY + 0.9 + ty * Math.max(0.1, rh - 1.8);
+    if (Math.abs(x - (doorX + 0.5)) < 1.4 && y > IOY + rh - 2.6) return false;
+    if (!boxFree(x, y, fid, yaw === undefined ? Math.PI : yaw) || !floorAt(x, y))
+      return false;
+    furn(x, y, fid, yaw === undefined ? Math.PI : yaw);
+    ip[ip.length - 1].set = 1;
+    return true;
+  };
+  // a bin belongs beside something, not in rows. Two to a room, ever.
+  let binsLeft = 2;
+  const bin = (x, y) => {
+    if (binsLeft <= 0) return false;
+    if (!furnFree(x, y)) return false;
+    binsLeft--;
+    ip.push({ x, y, k: PK_BIN, s: rnd(), r: 0.32 });
+    return true;
+  };
+  if (kind === 'office'){
+    /* An office floor: filing and plant against the walls where nobody has
+       to walk round them, the desks in partitioned rows down the middle,
+       each desk facing its own aisle with its chair pulled in behind it. */
+    for (let y = IOY + 3; y < IOY + rh - 2; y += 3){
+      for (let x = IOX + 3; x < IOX + rw - 3; x++)
+        if ((x - IOX) % 4 !== 0) lowWall(x, y);
+      // the desk sits south of its partition, looking down the aisle
+      furn(IOX + 3.6, y + 1.4, 'desk', 0);
+      // the chair is pulled in on the near side, looking AT the desk
+      if (rnd() < 0.7) furn(IOX + 3.6, y + 2.35, 'chairx', 0);
+      if (rw > 11 && rnd() < 0.7) furn(IOX + rw - 4.2, y + 1.4, 'terminal', 0);
+    }
+    wall('w', 0.12, 'cabinet');
+    if (rnd() < 0.7) wall('w', 0.42, 'cabinet');
+    if (rnd() < 0.6) wall('e', 0.80, 'cooler');
+    if (rnd() < 0.6) wall('w', 0.80, 'planter');
+    if (rnd() < 0.5) wall('n', 0.62, 'copier');
+    if (rnd() < 0.45) wall('n', 0.30, 'holoboard');
+    if (rnd() < 0.4) wall('e', 0.20, 'servcab');
+    if (rnd() < 0.3) bin(IOX + 3.0, IOY + rh - 1.6);
     if (rnd() < 0.25) dropItem(IOX + 1.5, IOY + rh - 1.5, 0, 'medkit');
-  } else if (kind === 'apts'){                      // a corridor of doors
+  } else if (kind === 'apts'){
+    /* A flat, laid out the way a flat is: the bed in a corner against two
+       walls, the couch against the opposite wall with the television facing
+       it across the room, the kitchen along one end, and a lamp in the
+       corner nobody uses. */
     const cx2 = IOX + (rw >> 1);
     for (let y = IOY + 1; y < IOY + rh - 1; y++){
       if ((y - IOY) % 3 === 0) continue;            // gaps read as doorways
       if (cx2 - 2 > IOX) lowWall(cx2 - 2, y);
       if (cx2 + 2 < IOX + rw - 1) lowWall(cx2 + 2, y);
     }
-    // somebody lives here: a bed against one wall, a sofa against the other
-    furn(IOX + 1.4, IOY + 1.6, 'bed', Math.PI / 2);
-    if (rw > 8) furn(IOX + rw - 1.5, IOY + rh - 2.2, 'sofa', -Math.PI / 2);
-    if (rnd() < 0.6) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
+    wall('w', 0.10, 'bed');
+    if (rw > 8) wall('e', 0.70, 'sofa');
+    if (rw > 8 && rnd() < 0.7) wall('w', 0.70, 'tvunit');
+    if (rnd() < 0.7) wall('n', 0.78, 'kitchenette');
+    if (rnd() < 0.6) wall('e', 0.14, 'floorlamp');
+    if (rnd() < 0.5) wall('n', 0.20, 'cabinet');
+    if (rnd() < 0.35) bin(IOX + rw - 1.5, IOY + rh - 1.6);
     if (rnd() < 0.3) dropItem(IOX + rw - 1.4, IOY + rh - 1.6, 0, 'medkit');
-  } else if (kind === 'storage'){                   // deep stacks, good salvage
-    for (let y = IOY + 1; y < IOY + rh - 1; y += 2)
-      for (let x = IOX + 1; x < IOX + rw - 1; x += 2)
-        if (rnd() < 0.5) ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
-    furn(IOX + 1.6, IOY + rh - 2.0, 'cratepile');
-    if (rnd() < 0.6) furn(IOX + rw - 2.2, IOY + rh - 2.0, 'pipestack', 0);
-    if (rnd() < 0.4) furn(IOX + (rw >> 1) + 0.5, IOY + 1.6, 'generator');
+  } else if (kind === 'storage'){
+    /* Deep stacks. This used to be a chequerboard of wheelie bins - six of
+       them in a room, on a grid, like a car park. A store room is racking
+       down both long walls and freight stacked in the middle of the floor. */
+    for (let t = 0.10; t < 0.95; t += 0.24){
+      wall('w', t, 'shelfunit');
+      if (rw > 8) wall('e', t, 'shelfunit');
+    }
+    mid(0.5, 0.30, 'cratepile', 0);
+    if (rnd() < 0.7) mid(0.5, 0.62, 'cratepile', Math.PI);
+    if (rnd() < 0.6) wall('n', 0.5, 'pipestack');
+    if (rnd() < 0.4) wall('s', 0.16, 'generator');
+    if (rnd() < 0.5) bin(IOX + 1.6, IOY + rh - 1.6);
     dropItem(IOX + 1.5, IOY + 1.5, 0, 'scrap');
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + rh - 1.5, 0, 'scrap');
     if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + 2.5, 0, 'ammo', 4);   // clear of the stair corner
@@ -4282,8 +4385,8 @@ function buildInterior(bld, door, floor){
       for (let x = IOX + 2; x < IOX + rw - 2; x += 3)
         if (Math.abs(x - doorX) > 1)
           ip.push({ x: x + 0.5, y: ry2, k: PK_RACK, s: rnd(), r: 0.45 });
-      furn(IOX + 1.4, IOY + 3.5, 'mannequin');      // the silent staff
-      if (rw > 8) furn(IOX + rw - 1.5, IOY + 3.5, 'mannequin');
+      wall('w', 0.26, 'mannequin');                 // the silent staff
+      if (rw > 8) wall('e', 0.26, 'mannequin');
       if (stk[3]) dropItem(IOX + 1.5, IOY + rh - 2.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
     } else if (trade === 'jeweler'){                // glass cases mid-room
       const cx2 = IOX + (rw >> 1);
@@ -4295,67 +4398,69 @@ function buildInterior(bld, door, floor){
         dropItem(cx2 + 0.5, caseYs[0] + 0.5, 1.1, stk[2], 1, ITEMS[stk[2]].price);
       if (stk[3] && caseYs[2] !== undefined)
         dropItem(cx2 + 0.5, caseYs[2] + 0.5, 1.1, stk[3], 1, ITEMS[stk[3]].price);
-      furn(IOX + 1.4, IOY + 4.0, 'displaycase', Math.PI / 2);   // the lit glass
+      wall('w', 0.32, 'displaycase');               // the lit glass
     } else if (trade === 'armory'){                 // a cage splits the room
       const gy = IOY + 5;
       if (gy < IOY + rh - 2){
         for (let x = IOX + 1; x <= IOX + rw - 2; x++)
           if (x !== IOX + 2) caseTile(x, gy);
-        for (let x = IOX + 3; x < IOX + rw - 2; x += 3)
-          if (rnd() < 0.8) ip.push({ x: x + 0.5, y: gy + 1.6, k: PK_BIN, s: rnd(), r: 0.32 });
-        furn(IOX + 1.5, gy + 2.0, 'gunlocker', Math.PI / 2);    // steel wall
+        wall('w', 0.62, 'gunlocker');           // steel wall, back to the brick
+        if (rw > 8) wall('e', 0.62, 'gunlocker');
+        if (rnd() < 0.5) wall('e', 0.90, 'workbench');
       } else {                                      // shallow room: crate wall
-        for (let x = IOX + 1; x < IOX + rw - 1; x += 2)
-          ip.push({ x: x + 0.5, y: IOY + rh - 1.6, k: PK_BIN, s: rnd(), r: 0.32 });
-        furn(IOX + 1.5, IOY + 3.6, 'gunlocker', Math.PI / 2);
+        wall('s', 0.24, 'gunlocker');
+        wall('w', 0.70, 'gunlocker');
       }
     } else if (trade === 'grocery' || trade === 'bodega'){   // shelf aisles
-      for (let y = IOY + 5; y < IOY + rh - 2; y += 2)
-        for (const ax of [IOX + 2, IOX + rw - 3])
-          if (rnd() < 0.6) ip.push({ x: ax + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      // aisles of shelving, not a row of wheelie bins
+      for (let t = 0.34; t < 0.95; t += 0.26){
+        wall('w', t, 'shelfunit');
+        if (rw > 8) wall('e', t, 'shelfunit');
+      }
       if (trade === 'grocery'){                     // tilted crates up front
-        furn(IOX + 2.4, IOY + 3.6, 'produce');
-        if (rw > 9) furn(IOX + rw - 2.5, IOY + 3.6, 'produce');
+        wall('w', 0.24, 'produce');
+        if (rw > 9) wall('e', 0.24, 'produce');
       } else {                                      // the humming cold wall
-        furn(IOX + rw - 1.5, IOY + Math.min(5, rh - 3) + 0.5, 'fridge', -Math.PI / 2);
-        if (rh > 9) furn(IOX + rw - 1.5, IOY + Math.min(7, rh - 2) + 0.5, 'fridge', -Math.PI / 2);
+        wall('e', 0.30, 'fridge');              // the humming cold wall
+        if (rh > 9) wall('e', 0.56, 'fridge');
       }
       // the third display joins the others ON the counter - food does not
       // sit on floors in this city any more
       if (stk[2] && t2 - t1 > 2)
         dropItem(((t1 + t2) >> 1) + 0.5, cy + 0.5, 1.1, stk[2], 1, ITEMS[stk[2]].price);
     } else if (trade === 'tools'){                  // the real work, on show
-      furn(IOX + 2.0, IOY + rh - 2.2, 'workbench');
-      for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
-        if (rnd() < 0.7) ip.push({ x: IOX + rw - 1.4, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      wall('s', 0.22, 'workbench');             // the real work, on show
+      for (let t = 0.40; t < 0.95; t += 0.26) wall('e', t, 'shelfunit');
+      if (rnd() < 0.6) wall('w', 0.55, 'shelfunit');
       if (rnd() < 0.6) dropItem(IOX + 1.5, IOY + 4.5, 0, 'battery', 2);
     } else if (trade === 'dispensary'){             // low light, glass gardens
-      furn(IOX + 1.5, IOY + rh - 2.2, 'growtank');
-      if (rw > 8) furn(IOX + rw - 1.5, IOY + rh - 2.2, 'growtank');
-      if (rnd() < 0.6) ip.push({ x: IOX + rw - 1.6, y: IOY + 4.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      wall('w', 0.80, 'growtank');              // low light, glass gardens
+      if (rw > 8) wall('e', 0.80, 'growtank');
+      if (rnd() < 0.6) wall('e', 0.42, 'shelfunit');
     } else {                                        // general: the gondola aisle
-      furn(IOX + (rw >> 1) + 0.5, IOY + Math.min(5, rh - 3) + 0.5, 'shelfunit');
-      for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
-        if (rnd() < 0.6) ip.push({ x: IOX + 0.6, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
+      for (let t = 0.36; t < 0.95; t += 0.24){  // general: the gondola aisle
+        wall('w', t, 'shelfunit');
+        if (rw > 8) wall('e', t, 'shelfunit');
+      }
       if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
                             r: 0.5, dist: bld.dist, yaw: 0 });   // counter to the room
     }
   } else if (kind === 'myhome'){
     const tier = myHome.def.tier;
     // every home has the essentials: a bed that saves you, a stash that keeps
-    furn(IOX + 1.6, IOY + 1.8, 'bed', Math.PI / 2);
-    furn(IOX + rw - 1.5, IOY + 1.8, 'cabinet', -Math.PI / 2);
-    furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
-    if (tier >= 1) furn(IOX + rw - 1.7, IOY + rh - 2.0, 'kitchenette', -Math.PI / 2);
+    wall('w', 0.10, 'bed');
+    wall('e', 0.10, 'cabinet');                 // the stash, by the bed
+    wall('w', 0.88, 'floorlamp');
+    if (tier >= 1) wall('e', 0.62, 'kitchenette');
     if (tier >= 2){
-      furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.2, 'sofa', 0);
-      furn(IOX + (rw >> 1) + 0.5, IOY + 2.6, 'tvunit', Math.PI);
-      if (rw > 8) furn(IOX + 2.0, IOY + Math.min(5, rh - 3) + 0.5, 'planter');
+      wall('s', 0.30, 'sofa');                  // and the television it faces
+      wall('n', 0.52, 'tvunit');
+      if (rw > 8) wall('w', 0.50, 'planter');
     }
     if (tier >= 3){
-      furn(IOX + (rw >> 1) - 2.5, IOY + 2.0, 'holoboard');
-      furn(IOX + rw - 2.0, IOY + Math.min(6, rh - 3) + 0.5, 'displaycase', -Math.PI / 2);
-      if (rw > 9) furn(IOX + 2.2, IOY + rh - 2.4, 'conftable', 0);
+      wall('n', 0.20, 'holoboard');
+      wall('e', 0.88, 'displaycase');
+      if (rw > 9) mid(0.5, 0.66, 'conftable', 0);
     }
     // the visit, if the paperwork went through
     if (worldDelta.swatDue && player.corruption >= 4){
@@ -4500,20 +4605,27 @@ function buildInterior(bld, door, floor){
     furn(IOX + (rw >> 1) + 0.5, IOY + 1.6, 'holoboard');    // what to admire
     if (rnd() < 0.6) furn(IOX + 1.5, IOY + 1.6, 'planter');
   } else if (kind === 'depot'){
-    furn(IOX + 1.8, IOY + 1.8, 'cratepile');    // the freight, and the work
-    for (let y = IOY + 2; y < IOY + rh - 2; y += 2)
-      for (let x = IOX + 2; x < IOX + rw - 2; x += 3)
-        if (rnd() < 0.6 && Math.abs(x - doorX) > 1.5 && (x > IOX + 3 || y > IOY + 3))
-          ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
+    // freight down the middle, racking and plant against the walls
+    wall('n', 0.16, 'cratepile');
+    for (let t = 0.16; t < 0.95; t += 0.26) wall('w', t, 'shelfunit');
+    if (rw > 9) for (let t = 0.30; t < 0.95; t += 0.30) wall('e', t, 'shelfunit');
+    mid(0.5, 0.42, 'cratepile', 0);
+    if (rnd() < 0.7) mid(0.5, 0.70, 'cratepile', Math.PI);
+    if (rnd() < 0.5) wall('e', 0.12, 'generator');
+    if (rnd() < 0.4) bin(IOX + 1.6, IOY + rh - 1.6);
     dropItem(IOX + 2.5, IOY + rh - 2.5, 0, 'scrap');
     if (rnd() < 0.5) dropItem(IOX + rw - 2.5, IOY + 2.5, 0, 'scrap');
     if (rnd() < 0.55) dropItem(IOX + rw - 2.5, IOY + rh - 2.5, 0, 'ammo', 4);
   } else {                                          // home
-    furn(IOX + 1.6, IOY + 1.8, 'bed', Math.PI / 2);
-    if (rw > 8) furn(IOX + rw - 1.7, IOY + 1.9, 'kitchenette', -Math.PI / 2);
-    furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.0, 'sofa', 0);
-    if (rnd() < 0.6) furn(IOX + (rw >> 1) + 0.5, IOY + 2.6, 'tvunit', Math.PI);
-    if (rnd() < 0.5) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
+    // bed in the corner, kitchen at the far end, couch and television facing
+    // each other across the floor with room to walk between them
+    wall('w', 0.12, 'bed');
+    if (rw > 8) wall('e', 0.12, 'kitchenette');
+    wall('s', 0.28, 'sofa');
+    if (rnd() < 0.7) wall('n', 0.55, 'tvunit');
+    if (rnd() < 0.6) wall('e', 0.85, 'floorlamp');
+    if (rnd() < 0.5) wall('w', 0.62, 'cabinet');
+    if (rnd() < 0.35) bin(IOX + rw - 1.5, IOY + rh - 1.6);
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
   }
   if (kind !== 'dungeon' && kind !== 'empty' && kind !== 'hideout' &&
@@ -4543,6 +4655,20 @@ function buildInterior(bld, door, floor){
     }
     ip.push({ x: stx, y: sty, k: PK_STAIR, s: 0, r: 0 });
     stairs = { x: stx, y: sty };
+  }
+  /* Last look round: nothing should be talking to the plaster. Anything
+     whose face has ended up against a wall or a partition is turned to the
+     open floor - the office cabinets used to stare into the cubicle divider
+     put up in front of them. */
+  for (const q of ip){
+    if (q.k !== PK_FURN || q.set) continue;     // anything aimed on purpose stays
+    const F = FURN_DEF[q.fid];
+    const reach = (F ? F.w * F.dep * 0.5 : 0.4) + 0.35;
+    for (const yw of [q.yaw, Math.PI, 0, Math.PI / 2, -Math.PI / 2]){
+      const ax = (q.x + Math.sin(yw) * reach) | 0;
+      const ay = (q.y - Math.cos(yw) * reach) | 0;
+      if (inMap(ax, ay) && S.walkG[ay * MAP + ax]){ q.yaw = yw; break; }
+    }
   }
   rngState = keep;
   // Where you land. This used to be taken on trust, and on an upper floor it
