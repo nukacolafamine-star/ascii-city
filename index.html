@@ -8241,13 +8241,53 @@ function startQuest(id){
   sfx('ui_select', { vol: 0.6, rate: 0.8 });
   toast('new objective: ' + QUESTS[id].name);
 }
+/*--------------------------- what a job is worth ---------------------------
+  Every quest pays on completion. The main line climbs by act - errands on
+  the red mile pay errand money, and by the time you are fighting up a
+  tower the cell is handing over everything it has. A few jobs also pay in
+  dialogue, mid-handshake ("here - forty credits"); those are counted here,
+  so the number below is the REST of the fee, and the total is what the job
+  was actually worth. The three that end the story pay nothing: nobody is
+  left holding a purse.
+============================================================================*/
+const QUEST_PAY = {
+  // ---- the odd jobs the city hands out ----
+  scrap: 0,            // paid per unit, at the counter
+  noodles: 20,         // the drifter already presses 30 on you
+  test: 40,            // the chemist pays 60 in the room
+  quiet: 120,
+  sphere: 35,          // the cook pays 40 for the story
+  // ---- Vance and the runner ----
+  wheels1: 25, wheels2: 30, wheels3: 220, wheels4: 40, wheels5: 150,
+  // ---- act one: proving you turn up ----
+  mq1: 0, mq2: 45, mq3: 60, mq4: 80, mq5: 50, mq6: 40, mq7: 90, mq8: 160,
+  // ---- act two: the cell trusts you with doors ----
+  mq9: 0, mq10: 110, mq11: 140, mq12: 220, mq13: 0, mq14: 0,
+  mq15: 150, mq16: 300,
+  // ---- act three: the plan, and what it costs ----
+  mq17: 0, mq18: 260, mq19: 180, mq20: 120, mq21: 200, mq22: 170,
+  mq23: 0, mq24: 0,
+  // ---- act four: nobody is counting any more ----
+  mq25: 0, mq26: 150, mq27: 320, mq28: 500, mq29: 0, mq30: 0
+};
+function payQuest(id){
+  const n = QUEST_PAY[id];
+  if (!n) return;
+  player.credits += n;
+  toast('paid: ' + n + ' cr');
+  sfx('ui_select', { vol: 0.6, rate: 1.35 });
+}
 function advanceQuest(id){
   const q = QUESTS[id];
+  // a finished quest has 'done' where its stage number was, and 'done' + 1
+  // is a string that indexes nothing - any second call used to crash here
+  if (!q || typeof player.quests[id] !== 'number') return;
   let s = player.quests[id] + 1;
   if (s >= q.stages.length){
     player.quests[id] = 'done';
     sfx('ui_select', { vol: 0.7, rate: 0.7 });
     toast('completed: ' + q.name);
+    payQuest(id);
     if (id === 'mq30'){                        // the line closes on a betrayal
       player.qvar.act = 4;
       const rk = actors.find(a => a.name === 'ROOK');
@@ -8262,6 +8302,11 @@ function advanceQuest(id){
     sfx('ui_select', { vol: 0.5 });
     toast(q.stages[s].log);
   }
+}
+/* the fee, for the quest log */
+function questFee(id){
+  const n = QUEST_PAY[id];
+  return n ? '  (' + n + ' cr)' : '';
 }
 function questTarget(){
   const id = player.track;
@@ -13641,7 +13686,7 @@ function hudPass(){
       for (const qid in player.quests || {}){
         const st = player.quests[qid];
         if (QUESTS[qid] && st !== 'done' && QUESTS[qid].stages[st]){
-          put(row++, '! ' + QUESTS[qid].name, H_YEL);
+          put(row++, '! ' + QUESTS[qid].name + questFee(qid), H_YEL);
           break;
         }
       }
