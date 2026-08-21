@@ -3670,7 +3670,6 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.5) furn(IOX + 1.6, IOY + rh - 1.6, 'planter');
     if (rnd() < 0.4) furn(IOX + (rw >> 1) + 0.5, IOY + 1.4, 'copier');
     if (rnd() < 0.35) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 1.5, 'holoboard', 0);
-    if (rnd() < 0.4) dropItem(IOX + rw - 1.5, IOY + 1.5, 0, 'soda');
     if (rnd() < 0.25) dropItem(IOX + 1.5, IOY + rh - 1.5, 0, 'medkit');
   } else if (kind === 'apts'){                      // a corridor of doors
     const cx2 = IOX + (rw >> 1);
@@ -3683,7 +3682,6 @@ function buildInterior(bld, door, floor){
     furn(IOX + 1.4, IOY + 1.6, 'bed', Math.PI / 2);
     if (rw > 8) furn(IOX + rw - 1.5, IOY + rh - 2.2, 'sofa', -Math.PI / 2);
     if (rnd() < 0.6) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
-    if (rnd() < 0.5) dropItem(IOX + 1.2, IOY + 2.6, 0, 'soda');
     if (rnd() < 0.3) dropItem(IOX + rw - 1.4, IOY + rh - 1.6, 0, 'medkit');
   } else if (kind === 'storage'){                   // deep stacks, good salvage
     for (let y = IOY + 1; y < IOY + rh - 1; y += 2)
@@ -3756,7 +3754,10 @@ function buildInterior(bld, door, floor){
         furn(IOX + rw - 1.5, IOY + Math.min(5, rh - 3) + 0.5, 'fridge', -Math.PI / 2);
         if (rh > 9) furn(IOX + rw - 1.5, IOY + Math.min(7, rh - 2) + 0.5, 'fridge', -Math.PI / 2);
       }
-      if (stk[2]) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, stk[2], 1, ITEMS[stk[2]].price);
+      // the third display joins the others ON the counter - food does not
+      // sit on floors in this city any more
+      if (stk[2] && t2 - t1 > 2)
+        dropItem(((t1 + t2) >> 1) + 0.5, cy + 0.5, 1.1, stk[2], 1, ITEMS[stk[2]].price);
     } else if (trade === 'tools'){                  // the real work, on show
       furn(IOX + 2.0, IOY + rh - 2.2, 'workbench');
       for (let y = IOY + 4; y < IOY + rh - 2; y += 2)
@@ -3872,7 +3873,6 @@ function buildInterior(bld, door, floor){
     }
     if (rh > 8) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.0, 'holoboard');
     if (rnd() < 0.7) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
-    if (rnd() < 0.5) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, 'sake');
   } else if (kind === 'parlor'){
     const theme = PARLOR_THEMES[(hash3(bld.id, 66, 13) * PARLOR_THEMES.length) | 0];
     // soft light, low furniture: sofas up front, the rooms implied at the back
@@ -3898,14 +3898,12 @@ function buildInterior(bld, door, floor){
         tree: companionTree(theme, comp) });
       a.interior = 1;
     }
-    if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + rh - 2.5, 0, 'sake');
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
         ip.push({ x: bx + 0.5, y: y + 0.5, k: PK_BENCH, s: 0, r: 0.35 });
     furn(IOX + (rw >> 1) + 0.5, IOY + 1.6, 'holoboard');    // what to admire
     if (rnd() < 0.6) furn(IOX + 1.5, IOY + 1.6, 'planter');
-    if (rnd() < 0.4) dropItem(IOX + 1.5, IOY + 2.5, 0, 'soda');
   } else if (kind === 'depot'){
     for (let y = IOY + 2; y < IOY + rh - 2; y += 2)
       for (let x = IOX + 2; x < IOX + rw - 2; x += 3)
@@ -3921,7 +3919,6 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.6) furn(IOX + (rw >> 1) + 0.5, IOY + 2.6, 'tvunit', Math.PI);
     if (rnd() < 0.5) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
-    if (rnd() < 0.5) dropItem(IOX + 1.5, IOY + rh - 2.5, 0, 'soda');
   }
   if (kind !== 'dungeon' && rnd() < (kind === 'storage' ? 0.35 : 0.85)){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
@@ -6963,17 +6960,8 @@ function refreshInventory(){
 
 /* street pickups: sparse, deterministic, clustered where people gather */
 function placeStreetItems(){
-  for (const st of stalls){
-    const h = hash3(st.x | 0, st.y | 0, 901);
-    if (h > 0.30) continue;
-    for (let t = 0; t < 8; t++){
-      const x = (st.x + rr(-2, 2)) | 0, y = (st.y + rr(-2, 2)) | 0;
-      if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
-      props.push({ x: x + 0.5, y: y + 0.5, k: PK_ITEM, s: 0, r: 0,
-                   item: h < 0.18 ? 'noodles' : 'soda', key: 's' + x + '_' + y });
-      break;
-    }
-  }
+  // food no longer lies in the street - the stalls SELL it. What is left on
+  // the ground is the weapon caches, quest drops, and what the dead let go.
 }
 function applyDeltaToProps(){
   let removed = false;
@@ -7399,6 +7387,7 @@ const SHOP_TYPES = {
                 stock: ['chill', 'haze', 'staticd', 'numb', 'rush', 'ghost', 'overclock', 'mirror', 'sake'] }
 };
 function shopTypeFor(bld){
+  if (bld.word === 'HARDWARE') return 'tools';   // hardware IS the anarchy aisle
   const h = hash3(bld.id, 31, 7);
   switch (bld.dist){
     case D_RES: case D_SUB: return h < 0.5 ? 'grocery' : h < 0.85 ? 'bodega' : 'general';
@@ -10238,6 +10227,30 @@ function openMap(){
   });
   sfx('ui_select', { vol: 0.5 });
 }
+/* what one door means on a map: a letter and a colour, or nothing when the
+   room behind it is just somebody's hallway */
+const TRADE_TAG = { tools: ['T', H_GRN], armory: ['A', H_RED],
+                    dispensary: ['D', H_PUR], jeweler: ['J', H_YEL],
+                    clothier: ['C', H_BLU], grocery: ['M', H_GRN],
+                    bodega: ['B', H_GRN], general: ['G', H_WHT] };
+function doorTag(bldId){
+  const b = buildings[bldId];
+  if (!b) return null;
+  if (homeAt(bldId)) return ['H', H_WHT];
+  const sw = specialWordFor(b);
+  if (sw){
+    if (sw === 'LUCKY LUCKY' || sw === 'VELVET WHEEL' ||
+        sw === 'PACHINKO' || sw === 'HIGH-LOW') return ['$', H_YEL];
+    if (sw === 'VELVET ROOM' || sw === 'NEON GARDEN' ||
+        sw === 'SIGNAL HOUSE' || sw === 'STEAM SILK') return ['X', H_PUR];
+    return ['W', H_RED];                        // the condemned towers
+  }
+  const shopish = INTERIOR_KIND[b.dist] === 'shop' ||
+                  (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3) ||
+                  (b.dist === D_DOWN && hash3(b.id, 62, 5) < 0.3);
+  if (shopish) return TRADE_TAG[shopTypeFor(b)] || null;
+  return null;
+}
 function drawMapMode(m){
   const cols = R.cols, rows = R.rows;
   hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
@@ -10280,17 +10293,18 @@ function drawMapMode(m){
       hudStr(x, y, d.name, H_PUR);
     }
   }
-  // shops you have walked into, remembered by trade
-  if (m.z <= 2 && worldDelta.seen){
-    const TAG = { tools: 'T', armory: 'A', dispensary: 'D', jeweler: '$',
-                  clothier: 'C', grocery: 'M', bodega: 'B', general: 'G' };
-    for (const b in worldDelta.seen){
-      const d = doors.find(dd => dd.b === +b);
-      if (!d) continue;
+  // every trade and venue announces itself at close zoom - a symbol per
+  // door, coloured by what is behind it
+  if (m.z <= 2){
+    for (const d of doors){
       const x = sx(d.x), y = sy(d.y);
       if (x < 1 || x >= cols - 1 || y < 2 || y >= rows - 2) continue;
-      hudCell(x, y, TAG[worldDelta.seen[b]] || 'G', H_GRN);
+      const t = doorTag(d.b);
+      if (t) hudCell(x, y, t[0], t[1]);
     }
+    const leg = 'T tools  A arms  D disp  J gold  C threads  M market  ' +
+                'B bodega  G goods  $ casino  X parlor  W condemned  H home';
+    hudStr(Math.max(1, (cols - leg.length) >> 1), rows - 2, leg.slice(0, cols - 2), H_DIM);
   }
   // landmarks
   if (m.z <= 4)
@@ -10304,7 +10318,7 @@ function drawMapMode(m){
   const px2 = sx(cam.x), py2 = sy(cam.y);
   if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
     const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
-    hudCell(px2, py2, dirCh, H_WHT);
+    hudCell(px2, py2, dirCh, ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT);
   }
   const qt = questTarget();
   if (qt){
@@ -12437,6 +12451,11 @@ function drawMinimap(x0, y0){
       if (Math.abs(a.x - cam.x) < hw && Math.abs(a.y - cam.y) < hh * 2)
         plot(a.x, a.y, pulse ? '@' : 'o', H_RED);
   }
+  for (const d of doors){                       // the trades in the window
+    if (Math.abs(d.x - cam.x) >= hw || Math.abs(d.y - cam.y) >= hh * 2) continue;
+    const t = doorTag(d.b);
+    if (t) plot(d.x, d.y, t[0], t[1]);
+  }
   if (heli){                                    // the machine and its light
     const pulse2 = ((Date.now() / 220) | 0) & 1;
     plot(heli.x, heli.y, pulse2 ? 'H' : '+', H_RED);
@@ -12460,7 +12479,7 @@ function drawMinimap(x0, y0){
   }
   if (!(drug && drug.fx.ghost)){                // a ghost is not on the grid
     const dirCh = '<v>^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
-    plot(cam.x, cam.y, dirCh, H_BLU);
+    plot(cam.x, cam.y, dirCh, ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT);
   }
 }
 let fps = 60;
