@@ -2753,9 +2753,291 @@ function randWalkNear(cx, cy, rmin, rmax){
   }
   return null;
 }
+/*========================= 12a2. PEOPLE WITH LIVES =========================
+  Every pedestrian is somebody: a seeded first+last name, a home door their
+  journeys start from, a role, and a daily round built on the real clock.
+  Workers commute out in the morning and are simply NOT ON THE STREET while
+  they are at work - the crowd thins on work hours and swells in the
+  evening, which is the whole point. Errand-runners walk out to a shop or a
+  landmark, linger, and walk home. Identity derives from the world seed and
+  the pedestrian's index, so a save keeps its people.
+============================================================================*/
+const PED_FIRST = ['JIN','MARA','OKSANA','DEV','SORA','LUZ','KAI','NADIA','REI',
+  'TOMAS','ANA','VIK','SUKI','OMAR','WREN','PAVEL','IRIS','KENJI','ROSA','ELIAS',
+  'MEI','DANTE','YUKI','SASHA','NOOR','FELIX','HANA','IGOR','LENA','MARCUS',
+  'TALIA','JUN','VERA','COLE','MIKA','ADAM','ZOFIA','RAUL','EMBER','NIKO'];
+const PED_LAST = ['TANAKA','VOSS','OKAFOR','LIM','PETROV','SANTOS','KOWALSKI',
+  'MERCER','ITO','VANCE','DUARTE','HOLT','NAKAMURA','SOKOLOV','REYES','THORNE',
+  'ABE','MARSH','KURODA','FONSECA','WEBB','ONISHI','HALE','VARGA','SLOANE',
+  'FUJITA','CROSS','MOREL','IWATA','QUINN','BRANDT','SATO','LOWE','KANE',
+  'OSEI','PIKE','MURATA','FROST','ROJAS','GREY'];
+// where the city's doors lead, sorted once per build for the schedules
+let pedHomes = [], pedWorks = [], pedFuns = [];
+function indexPedPlaces(){
+  pedHomes = []; pedWorks = []; pedFuns = [];
+  for (const d of doors){
+    const dn = districtAt(d.x | 0, d.y | 0);
+    if (dn === D_RES || dn === D_SUB) pedHomes.push(d);
+    else if (dn === D_DOWN || dn === D_IND) pedWorks.push(d);
+    else pedFuns.push(d);
+  }
+  if (!pedHomes.length) pedHomes = doors.slice(0, 60);
+  if (!pedWorks.length) pedWorks = doors.slice(0, 60);
+  if (!pedFuns.length)  pedFuns = doors.slice(0, 60);
+}
+/* who pedestrian i IS - pure function of the seed, so saves keep their people */
+const PED_ROLES = ['worker', 'worker', 'student', 'nightowl', 'homebody'];
+function pedIdentity(i){
+  const h1 = hash3(worldSeed, i, 101), h2 = hash3(worldSeed, i, 103);
+  const h3 = hash3(worldSeed, i, 107), h4 = hash3(worldSeed, i, 109);
+  const role = PED_ROLES[(hash3(worldSeed, i, 113) * PED_ROLES.length) | 0];
+  const home = pedHomes[(h3 * pedHomes.length) | 0];
+  const dome = landmarks.find(l => /SPHERE|DOME/.test(l.name));
+  let dest, destName;
+  if (role === 'worker'){
+    const d = pedWorks[(h4 * pedWorks.length) | 0];
+    dest = d; destName = d.name;
+  } else if (role === 'student'){
+    if (dome && h4 < 0.6){ dest = dome; destName = dome.name; }
+    else { const d = pedFuns[(h4 * pedFuns.length) | 0]; dest = d; destName = d.name; }
+  } else if (role === 'nightowl'){
+    const d = pedFuns[(h4 * pedFuns.length) | 0];
+    dest = d; destName = d.name;
+  } else {
+    const d = pedFuns[(h4 * pedFuns.length) | 0];
+    dest = d; destName = d.name;
+  }
+  return {
+    name: PED_FIRST[(h1 * PED_FIRST.length) | 0] + ' ' +
+          PED_LAST[(h2 * PED_LAST.length) | 0],
+    role, home, homeName: home ? home.name : 'A WALK-UP',
+    dest, destName,
+    wake: 6 + ((hash3(worldSeed, i, 127) * 4) | 0)     // 6..9
+  };
+}
+/* where pedestrian i is in their day. 'home' and 'away' mean OFF the street.
+   Errand-runners are the walking public; commuters pass through twice. */
+function pedPlan(id, hour){
+  const w = id.wake;
+  if (id.role === 'worker'){
+    if (hour < w || hour >= 23) return { st: 'home' };
+    if (hour < w + 1)  return { st: 'out', leg: 'toWork' };
+    if (hour < w + 10) return { st: 'away' };
+    if (hour < w + 11) return { st: 'out', leg: 'toHome' };
+    return { st: 'out', leg: 'errand' };                 // the evening is theirs
+  }
+  if (id.role === 'student'){
+    if (hour < w || hour >= 22) return { st: 'home' };
+    if (hour < w + 1) return { st: 'out', leg: 'toWork' };
+    if (hour < w + 7) return { st: 'away' };
+    if (hour < w + 8) return { st: 'out', leg: 'toHome' };
+    return { st: 'out', leg: 'errand' };
+  }
+  if (id.role === 'nightowl'){
+    if (hour >= 11 && hour < 19) return { st: 'home' };  // asleep all day
+    if (hour >= 19 && hour < 20) return { st: 'out', leg: 'toWork' };
+    // the night crowd: half work the loud rooms, half ARE the street
+    if (hour >= 20 || hour < 4)
+      return id.wake & 1 ? { st: 'away' } : { st: 'out', leg: 'errand' };
+    if (hour < 5) return { st: 'out', leg: 'toHome' };
+    return { st: 'home' };
+  }
+  // homebody: out on errands through the day, home at night
+  if (hour < 8 || hour >= 22) return { st: 'home' };
+  return { st: 'out', leg: 'errand' };
+}
+/*------------------------------- the talk ----------------------------------
+  A line is picked from category pools by context - the hour, the weather,
+  the district underfoot, the leg of their day - with the pedestrian's own
+  names woven in. Rarely, the city has noticed what you have been up to.
+  Slots: {dest} {home} {first} {district}.
+============================================================================*/
+const PED_TALK = {
+  toWork: [
+    'Another shift at {dest}. The badge photo is the freest I ever looked.',
+    "If I'm late to {dest} one more time they dock the air fee.",
+    'Off to {dest}. Do not ask me what we actually make there.',
+    "{dest} again. My grandmother said work would dignify me. She's dead now.",
+    'They rescheduled dawn. Corporate calendar. I still have to be at {dest}.',
+    "Walking to {dest}. The metro's cheaper but I like pretending I have time.",
+    'I dreamed I quit {dest}. Then the alarm sounded like a supervisor.',
+    "Heading in to {dest}. If I'm not back by dark, I'm in a meeting.",
+    'Every morning the same walk to {dest}. Even my shadow looks tired of it.',
+    "New quota at {dest} this week. The old quota, plus grief."
+  ],
+  toHome: [
+    "Done for the day. {home}'s a dump but it's my dump.",
+    'Ten hours on my feet. The walk back to {home} is the good part.',
+    "Heading home to {home}. If the power's on I might even cook.",
+    'Back to {home}. Third blackout this week, want to bet on a fourth?',
+    "Shift's over. Nobody at {home} but the mould, and it doesn't nag.",
+    'They kept us late again. {home} better still be standing.',
+    'Going home. I count the working streetlights. Never need both hands.',
+    "Homeward. {home}. The lift's been broken since the merger.",
+    'Every day I sell nine hours to buy the other fifteen.',
+    "Day's done. My feet know the way to {home} without me."
+  ],
+  errand: [
+    'Just out for noodles. The stall by the crossing does them right.',
+    'Needed air. What passes for it here, anyway.',
+    "Heading to the strip. Not to spend. Just to look at the light.",
+    'Out for batteries and bad decisions. Found the batteries.',
+    "My cousin swears the ramen in {district} is better. My cousin lies.",
+    'The queue at the dispensary was around the block, so - walk it off.',
+    "Killing an hour. It's the only thing I get to kill legally.",
+    'Out shopping. Window division only.',
+    'I walk this loop every evening. The city changes, the loop stays.',
+    "There's a bench near here with my name on it. Not officially.",
+    'Errands. Half of living here is standing in lines.',
+    'I told them at {home} I would be back in an hour. That was three ago.'
+  ],
+  night: [
+    'The neon never blinks. I checked. All night once. Never blinks.',
+    "You shouldn't be out this late either, so we're even.",
+    'Night shift pays a third more. Costs a third more of you too.',
+    "The city's honest after midnight. Everything ugly finally looks ugly.",
+    'I sleep better in the day. The dark here has fingers.',
+    "Quiet, isn't it. That's not calm. That's holding a breath."
+  ],
+  rain: [
+    'The rain tastes like coins. You get used to it. That is the worst part.',
+    "Acid's light tonight. Barely stings.",
+    'My coat gave up years before I did.',
+    "Rain again. The gutters run neon. Almost pretty if you don't think.",
+    'Every drop of this was somewhere clean once.'
+  ],
+  storm: [
+    'Storm knocked the grid sideways. My block flickered like a dying sign.',
+    "Get inside. The sky's in one of its moods.",
+    'Thunder or demolition? In this town you honestly have to wait and see.'
+  ],
+  fog: [
+    "Fog's in. The towers just vanish. Best the skyline ever looks.",
+    'Cannot see ten metres. The cameras still can, mind you.',
+    'On fog nights the city pretends it has secrets left.'
+  ],
+  district: {
+    0: ['Downtown chews you politely. It uses a napkin.',
+        'Every tower here has a lobby fern doing better than me.',
+        "Suits everywhere. Nobody's eyes ever come down to street level."],
+    1: ['The strip will sell you anything except a reason to stay.',
+        'I come to the strip to feel rich by proximity. It works for an hour.',
+        'All this light and not one bulb of it warms anything.'],
+    2: ['These blocks were built for people. You can still tell, in places.',
+        "It's quiet here. Cheap quiet, but quiet."],
+    3: ['The belt runs all night. You stop hearing it. Then you ARE it.',
+        'Everything here is rust or about to be.',
+        'My father worked this yard. His father too. I just walk through it.'],
+    4: ['Out here you can almost pretend the towers are mountains.',
+        'The suburbs: same cage, longer bars.'],
+    5: ['The fields feed the city and the city never once said thanks.',
+        'Past here the roads just give up. Smart roads.'],
+    6: ['The red mile never sleeps. It naps between customers.',
+        "Whatever you're looking for down here, it's looking for you too."]
+  },
+  aboutYou: [
+    "You're the one the cameras keep swivelling for. Walk on.",
+    'People talk about you. Not kindly. Not quietly either.',
+    "I know your face from somewhere. For your sake I hope I'm wrong.",
+    'The enforcers showed your picture around. I said I saw nothing. Yet.',
+    "Whatever you're into, keep it off my block."
+  ],
+  smallTalk: [
+    "I'm {first}. Not that names buy anything any more.",
+    'You want directions? So does everybody. The answer is: away.',
+    "Don't mind me. I'm scenery with a pulse.",
+    'They raised the air fee again. THE AIR FEE.',
+    'My horoscope said today would be different. It said that yesterday.',
+    "The Sphere watched me sneeze this morning. Bless you, it said. Terrifying.",
+    'Rent went up. The ceiling came down. Net zero, the landlord says.',
+    "I've lived here all my life. Still can't afford the view.",
+    'You look like you have somewhere to be. Cherish that.',
+    'A vending machine short-changed me at dawn and honestly, fair.',
+    "{first}. Pleasure. Now we've both wasted a breath.",
+    'My building elected a new block captain. The cameras voted too.',
+    'I saw a bird yesterday. A real one. Nobody believes me.',
+    "Careful by the kerb. The cleaning drones don't brake for optimism.",
+    'I used to have opinions about the corps. Now I just have a commute.',
+    'Somebody grew tomatoes on a roof in my block. We took shifts guarding them.',
+    'My aunt remembers when the towers stopped at forty floors. She misses ceilings.',
+    'The metro ate my card again. The metro is the best-fed thing I know.',
+    'A man on my landing swears the blackouts spell words. Slow words.',
+    "Talk's free. Only thing left that is."
+  ],
+  morning: [
+    'Morning. Provisionally.',
+    'The sun comes up grey and clocks in like the rest of us.',
+    'First shift smell: ozone and yesterday.',
+    "Coffee from the vending machine. It's brown and it's loyal.",
+    'Every dawn the towers get their color back before we do.',
+    'Early yet. The city is still deciding who to be today.'
+  ],
+  lingering: [
+    'I come out just to be somewhere that is not my flat.',
+    "I'm not loitering, I'm auditing the street. Unpaid.",
+    'Ten more minutes out here, then back to {home}. Twenty, maybe.',
+    'This corner has the best light in the district. I keep it secret badly.',
+    'I like watching the air cars stack up. Rich people, queueing. Beautiful.',
+    "The stall cook knows my order. That's the closest thing I have to fame.",
+    'Sometimes I stand here until the streetlights notice me.',
+    'My physician said walk more. My accountant said walk everywhere.'
+  ],
+  blackout: [
+    'Our block was dark three nights this week. The tower across never blinked.',
+    'Rolling blackouts, they call it. It only ever rolls downhill.',
+    "When the power dies you can see actual stars. Almost worth it. Almost.",
+    'The grid has favourites. I have never been one.',
+    'Candles cost more than bulbs now. Somebody is doing that math on purpose.'
+  ]
+};
+function pedLine(p){
+  const id = p.ident;
+  const hour = clock | 0;
+  const day = (typeof dayCount !== 'undefined' ? dayCount : 0);
+  const h = (n) => hash3(worldSeed + p.pid, day * 31 + hour, n);
+  const fill = (t) => t
+    .replace('{dest}', id.destName || 'work')
+    .replace('{home}', id.homeName || 'home')
+    .replace('{first}', id.name.split(' ')[0])
+    .replace('{district}', regionName(p.x, p.y));
+  // the city notices you, sometimes
+  const hot = (player.corruption || 0) >= 3 || (player.qvar.pedCorr || 0) >= 2;
+  if (hot && h(1) < 0.14) return fill(PED_TALK.aboutYou[(h(2) * PED_TALK.aboutYou.length) | 0]);
+  const pools = [];
+  if (weather === 1) pools.push(PED_TALK.rain);
+  else if (weather === 2) pools.push(PED_TALK.storm);
+  else if (weather === 3) pools.push(PED_TALK.fog);
+  if (hour >= 23 || hour < 5) pools.push(PED_TALK.night);
+  if (hour >= 5 && hour < 9) pools.push(PED_TALK.morning);
+  if (p.leg === 'toWork') pools.push(PED_TALK.toWork, PED_TALK.toWork);
+  else if (p.leg === 'toHome') pools.push(PED_TALK.toHome, PED_TALK.toHome);
+  else pools.push(PED_TALK.errand, PED_TALK.lingering);
+  if (h(7) < 0.25) pools.push(PED_TALK.blackout);      // the grid is on everyone's mind
+  const dpool = PED_TALK.district[districtAt(p.x | 0, p.y | 0)];
+  if (dpool) pools.push(dpool);
+  pools.push(PED_TALK.smallTalk);
+  const pool = pools[(h(3) * pools.length) | 0];
+  return fill(pool[(h(4) * pool.length) | 0]);
+}
 function streamAgents(){
+  const hour = clock | 0;
   for (let i = 0; i < peds.length; i++){
     const p = peds[i];
+    const plan = pedPlan(p.ident, hour);
+    if (plan.st !== 'out'){                     // at home or at work: not here
+      if (!p.off){
+        if (p.sit){ p.sit.occ--; p.sit = null; }
+        p.off = 1; p.x = -999; p.y = -999; p.path = null;
+      }
+      continue;
+    }
+    p.leg = plan.leg;
+    if (p.off){                                 // stepping back into the day
+      p.off = 0;
+      const t0 = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
+      if (t0){ p.x = t0[0] + 0.5; p.y = t0[1] + 0.5; }
+      p.path = null; p.pi = 0; p.cool = rnd() * 2;
+    }
     if (Math.abs(p.x - cam.x) < STREAM_R && Math.abs(p.y - cam.y) < STREAM_R) continue;
     const t = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
     if (t && !inPanicZone(t[0], t[1])){
@@ -2775,6 +3057,7 @@ function streamAgents(){
 }
 function spawnPeds(){
   peds = []; repathQ.length = 0;
+  indexPedPlaces();
   for (let i = 0; i < CFG.PEDS; i++){
     const near = randWalkNear(cam.x, cam.y, 8, STREAM_R * 0.8);
     const [x, y] = near || randWalkTile(true);
@@ -2782,12 +3065,14 @@ function spawnPeds(){
     const skin  = SKINC[(rnd() * SKINC.length) | 0];
     const sl = slots({ H: [skin, 0.92], S: [shirt, 0.86],
                        P: [C.pants, 0.82], T: [C.tire, 0.75] });
+    const ident = pedIdentity(i);
     peds.push({
       x: x + 0.5, y: y + 0.5, dx: 1, dy: 0,
       spd: 1.05 + rnd() * 0.75, path: null, pi: 0, phase: rnd() * 6,
       sb: sl.base, sd: sl.dens,
       wait: 0, cool: rnd() * 2, moving: 0, linger: false,
-      jx: rr(-0.3, 0.3), jy: rr(-0.3, 0.3)
+      jx: rr(-0.3, 0.3), jy: rr(-0.3, 0.3),
+      pid: i, ident, leg: 'errand', off: 0, talkT: 0
     });
     repathQ.push(i);
   }
@@ -2837,6 +3122,13 @@ function fleeStep(p, dt){
   return false;
 }
 function updatePed(p, i, dt){
+  if (p.off) return;                            // asleep, or on the clock
+  if (p.talkT > 0){                             // stopped, facing you
+    p.talkT -= dt;
+    const px = cam.x - p.x, py = cam.y - p.y, l = Math.hypot(px, py) || 1;
+    p.dx = px / l; p.dy = py / l; p.moving = 0;
+    return;
+  }
   const x0 = p.x, y0 = p.y;
   p.cool -= dt;
   if (p.flee > worldTime){                        // running, and running smart
@@ -3466,6 +3758,15 @@ function probeInteract(){
     if ((!a.dialog && !a.tree) || !!a.interior !== !!inside) continue;
     probeConsider(a.x, a.y, { kind: 'actor', a, prompt: '[SPACE]  TALK - ' + a.name });
   }
+  if (!inside){                                 // the walking public will talk
+    const nearPed = gridQuery(pedGrid, cam.x, cam.y, 3, _q2);
+    for (let i = 0; i < nearPed.length; i++){
+      const p = nearPed[i];
+      if (p.off || p.flee > worldTime) continue;
+      probeConsider(p.x, p.y, { kind: 'ped', p,
+        prompt: '[SPACE]  TALK - ' + p.ident.name });
+    }
+  }
   const nearP = gridQuery(propGrid, cam.x, cam.y, 4, _q2);
   for (let i = 0; i < nearP.length; i++){
     const p = nearP[i];
@@ -3514,6 +3815,9 @@ function tryInteract(){
     const px = cam.x - a.x, py = cam.y - a.y, l = Math.hypot(px, py) || 1;
     a.dx = px / l; a.dy = py / l;
     openTalk(a);
+  } else if (t.kind === 'ped'){
+    t.p.talkT = 4;                              // they stop for you, briefly
+    openDialog(t.p.ident.name, [pedLine(t.p)]);
   } else if (t.kind === 'door'){
     if (t.exit) exitInterior(); else enterInterior(t.door);
   } else if (t.kind === 'bin'){
@@ -9455,6 +9759,7 @@ function spritePass(){
   }
   for (let i = 0; i < peds.length; i++){
     const p = peds[i];
+    if (p.off) continue;                        // living their off-screen hours
     const rx = p.x - cam.x, ry = p.y - cam.y;
     const f = rx * dirX + ry * dirY;
     if (f < 0.3 || f > MD) continue;
