@@ -1964,6 +1964,346 @@ PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
                      sl: slots({ M: [C.rail, 0.6], S: [C.nMag, 0.85],
                                  W: [C.nWhite, 0.8], P: [C.nViolet, 0.8] }) };
 
+/*----------------------------- item models ---------------------------------
+  Every item in the game is its own little solid: the cup noodles is a cup,
+  the cola is a can, the pistol is a pistol. Each one is authored as a stack
+  of primitives in a 12x12x12 volume - box, cylinder, sphere, rod - in
+  bottom-up coordinates (the DSL flips them into the renderer's top-down
+  order). The X role takes the item's own signature colour, so every model
+  carries the tint the HUD and shops already use for it.
+============================================================================*/
+function itemVol(ops){
+  return function(aw, vd, ah){
+    const vox = new Uint8Array(aw * vd * ah);
+    const set = (x, y, zu, r) => {
+      const z = ah - 1 - zu;                    // author bottom-up
+      if (x >= 0 && x < aw && y >= 0 && y < vd && z >= 0 && z < ah)
+        vox[(z * vd + y) * aw + x] = r;
+    };
+    for (const op of ops){
+      const k = op[0];
+      if (k === 'box'){                         // solid block, corners inclusive
+        const [, x0, y0, z0, x1, y1, z1, r] = op;
+        for (let z = z0; z <= z1; z++)
+          for (let y = y0; y <= y1; y++)
+            for (let x = x0; x <= x1; x++) set(x, y, z, r);
+      } else if (k === 'cyl'){                  // vertical, optionally tapered
+        const [, cx, cy, z0, z1, r0, role, r1] = op;
+        for (let z = z0; z <= z1; z++){
+          const t = r1 === undefined ? r0
+                  : r0 + (r1 - r0) * (z - z0) / Math.max(1, z1 - z0);
+          for (let y = 0; y < 12; y++)
+            for (let x = 0; x < 12; x++){
+              const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+              if (dx * dx + dy * dy <= t * t) set(x, y, z, role);
+            }
+        }
+      } else if (k === 'sph'){
+        const [, cx, cy, cz, rad, role, sq] = op;   // sq squashes it flat
+        const zs = sq || 1;
+        for (let z = 0; z < 12; z++)
+          for (let y = 0; y < 12; y++)
+            for (let x = 0; x < 12; x++){
+              const dx = x + 0.5 - cx, dy = y + 0.5 - cy, dz = (z + 0.5 - cz) / zs;
+              if (dx * dx + dy * dy + dz * dz <= rad * rad) set(x, y, z, role);
+            }
+      } else if (k === 'rodx'){                 // horizontal rod along x
+        const [, x0, x1, cy, cz, rad, role] = op;
+        for (let x = x0; x <= x1; x++)
+          for (let y = 0; y < 12; y++)
+            for (let z = 0; z < 12; z++){
+              const dy = y + 0.5 - cy, dz = z + 0.5 - cz;
+              if (dy * dy + dz * dz <= rad * rad) set(x, y, z, role);
+            }
+      } else if (k === 'dot'){
+        set(op[1], op[2], op[3], op[4]);
+      }
+    }
+    return vox;
+  };
+}
+function itemArt(ops){ return { w: 12, h: 12, data: new Uint8Array(144), vol: itemVol(ops) }; }
+/* One entry per item: the recipe, its world size, and its colour slots.
+   X is always the item's own pcol (base -1 rides the dyn channel). */
+const ITEM_DEF = {};
+(function(){
+  // Sizes are PRESENTATION scale: a signet ring at its true size would be
+  // two cells on screen, so the smallest things are shown a shade larger
+  // than life - readable beats literal for something you have to spot.
+  const d = (id, w, h, ops, sl) => {
+    sl.X = sl.X || [-1, 0.95];
+    ITEM_DEF[id] = { art: itemArt(ops), w, h, sl: slots(sl) };
+  };
+  const W = C.nWhite, MET = C.metal, DK = C.dataDk, TR = C.trunk, RL = C.rail;
+  /* -------- food: every dish its own shape ------------------------------ */
+  d('noodles', 0.34, 0.34, [                    // the cup, lid off, steaming
+    ['cyl', 6, 6, 0, 6, 3.0, 2, 4.0],           // tapered paper cup
+    ['cyl', 6, 6, 4, 5, 4.0, 13],               // printed band
+    ['cyl', 6, 6, 7, 7, 3.7, 6],                // noodle surface
+    ['dot', 4, 5, 9, 2], ['dot', 7, 6, 10, 2], ['dot', 5, 7, 11, 2]], // steam
+    { W: [W, 0.55], S: [C.nAmber, 0.9] });
+  d('ramen', 0.42, 0.30, [                      // a wide bowl with an egg
+    ['cyl', 6, 6, 0, 4, 2.6, 9, 5.2],
+    ['cyl', 6, 6, 4, 4, 4.6, 13],
+    ['sph', 8, 5, 5, 1.4, 2]],
+    { K: [TR, 0.85], W: [W, 0.9], S: [C.nAmber, 0.9] });
+  d('gyoza', 0.40, 0.16, [                      // six on a dark tray
+    ['box', 1, 2, 0, 10, 9, 0, 9],
+    ['sph', 3, 4, 1.6, 1.5, 2, 0.7], ['sph', 6, 4, 1.6, 1.5, 2, 0.7],
+    ['sph', 9, 4, 1.6, 1.5, 2, 0.7],
+    ['sph', 3, 8, 1.6, 1.5, 2, 0.7], ['sph', 6, 8, 1.6, 1.5, 2, 0.7],
+    ['sph', 9, 8, 1.6, 1.5, 2, 0.7]],
+    { K: [DK, 0.8], W: [W, 0.9] });
+  d('bao', 0.30, 0.26, [                        // one soft steamed bun
+    ['sph', 6, 6, 2.4, 3.6, 2, 0.8],
+    ['dot', 6, 6, 5, 9], ['dot', 5, 6, 5, 9], ['dot', 6, 5, 5, 9]],
+    { W: [W, 0.9], K: [TR, 0.8] });
+  d('onigiri', 0.30, 0.30, [                    // rice triangle, nori wrap
+    ['box', 2, 4, 0, 9, 8, 1, 2],
+    ['box', 3, 4, 2, 8, 8, 3, 2],
+    ['box', 4, 4, 4, 7, 8, 5, 2],
+    ['box', 5, 4, 6, 6, 8, 7, 2],
+    ['box', 4, 3, 0, 7, 9, 2, 9]],              // the nori band
+    { W: [W, 0.9], K: [DK, 0.85] });
+  d('taiyaki', 0.40, 0.22, [                    // the fish-shaped cake
+    ['sph', 5, 6, 2, 3.2, 13, 0.8],
+    ['box', 8, 5, 1, 10, 7, 3, 13],             // tail
+    ['dot', 3, 4, 3, 9]],                       // the eye
+    { S: [C.nAmber, 0.9], K: [DK, 0.9] });
+  d('skewer', 0.22, 0.44, [                     // three cubes on a stick
+    ['cyl', 6, 6, 0, 10, 0.7, 9],
+    ['box', 4, 4, 2, 7, 7, 3, 2],
+    ['box', 4, 4, 5, 7, 7, 6, 13],
+    ['box', 4, 4, 8, 7, 7, 9, 2]],
+    { K: [TR, 0.85], W: [W, 0.9], S: [C.leaf, 0.85] });
+  d('kebab', 0.46, 0.18, [                      // meat and char on a spit
+    ['rodx', 0, 11, 6, 2, 0.6, 9],
+    ['sph', 3, 6, 2, 1.7, 13], ['sph', 6, 6, 2, 1.7, 2], ['sph', 9, 6, 2, 1.7, 13]],
+    { K: [TR, 0.85], S: [C.camRed, 0.9], W: [C.nAmber, 0.85] });
+  d('apple', 0.26, 0.26, [
+    ['sph', 6, 6, 2.6, 3.2, 13],
+    ['cyl', 6, 6, 6, 7, 0.6, 9]],
+    { S: [C.leaf, 0.9], K: [TR, 0.85] });
+  d('soda', 0.24, 0.34, [                       // the can
+    ['cyl', 6, 6, 0, 8, 2.8, 13],
+    ['cyl', 6, 6, 8, 9, 2.5, 11],
+    ['cyl', 6, 6, 3, 5, 2.9, 2]],               // the label band
+    { S: [C.nCyan, 0.9], M: [MET, 0.7], W: [W, 0.9] });
+  d('coffee', 0.24, 0.28, [                     // squatter can, warm colours
+    ['cyl', 6, 6, 0, 6, 2.8, 13],
+    ['cyl', 6, 6, 6, 7, 2.5, 11],
+    ['cyl', 6, 6, 2, 4, 2.9, 9]],
+    { S: [C.tlAmb, 0.9], M: [MET, 0.7], K: [TR, 0.9] });
+  d('boba', 0.28, 0.36, [                       // pearls low, straw high
+    ['cyl', 6, 6, 0, 7, 2.6, 2, 3.4],
+    ['dot', 5, 5, 0, 9], ['dot', 7, 6, 0, 9], ['dot', 6, 7, 1, 9], ['dot', 5, 7, 0, 9],
+    ['cyl', 8, 6, 8, 11, 0.7, 13]],
+    { W: [C.nPink, 0.75], K: [DK, 0.95], S: [C.nPink, 0.9] });
+  d('sake', 0.26, 0.36, [                       // the tokkuri flask
+    ['cyl', 6, 6, 0, 5, 3.0, 2],
+    ['cyl', 6, 6, 6, 7, 1.4, 2],
+    ['cyl', 6, 6, 8, 9, 1.8, 13]],
+    { W: [W, 0.9], S: [C.camRed, 0.85] });
+  d('medkit', 0.36, 0.26, [                     // white case, red cross
+    ['box', 1, 3, 0, 10, 9, 5, 2],
+    ['box', 5, 2, 1, 6, 3, 4, 13],
+    ['box', 3, 2, 2, 8, 3, 3, 13],
+    ['box', 5, 4, 5, 6, 8, 5, 13]],
+    { W: [W, 0.9], S: [C.camRed, 0.95] });
+  /* -------- the pharmacopoeia: each dose its own vessel ------------------ */
+  d('chill', 0.28, 0.24, [                      // a pouch of gummies
+    ['box', 2, 4, 0, 9, 8, 4, 2],
+    ['box', 3, 4, 5, 8, 8, 5, 2],
+    ['dot', 4, 3, 2, 13], ['dot', 6, 3, 1, 13], ['dot', 8, 3, 3, 13]],
+    { W: [C.leaf, 0.7], S: [C.leaf, 0.95] });
+  d('rush', 0.24, 0.32, [                       // the inhaler L
+    ['box', 4, 5, 2, 7, 7, 9, 13],
+    ['box', 4, 3, 2, 7, 5, 4, 11],
+    ['cyl', 6, 6, 10, 10, 1.2, 2]],
+    { S: [C.camRed, 0.95], M: [MET, 0.7], W: [W, 0.9] });
+  d('haze', 0.26, 0.14, [                       // a blister card, one tab up
+    ['box', 2, 3, 0, 9, 9, 0, 2],
+    ['dot', 4, 5, 1, 13], ['dot', 6, 5, 1, 13], ['dot', 8, 5, 1, 13],
+    ['dot', 4, 7, 1, 13], ['dot', 6, 7, 1, 13]],
+    { W: [W, 0.8], S: [C.nViolet, 0.95] });
+  d('numb', 0.28, 0.10, [                       // a flat patch, corner peeled
+    ['box', 2, 2, 0, 9, 9, 0, 13],
+    ['box', 8, 8, 1, 9, 9, 1, 2]],
+    { S: [C.nCyan, 0.9], W: [W, 0.85] });
+  d('ghost', 0.30, 0.26, [                      // a mound of pale dust
+    ['sph', 6, 6, 0.5, 3.4, 2, 0.55],
+    ['dot', 6, 6, 3, 13], ['dot', 4, 5, 2, 13]],
+    { W: [W, 0.8], S: [W, 1.0] });
+  d('overclock', 0.36, 0.36, [                  // the syringe, needle up
+    ['cyl', 6, 6, 2, 7, 1.4, 2],
+    ['cyl', 6, 6, 0, 1, 2.0, 11],
+    ['cyl', 6, 6, 8, 10, 0.4, 11],
+    ['cyl', 6, 6, 4, 6, 1.5, 13]],
+    { W: [W, 0.7], M: [MET, 0.8], S: [C.nCyan, 0.95] });
+  d('staticd', 0.30, 0.18, [                    // a dead-channel cassette
+    ['box', 2, 3, 0, 9, 8, 3, 13],
+    ['box', 3, 3, 1, 4, 3, 2, 9],
+    ['box', 7, 3, 1, 8, 3, 2, 9]],
+    { S: [C.nMag, 0.9], K: [DK, 0.9] });
+  d('mirror', 0.38, 0.20, [                     // shades, folded on the card
+    ['box', 1, 5, 1, 4, 6, 3, 13],
+    ['box', 7, 5, 1, 10, 6, 3, 13],
+    ['box', 5, 5, 2, 6, 6, 2, 11],
+    ['rodx', 1, 10, 8, 1, 0.6, 11]],
+    { S: [C.nViolet, 0.95], M: [MET, 0.75] });
+  d('cigarette', 0.26, 0.20, [                  // the pack, one cig resting
+    ['box', 3, 4, 0, 8, 8, 4, 2],
+    ['box', 3, 4, 5, 8, 8, 5, 13],
+    ['rodx', 2, 9, 2, 6, 0.6, 2],
+    ['dot', 9, 2, 6, 13]],
+    { W: [W, 0.85], S: [C.nAmber, 0.9] });
+  /* -------- arms and ammunition ----------------------------------------- */
+  d('pistol', 0.36, 0.24, [                     // the zip: barrel and grip
+    ['rodx', 1, 10, 6, 4, 1.1, 11],
+    ['box', 7, 5, 0, 9, 7, 4, 9],
+    ['box', 2, 5, 3, 4, 7, 4, 13]],
+    { M: [MET, 0.85], K: [DK, 0.9], S: [RL, 0.8] });
+  d('ammo', 0.24, 0.18, [                       // the box, two loose rounds
+    ['box', 2, 3, 0, 8, 8, 3, 13],
+    ['box', 2, 3, 3, 8, 8, 3, 9],
+    ['rodx', 8, 10, 2, 1, 0.6, 11], ['rodx', 8, 10, 4, 1, 0.6, 11]],
+    { S: [C.tlAmb, 0.9], K: [DK, 0.85], M: [MET, 0.85] });
+  d('pipe', 0.46, 0.20, [                       // the L of conduit
+    ['rodx', 0, 10, 6, 2, 0.9, 11],
+    ['cyl', 10, 6, 2, 6, 0.9, 11],
+    ['rodx', 0, 1, 6, 2, 1.1, 9]],
+    { M: [MET, 0.85], K: [DK, 0.9] });
+  d('bat', 0.50, 0.22, [                        // tapered, nailed
+    ['rodx', 0, 11, 6, 2, 0.7, 9],
+    ['rodx', 6, 11, 6, 2, 1.3, 9],
+    ['dot', 8, 6, 4, 11], ['dot', 10, 5, 4, 11], ['dot', 9, 7, 4, 11]],
+    { K: [TR, 0.9], M: [MET, 0.9] });
+  /* -------- the wardrobe: every garment folded its own way --------------- */
+  d('tee', 0.32, 0.14, [                        // folded square, collar dip
+    ['box', 2, 3, 0, 9, 9, 2, 2],
+    ['box', 5, 3, 2, 6, 4, 2, 9]],
+    { W: [W, 0.9], K: [DK, 0.8] });
+  d('hoodie', 0.34, 0.20, [                     // folded, the hood lumped up
+    ['box', 2, 3, 0, 9, 9, 3, 13],
+    ['sph', 8, 5, 4.4, 2.2, 13, 0.7],
+    ['box', 3, 4, 1, 4, 8, 1, 9]],
+    { S: [RL, 0.85], K: [DK, 0.8] });
+  d('sneakers', 0.34, 0.16, [                   // the pair, toes out
+    ['box', 1, 3, 0, 5, 9, 1, 9],
+    ['box', 1, 3, 2, 4, 8, 3, 2],
+    ['box', 7, 3, 0, 11, 9, 1, 9],
+    ['box', 8, 3, 2, 11, 8, 3, 2]],
+    { W: [W, 0.9], K: [DK, 0.85] });
+  d('tracksuit', 0.34, 0.18, [                  // folded with the stripes up
+    ['box', 2, 3, 0, 9, 9, 3, 13],
+    ['box', 3, 3, 4, 3, 9, 4, 2], ['box', 5, 3, 4, 5, 9, 4, 2],
+    ['box', 7, 3, 4, 7, 9, 4, 2], ['box', 9, 3, 4, 9, 9, 4, 2]],
+    { S: [C.nCyan, 0.9], W: [W, 0.95] });
+  d('workjacket', 0.36, 0.20, [                 // heavy canvas, corduroy collar
+    ['box', 2, 3, 0, 9, 9, 4, 13],
+    ['box', 4, 3, 5, 7, 6, 5, 9],
+    ['box', 3, 4, 2, 4, 5, 3, 9]],              // the chest pocket
+    { S: [C.tlAmb, 0.85], K: [TR, 0.9] });
+  d('runners', 0.34, 0.18, [                    // fat soles, knit uppers
+    ['box', 1, 3, 0, 5, 9, 1, 2],
+    ['sph', 3, 6, 3, 1.9, 13, 0.7],
+    ['box', 7, 3, 0, 11, 9, 1, 2],
+    ['sph', 9, 6, 3, 1.9, 13, 0.7]],
+    { W: [W, 0.95], S: [C.nPink, 0.85] });
+  d('puffer', 0.38, 0.24, [                     // three fat tubes, stacked
+    ['rodx', 1, 10, 6, 1, 1.6, 13],
+    ['rodx', 1, 10, 6, 3.6, 1.6, 13],
+    ['rodx', 2, 9, 6, 6, 1.5, 13]],
+    { S: [C.camRed, 0.9] });
+  d('vest', 0.32, 0.22, [                       // the vest, hung square
+    ['box', 2, 4, 0, 9, 8, 5, 13],
+    ['box', 4, 4, 3, 7, 8, 5, 0],               // the arm gap reads from above
+    ['box', 5, 4, 0, 6, 8, 2, 9]],              // zip line
+    { S: [C.nAmber, 0.9], K: [DK, 0.9] });
+  /* -------- the jewellery counter ---------------------------------------- */
+  d('shades', 0.36, 0.18, [
+    ['box', 1, 5, 0, 4, 6, 2, 9],
+    ['box', 7, 5, 0, 10, 6, 2, 9],
+    ['box', 5, 5, 1, 6, 6, 1, 13]],
+    { K: [DK, 0.95], S: [C.nViolet, 0.9] });
+  d('ring', 0.30, 0.28, [                       // the band, stone up
+    ['cyl', 6, 6, 0, 3, 2.4, 13],
+    ['cyl', 6, 6, 0, 3, 1.4, 0],
+    ['dot', 6, 4, 4, 2]],
+    { S: [C.nAmber, 0.95], W: [W, 1.0] });
+  d('chain', 0.34, 0.18, [                      // coiled on the felt
+    ['cyl', 6, 6, 0, 0, 3.6, 13],
+    ['cyl', 6, 6, 0, 0, 2.4, 0],
+    ['cyl', 5, 5, 1, 1, 2.6, 13],
+    ['cyl', 5, 5, 1, 1, 1.6, 0]],
+    { S: [C.nAmber, 0.95] });
+  d('watch', 0.28, 0.22, [                      // face up, band open
+    ['cyl', 6, 6, 2, 3, 2.6, 11],
+    ['cyl', 6, 6, 3, 3, 1.6, 2],
+    ['box', 5, 1, 0, 7, 3, 1, 13],
+    ['box', 5, 9, 0, 7, 11, 1, 13]],
+    { M: [MET, 0.9], W: [W, 0.95], S: [C.nCyan, 0.85] });
+  /* -------- the anarchist's toolbag -------------------------------------- */
+  d('firecracker', 0.24, 0.24, [                // the bundle, fuses up
+    ['cyl', 4, 6, 0, 5, 1.2, 13],
+    ['cyl', 7, 5, 0, 5, 1.2, 13],
+    ['cyl', 6, 8, 0, 5, 1.2, 13],
+    ['dot', 4, 6, 6, 9], ['dot', 7, 5, 7, 9], ['dot', 6, 8, 6, 9]],
+    { S: [C.camRed, 0.95], K: [TR, 0.9] });
+  d('jammer', 0.28, 0.30, [                     // brick with a whip antenna
+    ['box', 3, 3, 0, 9, 8, 4, 9],
+    ['cyl', 4, 5, 5, 10, 0.5, 11],
+    ['dot', 8, 4, 4, 13]],
+    { K: [DK, 0.9], M: [MET, 0.85], S: [C.nGreen, 1.0] });
+  d('shim', 0.32, 0.14, [                       // a thin steel wedge
+    ['box', 1, 4, 0, 10, 7, 0, 11],
+    ['box', 1, 5, 1, 6, 6, 1, 11]],
+    { M: [MET, 0.9] });
+  d('saw', 0.40, 0.20, [                        // frame, blade, teeth
+    ['rodx', 1, 10, 6, 5, 0.9, 9],
+    ['cyl', 1.5, 6, 1, 5, 0.9, 9],
+    ['cyl', 10.5, 6, 1, 5, 0.9, 9],
+    ['rodx', 1, 10, 6, 1, 0.8, 11],
+    ['dot', 2, 6, 0, 11], ['dot', 4, 6, 0, 11], ['dot', 6, 6, 0, 11], ['dot', 8, 6, 0, 11]],
+    { K: [DK, 0.9], M: [MET, 0.95] });
+  d('camjack', 0.26, 0.22, [                    // the box and its pigtail
+    ['box', 3, 3, 0, 8, 8, 4, 9],
+    ['dot', 5, 3, 4, 13], ['dot', 7, 3, 4, 13],
+    ['rodx', 8, 11, 8, 1, 0.6, 11],
+    ['cyl', 11, 8, 1, 3, 0.6, 11]],
+    { K: [DK, 0.9], M: [MET, 0.8], S: [C.nCyan, 1.0] });
+  d('burner', 0.24, 0.34, [                     // the rattle-can
+    ['cyl', 6, 6, 0, 8, 2.6, 13],
+    ['cyl', 6, 6, 9, 9, 2.2, 9],
+    ['dot', 6, 6, 10, 11],
+    ['cyl', 6, 6, 3, 5, 2.7, 2]],
+    { S: [C.nMag, 0.9], K: [DK, 0.85], M: [MET, 0.8], W: [W, 0.9] });
+  d('sniffer', 0.34, 0.22, [                    // the chip, legs out
+    ['box', 3, 4, 0, 8, 7, 1, 9],
+    ['dot', 2, 5, 0, 11], ['dot', 2, 6, 0, 11],
+    ['dot', 9, 5, 0, 11], ['dot', 9, 6, 0, 11],
+    ['dot', 5, 5, 2, 13]],
+    { K: [DK, 0.95], M: [MET, 0.9], S: [C.nGreen, 1.0] });
+  d('scrap', 0.32, 0.18, [                      // a jumble that reads as one
+    ['box', 2, 3, 0, 6, 7, 1, 11],
+    ['box', 5, 5, 1, 9, 8, 2, 9],
+    ['rodx', 1, 9, 4, 3, 0.5, 11],
+    ['dot', 8, 4, 3, 13], ['dot', 3, 7, 2, 13]],
+    { M: [MET, 0.85], K: [DK, 0.9], S: [C.nGreen, 0.9] });
+  d('battery', 0.26, 0.30, [                    // the cell, terminal up
+    ['cyl', 6, 6, 0, 6, 2.4, 11],
+    ['cyl', 6, 6, 3, 5, 2.5, 13],
+    ['cyl', 6, 6, 7, 7, 1.0, 9]],
+    { M: [MET, 0.9], S: [C.tlAmb, 0.95], K: [DK, 0.9] });
+  d('deck', 0.52, 0.16, [                       // the kickdeck on its wheels
+    ['box', 0, 4, 3, 11, 7, 4, 13],
+    ['box', 0, 4, 4, 1, 7, 4, 13], ['box', 10, 4, 4, 11, 7, 4, 13],
+    ['rodx', 2, 3, 4, 1, 1.0, 2], ['rodx', 8, 9, 4, 1, 1.0, 2],
+    ['rodx', 2, 3, 8, 1, 1.0, 2], ['rodx', 8, 9, 8, 1, 1.0, 2]],
+    { S: [C.nViolet, 0.9], W: [W, 0.95], M: [MET, 0.8] });
+})();
+
+
 /*========================= 10. SPATIAL HASH BUCKETS ========================*/
 const HG = 8, HW = Math.ceil(MAP / HG);
 // Across 4 km^2 the hash has tens of thousands of buckets, so clearing has to
@@ -8960,6 +9300,8 @@ function spritePass(){
           : ((worldTime * 1.3 + o.s * 7) % 1) < 0.5 ? C.camRed : C.dataDk;
       } else if (o.k === PK_ITEM){
         dyn = ITEMS[o.item].pcol;
+        const idf = ITEM_DEF[o.item];
+        if (idf) def = idf;                     // every item is its own solid
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
