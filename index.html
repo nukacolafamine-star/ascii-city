@@ -3443,6 +3443,8 @@ const INT_FLAVOR = {
   casino:  { keeper: 'PIT BOSS', floorA: 0, floorB: 0, lines: [
            'Play or make room for somebody who will.',
            'The odds are on the wall. Reading them is free. Only that is.'] },
+  dungeon: { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [
+           'The lights gave up on this floor years ago.'] },
   parlor:  { keeper: 'MADAME', floorA: 0, floorB: 0, lines: [
            'Sit anywhere, sugar. Somebody will find you.',
            'House rules: pay first, no names, no cameras. ESPECIALLY no cameras.'] }
@@ -3529,6 +3531,19 @@ function buildDoors(){
                  name: b.word || D.words[(hash3(b.id, 5, 1) * D.words.length) | 0] });
   }
 }
+/* Some towers went dark years ago and nobody official ever asks why. A
+   dungeon is a building whose upper floors stopped being offices: every
+   storey is hostile, every stairwell is locked in its own way, and the top
+   floor keeps something worth all of it. Tools are the keys - the saw, the
+   shim, the jammer's little cousins - so the anarchist kit finally has
+   rooms built around it. */
+function isDungeon(b){
+  return !b.landmark && bldFloors(b).length >= 3 && hash3(b.id, 71, 3) < 0.06;
+}
+const DGN_LOCKS = ['guard', 'grate', 'magseal', 'camlock'];
+function dgnLock(b, floor){
+  return DGN_LOCKS[(hash3(b.seed, floor, 73) * DGN_LOCKS.length) | 0];
+}
 function buildInterior(bld, door, floor){
   floor = floor || 1;
   if (!INTB) INTB = { tType: new Uint8Array(MAP * MAP), tH: new Float32Array(MAP * MAP),
@@ -3548,6 +3563,7 @@ function buildInterior(bld, door, floor){
     kind = 'parlor';                           // the mile's older institution
   if (floor === 1 && bld.dist === D_DOWN && hash3(bld.id, 62, 5) < 0.3)
     kind = 'shop';                             // ground-floor retail downtown
+  if (isDungeon(bld)) kind = floor === 1 ? 'depot' : 'dungeon';
   const trade = kind === 'shop' ? shopTypeFor(bld) : null;
   const F = INT_FLAVOR[kind];
   const TF = trade && SHOP_FLAVOR[trade];
@@ -3702,6 +3718,49 @@ function buildInterior(bld, door, floor){
       if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
                             r: 0.5, dist: bld.dist, yaw: 0 });   // counter to the room
     }
+  } else if (kind === 'dungeon'){
+    const fls = bldFloors(bld);
+    const depth = fls.indexOf(floor);           // 1 = first hostile floor
+    const top = floor === fls[fls.length - 1];
+    // the room is a ruin of its old purpose
+    furn(IOX + 1.6, IOY + rh - 2.0, 'cratepile');
+    if (rw > 8) furn(IOX + rw - 2.2, IOY + rh - 2.0, 'pipestack', 0);
+    if (rnd() < 0.6) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.0, 'generator');
+    if (rnd() < 0.5) furn(IOX + 1.5, IOY + Math.min(5, rh - 3) + 0.5, 'cage', Math.PI / 2);
+    for (let y = IOY + 2; y < IOY + rh - 2; y += 3)
+      for (let x = IOX + 2; x < IOX + rw - 2; x += 4)
+        if (rnd() < 0.4) ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
+    // the camera that owns this floor's stairwell, when the lock wants one
+    if (dgnLock(bld, floor) === 'camlock')
+      ip.push({ x: IOX + rw - 2.5, y: IOY + 0.7, k: PK_CAM, s: rnd(), r: 0.16,
+                dead: worldDelta.cutIn && worldDelta.cutIn['b' + bld.id + 'f' + floor] ? 1 : 0 });
+    // what is left behind is worth carrying out
+    if (rnd() < 0.7) dropItem(IOX + 1.5, IOY + rh - 2.6, 0, 'ammo', 4);
+    if (rnd() < 0.4) dropItem(IOX + rw - 1.5, IOY + 3.5, 0, 'medkit');
+    if (rnd() < 0.5) dropItem(IOX + 2.5, IOY + 2.5, 0, 'scrap', 2);
+    // the residents
+    const packs = top ? 1 : 2 + Math.min(2, depth);
+    for (let h = 0; h < packs; h++){
+      const hx2 = IOX + 2 + ((hash3(bld.seed, floor * 7 + h, 79) * (rw - 4)) | 0);
+      const hy2 = IOY + 3 + ((hash3(bld.seed, floor * 11 + h, 83) * (rh - 5)) | 0);
+      const a = spawnActor('razor', hx2 + 0.5, hy2 + 0.5, {
+        name: 'SQUATTER', brain: 'hostile', hp: 22 + depth * 12 });
+      a.atk = 5 + depth * 2;
+      a.interior = 1;
+    }
+    if (top){                                   // the top keeps its keeper
+      furn(IOX + (rw >> 1) + 0.5, IOY + 2.0, 'altar');
+      const w = spawnActor('razor', IOX + (rw >> 1) + 0.5, IOY + 3.6, {
+        name: 'THE WARDEN', brain: 'hostile', hp: 120 + depth * 20 });
+      w.atk = 10 + depth * 2; w.spd = 2.0;
+      w.interior = 1;
+      // the hoard: a special weapon this tower has always kept, and supplies
+      const prize = ['railgun', 'arcgun', 'nailer', 'katana', 'maul']
+        [(hash3(bld.seed, 5, 89) * 5) | 0];
+      dropItem(IOX + (rw >> 1) + 0.5, IOY + 1.4, 0, prize, 1);
+      dropItem(IOX + (rw >> 1) - 0.8, IOY + 1.6, 0, 'medkit', 2);
+      dropItem(IOX + (rw >> 1) + 1.8, IOY + 1.6, 0, 'ammo', 12);
+    }
   } else if (kind === 'casino'){
     // The house wears one of four skins, and each leads with its own game -
     // but every floor keeps blackjack, because every floor keeps blackjack.
@@ -3781,7 +3840,7 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
     if (rnd() < 0.5) dropItem(IOX + 1.5, IOY + rh - 2.5, 0, 'soda');
   }
-  if (rnd() < (kind === 'storage' ? 0.35 : 0.85)){
+  if (kind !== 'dungeon' && rnd() < (kind === 'storage' ? 0.35 : 0.85)){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
     const a = spawnActor('vendor', kx, IOY + 1.4,
                          { name: TF ? TF.keeper : F.keeper, brain: 'still',
@@ -3808,9 +3867,30 @@ function buildInterior(bld, door, floor){
            ang: floor === 1 ? -Math.PI / 2 : Math.PI / 2,
            exit: floor === 1 ? { x: doorX + 0.5, y: doorY - 0.45 } : null };
 }
+function dgnBlocked(bld, from, to){
+  if (!isDungeon(bld) || to <= from) return null;   // descent is always free
+  const lock = dgnLock(bld, from);
+  if (lock === 'guard'){
+    if (actors.some(a => a.interior && a.brain === 'hostile' && a.hp > 0))
+      return 'the stairwell is held - clear the floor first';
+  } else if (lock === 'grate'){
+    if (!invCount('saw')) return 'a welded grate seals the stairs - a HACKSAW would open it';
+    toast('the saw goes through the grate like an argument');
+  } else if (lock === 'magseal'){
+    if (!invCount('shim')) return 'a mag-seal holds the door - a MAG-SHIM would slip it';
+    toast('the shim slips the seal');
+  } else if (lock === 'camlock'){
+    const cam2 = props.find(q => q.k === PK_CAM && !q.dead);
+    if (cam2) return 'a live camera watches the stairs - kill its eye first';
+  }
+  return null;
+}
 function gotoFloor(f){
   closeMenus();
   if (f === inside.floor) return;
+  const bld2 = buildings[inside.bld];
+  const stop = dgnBlocked(bld2, inside.floor, f);
+  if (stop){ toast(stop); sfx('ui_back', { vol: 0.5, rate: 0.6 }); return; }
   for (let i = actors.length - 1; i >= 0; i--) if (actors[i].interior) actors.splice(i, 1);
   buildings.length = EXT.bLen;
   const room = buildInterior(buildings[inside.bld], inside.door, f);
@@ -3989,7 +4069,9 @@ function tryInteract(){
     t.p.dead = 1;                               // the stump stays as proof
     if (inside){
       if (!worldDelta.cutIn) worldDelta.cutIn = {};
-      worldDelta.cutIn['b' + inside.bld] = 1;   // per-shop key, no collisions
+      // per-shop key; upper floors carry their storey so a dungeon's
+      // camera locks stay cut floor by floor
+      worldDelta.cutIn['b' + inside.bld + (inside.floor > 1 ? 'f' + inside.floor : '')] = 1;
     } else {
       if (!worldDelta.cut) worldDelta.cut = {};
       worldDelta.cut[(t.p.y | 0) * MAP + (t.p.x | 0)] = 1;
