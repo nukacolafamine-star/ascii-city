@@ -35,11 +35,11 @@ Small, unblocking, or restructuring work that later phases hook into.
 ## Phase B — world fabric
 Content infrastructure that the venues and the main quest consume.
 
-- [ ] **B1. Interior furniture voxel set.** ≥1 unique piece per shop trade,
+- [x] **B1. Interior furniture voxel set.** ≥1 unique piece per shop trade,
   10 shared corpo pieces (desks, terminals, planters, water coolers…),
   5 player-home pieces, 6 dungeon pieces. Authored volumes like the cart;
   placed by `buildInterior` per archetype so each trade reads distinct.
-- [ ] **B2. Pedestrian expansion.** Seeded first+last name pools combined
+- [x] **B2. Pedestrian expansion.** Seeded first+last name pools combined
   per ped; every ped gets a home (an apartment/house door) and a schedule:
   leave home → path to a destination (work/school/dome = despawn there;
   store/casino/landmark = linger then walk home). Interact (SPACE) for
@@ -47,7 +47,7 @@ Content infrastructure that the venues and the main quest consume.
   going, what district, time of day, weather, and (rare) what the player
   has done (corruption, murders, quest flags). Continuity: name+home from
   seed so a save keeps its people.
-- [ ] **B3. Weapon expansion.** +5 basic guns (revolver, SMG, shotgun,
+- [x] **B3. Weapon expansion.** +5 basic guns (revolver, SMG, shotgun,
   rifle, hold-out), +3 special guns (unique visual effects — e.g. railgun
   glyph-tracer, arc gun chaining sparks, nailer that pins), +1 basic melee
   (knife), +2 special melee (vibro-katana with trail smear, shock maul
