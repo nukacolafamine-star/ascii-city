@@ -1239,6 +1239,20 @@ const MODEL_CLEAR = [];
   c(PK_APPLE, 0.3);  c(PK_CAM, 0.25);    c(PK_ITEM, 0.2);
   c(PK_CROP, 0.16);
 })();
+/* Clearance only stops things touching. Furniture also wants to be SPREAD:
+   the generators scatter by per-tile chance, which clumps. This is the
+   minimum gap between two of the same kind, in tiles - a clump is thinned
+   until what is left is evenly placed. Rails and crops are laid in
+   deliberate runs, so they are left out of it. */
+const MODEL_SPACE = [];
+(function(){
+  const g = (k, d) => { MODEL_SPACE[k] = d; };
+  g(PK_STALL, 8);   g(PK_HYDR, 8);    g(PK_LAMP, 7);
+  g(PK_BIN, 7);     g(PK_BENCH, 6);   g(PK_TLIGHT, 6);
+  g(PK_CAM, 6);     g(PK_PLAY, 5);    g(PK_APPLE, 5);
+  g(PK_TREE, 4);    g(PK_SAKURA, 4);  g(PK_ROCK, 3);
+  g(PK_METRO, 8);
+})();
 // placed on purpose first, scattered dressing last - and the first three
 // are never moved, because other systems know where they are
 const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_STALL, PK_BENCH, PK_CAM,
@@ -1246,7 +1260,7 @@ const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_STALL, PK_BENCH, PK_CAM,
                      PK_APPLE, PK_PLAY, PK_BIN, PK_RACK, PK_CROP,
                      PK_ROCK, PK_TREE, PK_SAKURA];
 function deoverlapProps(){
-  const CELL = 4, STRIDE = 4096;
+  const CELL = 8, STRIDE = 4096;
   const buckets = new Map();
   const clearOf = q => MODEL_CLEAR[q.k] !== undefined ? MODEL_CLEAR[q.k]
                      : Math.max(q.r || 0.2, 0.3);
@@ -1258,6 +1272,8 @@ function deoverlapProps(){
   };
   const clashAt = (q, x, y, R) => {
     const bx = (x / CELL) | 0, by = (y / CELL) | 0;
+    const sp = MODEL_SPACE[q.k];
+    const sp2 = sp !== undefined ? sp * sp : 0;
     for (let jy = -1; jy <= 1; jy++)
       for (let jx = -1; jx <= 1; jx++){
         const a = buckets.get((by + jy) * STRIDE + (bx + jx));
@@ -1266,8 +1282,10 @@ function deoverlapProps(){
           const o = a[i];
           if (o === q) continue;
           const dx = o.x - x, dy = o.y - y;
+          const d2 = dx * dx + dy * dy;
           const rr = R + clearOf(o);
-          if (dx * dx + dy * dy < rr * rr) return true;
+          if (d2 < rr * rr) return true;
+          if (sp2 && o.k === q.k && d2 < sp2) return true;   // too close a twin
         }
       }
     return false;
@@ -1284,7 +1302,7 @@ function deoverlapProps(){
     if (!clashAt(q, q.x, q.y, R)){ keep.push(q); put(q); continue; }
     if (pinned[q.k]){ keep.push(q); put(q); continue; }   // these hold their ground
     let placed = false;
-    for (let ring = 1; ring <= 2 && !placed; ring++){
+    for (let ring = 1; ring <= 3 && !placed; ring++){
       for (let a = 0; a < 8; a++){
         const th = a * Math.PI / 4;
         const nx = q.x + Math.cos(th) * ring * 0.55;
@@ -2332,7 +2350,37 @@ function buildDoors(){
         }
       }
     if (!cand.length) continue;
-    const c = cand[(hash3(b.id, 77, b.seed) * cand.length) | 0];
+    // A door belongs in the middle of the wall it is cut into. Split the
+    // candidates into runs - one unbroken stretch of wall facing one way -
+    // take the longest (ties broken by the building's own seed), and put
+    // the door at its midpoint. L-shaped blocks have several runs, so this
+    // beats measuring from the bounding box, whose centre can miss the wall.
+    const runs = new Map();
+    for (const q of cand){
+      const alongY = DIRV[q[2]][0] !== 0;     // a wall facing x runs along y
+      const key = q[2] + ':' + (alongY ? q[0] : q[1]);
+      let a = runs.get(key);
+      if (!a) runs.set(key, a = []);
+      a.push(q);
+    }
+    let best = null, bestLen = 0;
+    for (const a of runs.values()){
+      const alongY = DIRV[a[0][2]][0] !== 0;
+      a.sort((u, v) => alongY ? u[1] - v[1] : u[0] - v[0]);
+      let i = 0;
+      while (i < a.length){
+        let j = i;                            // one unbroken stretch
+        while (j + 1 < a.length &&
+               (alongY ? a[j + 1][1] - a[j][1] : a[j + 1][0] - a[j][0]) === 1) j++;
+        const len = j - i + 1;
+        if (len > bestLen ||
+            (len === bestLen && hash3(b.id, 77, a[i][0] * 31 + a[i][1]) < 0.5)){
+          bestLen = len; best = a[(i + j) >> 1];
+        }
+        i = j + 1;
+      }
+    }
+    const c = best;
     const nx = DIRV[c[2]][0], ny = DIRV[c[2]][1];
     b.doorX = c[0]; b.doorY = c[1];        // the facade draws the door itself
     b.doorNX = nx; b.doorNY = ny;
