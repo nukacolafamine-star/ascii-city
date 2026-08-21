@@ -5524,8 +5524,10 @@ function punch(){
   strikeAt = m.beats[1] * (punchDur / m.cool);        // contact lands mid-swing
   strikeArmed = true;
   whiffT = 0;
-  if (m.id === 'fist') punchLeft = !punchLeft;   // fists alternate; a weapon
-  else punchLeft = false;                        // stays in the right hand
+  // fists alternate arms and the pipe alternates forehand with backhand; the
+  // bat is a two-handed swing and always comes off the same shoulder
+  if (m.id === 'bat') punchLeft = false;
+  else punchLeft = !punchLeft;
   // an air-pass whoosh, distinct from the menu register, escalating by weight
   sfx('footstep', { vol: m.id === 'bat' ? 0.35 : m.id === 'pipe' ? 0.28 : 0.2,
                     rate: m.id === 'bat' ? 1.9 : m.id === 'pipe' ? 2.1 : 2.4 });
@@ -5841,6 +5843,12 @@ function drawViewArt(rows, ax, ay, tr, cmap){
     }
   }
   return tc;
+}
+// the width drawViewArt will actually paint, once the art is grounded and
+// the upscale clamp has had its say - anchoring needs the real number
+function drawnW(art, tr){
+  const g = groundArt(art), gh = g.length, gw = viewW(g);
+  return Math.max(2, Math.round(Math.min(tr, Math.round(gh * 3.5)) * gw / gh));
 }
 function shiftArt(rows, dx, dy){              // slide a pose for an in-between
   const w = viewW(rows), out = [];
@@ -6410,176 +6418,246 @@ const DT_IMPOSSIBLE = [
 const DECK_TRICKS = { kickflip: DT_KICKFLIP, heelflip: DT_HEELFLIP, ollie: DT_NOLLIE,
                       'shove-it': DT_SHOVEIT, nollie: DT_NOLLIE,
                       bigspin: DT_BIGSPIN, impossible: DT_IMPOSSIBLE };
+/*--------------------------- bludgeons -------------------------------------
+  A pipe is a one-handed tool: the off hand stays out of frame, the grip sits
+  low and small on the right, and the pipe itself is a long elbowed length of
+  conduit - a hard L, the horizontal run reaching away across the top. A bat
+  is the opposite: both fists stacked on the grip, and a swing that carries
+  the barrel across nearly the whole screen.
+============================================================================*/
 const VM_PIPE_HOLD = [
-  '                     __%%__   ',
-  '                    (%%%##)   ',
-  '                   (%%%#/     ',
-  '                  (%%%/       ',
-  '                 (%%%/        ',
-  '                (%%%/         ',
-  '               (%%%/          ',
-  '              (%%%/           ',
-  '             (%%%/            ',
-  '            (%%%/             ',
-  '          _(%%%/_             ',
-  '       __(nn%%%nnn)__         ',
-  '      (n@n@n###n@n@n@)        ',
-  '      (s)ss)ss)ss)ss)s)       ',
-  '      |s)ss)ss)ss)ss)s|       ',
-  '      (sssss#ssssssss,s)      ',
-  '       (ssssssssssssss)       ',
-  '      (:sssssssssss:ss)       ',
-  '      (jj.jjjjjjjj.jjjj)      ',
-  '      |jj/jjjj,jjjj\\jjj|     ',
-  '      |jjjjjj/jjjjjjjjj|      ',
-  '      (jjjj,jjjjjjjjjjj)      ',
-  '      |jjjjjjjjjjjjjjjj|      ',
-  '      |jjjjjjjjjjjjjjjj|      '
+  '     _______________________     ',
+  '    (%%%%%%%%%%%%%%%%%%%%%%#)    ',
+  '    (#%%##%%%%##%%%%##%%%%%%)    ',
+  '    (______________%%%%%%%%%)    ',
+  '                   (%%%##%%%)    ',
+  '                   (%%%%%%%%)    ',
+  '                   (%%##%%%%)    ',
+  '                   (%%%%%%%%)    ',
+  '                   (%%##%%%%)    ',
+  '                   (%%%%%%%%)    ',
+  '                  _(%%%%%%%%)_   ',
+  '                _(n@n%%%%%n@n)_  ',
+  '               (n@n@n@##n@n@n@n) ',
+  '               (ss)ss)ss)ss)ss)  ',
+  '                (jj.jjjjjj.jjj)  ',
+  '                |jj/jjjj,jjjjj|  ',
+  '                |jjjjjjjjjjjjj|  ',
+  '                |jjjjjjjjjjjjj|  '
 ];
+/* forehand: the elbow leads, the run sweeps down and across to the left */
 const VM_PIPE_WIND = [
-  '                 ______%%%%%%%%__ ',
-  '             ___(n(###%%%%%%%%#/  ',
-  '           _(n@n@n@n)ss)          ',
-  '          (s)ss)ss)ss)s)          ',
-  '          |s)ss)ss)ss)s|          ',
-  '           (ssssssss,ss)          ',
-  '           (sssssssssss)          ',
-  '           (:sssssss:ss)          ',
-  '           (j.jjjjjjj.jj)         ',
-  '           |jj/jjj,jj\\jj|        ',
-  '           (jjjjj/jjjjjj)         ',
-  '           |jjjjjjjjjjjj|         ',
-  '           |jjjjjjjjjjjj|         '
+  '            ______________%%%%%%%%%__ ',
+  '        ___(%%%%%%%%%%%%%%%%%%%%%%%#) ',
+  '       (##%%%%##%%%%##%%%%##%%%%%%%%) ',
+  '       (__________________%%%%%%%%%/  ',
+  '                      _(%%%%%%%%%/    ',
+  '                    _(n@n%%%%n@n)_    ',
+  '                   (n@n@n@#n@n@n@n)   ',
+  '                   (ss)ss)ss)ss)ss)   ',
+  '                   (jj.jjjjjj.jjjj)   ',
+  '                   |jj/jjjj,jjjjjj|   ',
+  '                   |jjjjjjjjjjjjjj|   ',
+  '                   |jjjjjjjjjjjjjj|   '
 ];
 const VM_PIPE_SMEAR = [
-  '     ------ ------            ',
-  '   ------ ------   ___        ',
-  '  ----- ------  __(%%%__      ',
-  '   ------  __(%%%%%%##/  ---  ',
-  '    ---  _(%%%%%%#/   ----    ',
-  '     -- (n@n%%%/n@n)   --     ',
-  '        (s)ss##)ss)s)         ',
-  '        (ssssssssss,s)        ',
-  '         (jjjjjjjjjj)_        ',
-  '          (jjj,jjjjjjj)_      ',
-  '           (jjjjj/jjjjjj)_    ',
-  '            (jjjjjjjjjjjjj)   ',
-  '            |jjjjjjjjjjjjj|   ',
-  '            |jjjjjjjjjjjjj|   '
+  '     ---- ------ ------ -----           ',
+  '   ----- ------ ------ ------ ---       ',
+  '  --- ____________________%%%%__ ---    ',
+  '  -- (%%%%%%%%%%%%%%%%%%%%%%%%%#)  --   ',
+  '  -- (#%%##%%%%##%%%%##%%%%%%%%/   --   ',
+  '   -- (______________%%%%%%%%/    ---   ',
+  '           _(n@n%%%%%n@n)_              ',
+  '          (n@n@n@##n@n@n@n)             ',
+  '          (ss)ss)ss)ss)ss)              ',
+  '          (jjjjjjjjjjjjjj)_             ',
+  '           (jjj,jjjjjjjjjj)_            ',
+  '            (jjjjjjjjjjjjjjj)           ',
+  '            |jjjjjjjjjjjjjjj|           '
 ];
 const VM_PIPE_HIT = [
-  '    \\    *    /               ',
-  '   *  ____________________    ',
-  '  =*=(##%%%%%%%%%%%%%%%%%)----',
-  '   *  \\  *  /                 ',
-  '    *    *      _(n@n@n)_     ',
-  '               (sssssssss)    ',
-  '               (ss)ss)ss)s)   ',
-  '               (jjjjjj)_      ',
-  '                (jj,jjjjj)_   ',
-  '                 (jjjjjjjjj)_ ',
-  '                  (jjjj/jjjjj)',
-  '                  (jjjjjjjjjj)',
-  '                  |jjjj,jjjjj|',
-  '                  |jjjjjjjjjj|'
+  '    \\    *    /                            ',
+  '   *  __________________________________   ',
+  '  =*=(%##%%%%##%%%%%##%%%%%##%%%%%%%%%%)---',
+  '   *  \\  *  /             (%%%%%%%%%%%/    ',
+  '    *    *           _(n@n%%%%%%n@n)_      ',
+  '                    (n@n@n@##n@n@n@n)      ',
+  '                    (ss)ss)ss)ss)ss)       ',
+  '                    (jjjjjjj,jjjjjj)_      ',
+  '                     (jjjj/jjjjjjjjj)_     ',
+  '                      (jjjjjjjjjjjjjjj)    ',
+  '                      |jjjj,jjjjjjjjjj|    ',
+  '                      |jjjjjjjjjjjjjjj|    '
 ];
 const VM_PIPE_REC = [
-  '             ______           ',
-  '          __(nnnnnn)__        ',
-  '         (n@n@n@n@n@nn)       ',
-  '         (s)ss)ss)ss)ss)      ',
-  '        _(sssssssssss,s)      ',
-  '      _(%%ssssssssss:ss)      ',
-  '    _(%%%/j.jjjjjjjj.jj)      ',
-  '   (%%%/  |jj,jjjjj\\jjj|     ',
-  '  (%%%/   (jjjj/jjjjjjj)      ',
-  ' (%%#/    |jjjjjjjjjjjj|      ',
-  ' (##/     |jjjjjjjjjjjj|      '
+  '               ______            ',
+  '            __(nnnnnn)__         ',
+  '           (n@n@n@n@n@nn)        ',
+  '           (ss)ss)ss)ss)s)       ',
+  '       ____(sssssssssss,s)       ',
+  '    _(%%%%#sssssssssss:sss)      ',
+  '  _(%%##%%/j.jjjjjjjjj.jjj)      ',
+  ' (%%%%%%/  |jj,jjjjjj/jjjj|      ',
+  ' (%%##%/   (jjjj/jjjjjjjjj)      ',
+  ' (%%%/     |jjjjjjjjjjjjjj|      ',
+  ' (#/       |jjjjjjjjjjjjjj|      '
 ];
+/* backhand: the whip back the other way - the shaft leads low, the elbow
+   trails, and the run finishes high and right. Not a mirror of the forehand:
+   the hand never changes sides, only the arc does. */
+const VM_PIPE_WIND_B = [
+  '    __%%%%%%%%%%%______________       ',
+  '   (#%%%%%%%%%%%%%%%%%%%%%%%%%#)__    ',
+  '   (%%%%%%##%%%%##%%%%##%%%%%%%%%)    ',
+  '    (%%%%%%%%%_________________)      ',
+  '     (%%%%%%%%)_                      ',
+  '       _(n@n%%%%n@n)_                 ',
+  '      (n@n@n@#n@n@n@n)                ',
+  '      (ss)ss)ss)ss)ss)                ',
+  '      (jj.jjjjjj.jjjj)                ',
+  '      |jj/jjjj,jjjjjj|                ',
+  '      |jjjjjjjjjjjjjj|                ',
+  '      |jjjjjjjjjjjjjj|                '
+];
+const VM_PIPE_SMEAR_B = [
+  '        ----- ------ ------ ----        ',
+  '     --- ------ ------ ------ -----     ',
+  '    --- __%%%%____________________ ---  ',
+  '    -- (#%%%%%%%%%%%%%%%%%%%%%%%%%) --  ',
+  '    --  (%%%%%%%%##%%%%##%%%%%%%%/  --  ',
+  '     ---   (%%%%%%%%%______________) -- ',
+  '              _(n@n%%%%%n@n)_           ',
+  '             (n@n@n@##n@n@n@n)          ',
+  '             (ss)ss)ss)ss)ss)           ',
+  '            _(jjjjjjjjjjjjjj)           ',
+  '           _(jjjjjjjjjj,jjj)            ',
+  '          (jjjjjjjjjjjjjjj)             ',
+  '          |jjjjjjjjjjjjjjj|             '
+];
+const VM_PIPE_HIT_B = [
+  '                             \\    *    /   ',
+  '   __________________________________  *   ',
+  '---(%%%%%%%%%##%%%%%##%%%%%##%%%%##%)=*=   ',
+  '    \\%%%%%%%%%%%)             /  *  /      ',
+  '      _(n@n%%%%%%n@n)_      *    *         ',
+  '     (n@n@n@##n@n@n@n)     *               ',
+  '      (ss)ss)ss)ss)ss)                     ',
+  '     _(jjjjjj,jjjjjjj)                     ',
+  '    _(jjjjjjjjj/jjjj)                      ',
+  '   (jjjjjjjjjjjjjjj)                       ',
+  '   |jjjjjjjjjj,jjjj|                       ',
+  '   |jjjjjjjjjjjjjjj|                       '
+];
+const VM_PIPE_REC_B = [
+  '        ______                   ',
+  '     __(nnnnnn)__                ',
+  '    (n@n@n@n@n@nn)               ',
+  '   (s)ss)ss)ss)ss)               ',
+  '   (s,sssssssssss)____           ',
+  '   (sss:sssssssss#%%%%)_         ',
+  '   (jj.jjjjjjjjj/%%##%%)_        ',
+  '   |jjjj/jjjjjj|  /%%%%%%)       ',
+  '   (jjjjjjjj/jjj)   /%##%%)      ',
+  '   |jjjjjjjjjjjj|     /%%%)      ',
+  '   |jjjjjjjjjjjj|       /#)      '
+];
+/* the bat: two fists stacked on the grip, and a barrel that goes everywhere */
 const VM_BAT_HOLD = [
-  '                    ___ww___   ',
-  '                   (wwww##w)   ',
-  '                  (wwwwww/     ',
-  '                 (ww##ww/      ',
-  '                 (wwwww/       ',
-  '                (ww##w/        ',
-  '                (wwww/         ',
-  '               (ww#w/          ',
-  '              (wwww/           ',
-  '             (www/             ',
-  '            (ww/               ',
-  '          _(ww/_               ',
-  '       __(n#wwnnn)__           ',
-  '      (n@n@####@n@n@n)         ',
-  '      (s)ss)ss)ss)ss)s)        ',
-  '      (s(s)s##(ss)ss,s)        ',
-  '      (:sssss##ssss:ss)        ',
-  '      (ssssss##sssssss)        ',
-  '      (jj.jjjjjjjj.jjj)        ',
-  '      |jj/jjjj,jjj\\jjj|       ',
-  '      |jjjjjj/jjjjjjjj|        ',
-  '      (jjjj,jjjjjjjjjj)        ',
-  '      |jjjjjjjjjjjjjjj|        ',
-  '      |jjjjjjjjjjjjjjj|        '
+  '                       ___wwww___  ',
+  '                     _(wwwww##www) ',
+  '                    (wwww##wwwww/  ',
+  '                   (wwwwwwwww/     ',
+  '                  (www##www/       ',
+  '                 (wwwwwww/         ',
+  '                (www##ww/          ',
+  '               (wwwwww/            ',
+  '              (www##w/             ',
+  '             (wwwww/               ',
+  '            (www#w/                ',
+  '           (wwwww/                 ',
+  '          _(ww#w/_                 ',
+  '        _(n@n@ww@n@n)_             ',
+  '       (n@n@n@n##n@n@n@n)          ',
+  '       (ss)ss)ss)ss)ss)ss)         ',
+  '        (jjj)jj##jj)jjjjj)         ',
+  '      _(n@n@n@ww@n@n@n)_           ',
+  '     (n@n@n@n@n##n@n@n@n@n)        ',
+  '     (ss)ss)ss)ss)ss)ss)ss)        ',
+  '     (jj.jjjjjjjjjjjj.jjjjj)       ',
+  '     |jj/jjjjj,jjjjjjj/jjjjj|      ',
+  '     |jjjjjjj/jjjjjjjjjjjjjj|      ',
+  '     (jjjj,jjjjjjjjjjjjjjjjj)      ',
+  '     |jjjjjjjjjjjjjjjjjjjjjj|      ',
+  '     |jjjjjjjjjjjjjjjjjjjjjj|      '
 ];
 const VM_BAT_WIND = [
-  '              _____wwwwwwwwww___ ',
-  '          ___(###wwww##wwww##ww) ',
-  '        _(n(n###)__wwwww/        ',
-  '       (n@n@n@n)ss)              ',
-  '       (s)ss)ss)ss)              ',
-  '       (s(s(sss,sss)             ',
-  '        (:ssssss:ss)             ',
-  '        (j.jjjjjjj.jj)           ',
-  '        |jj/jjjj,j\\jj|          ',
-  '        (jjjjj/jjjjjj)           ',
-  '        |jjjjjjjjjjjj|           ',
-  '        |jjjjjjjjjjjj|           '
+  '               _____wwwwwwwwwww___   ',
+  '           ___(#####wwww##wwww##www) ',
+  '         _(www##wwwwwwwwww##wwww/    ',
+  '       _(wwww##wwwww/                ',
+  '     _(wwwww/                        ',
+  '   _(n@n@ww@n@n)_                    ',
+  '  (n@n@n@n##n@n@n)                   ',
+  '  (ss)ss)ss)ss)ss)                   ',
+  '   (jjj)jj##jj)jjj)                  ',
+  '  _(n@n@n@ww@n@n@n)_                 ',
+  ' (n@n@n@n@n##n@n@n@n)                ',
+  ' (ss)ss)ss)ss)ss)ss)                 ',
+  ' (jj.jjjjjjjjjjjj.jj)                ',
+  ' |jj/jjjjj,jjjjjjj/jj|               ',
+  ' |jjjjjjj/jjjjjjjjjjj|               ',
+  ' (jjjj,jjjjjjjjjjjjjj)               ',
+  ' |jjjjjjjjjjjjjjjjjjj|               ',
+  ' |jjjjjjjjjjjjjjjjjjj|               '
 ];
 const VM_BAT_SMEAR = [
-  '    ------- --------          ',
-  '  --------- ---------         ',
-  ' ------ ____www____ ------    ',
-  '  --- _(www##wwww#w/  -----   ',
-  '   - (n(wwwwww/@n)s)   ---    ',
-  '     (s)s####)ss)ss)    --    ',
-  '     (sssssssssss,s)          ',
-  '      (jjjjjjjjjjjj)_         ',
-  '       (jjj,jjjjjjjjj)_       ',
-  '        (jjjjj/jjjjjjjj)_     ',
-  '         (jjjjjjjjjjjjjjj)    ',
-  '         |jjjjjj,jjjjjjjj|    ',
-  '         |jjjjjjjjjjjjjjj|    '
+  '    ----- ------ ------- --------             ',
+  '  ------ ------- ------- ------ -----         ',
+  ' ----- _______wwwwwwwwwwwwww______ ------     ',
+  ' --- (www##wwwww##wwwwww##wwwwwwww#) ------   ',
+  ' -- (#wwwwww##wwwwwww##wwwwww##www/   -----   ',
+  ' --- (____wwwww/                       ----   ',
+  '   _(n@n@ww@n@n)_                       ---   ',
+  '  (n@n@n@n##n@n@n)                       --   ',
+  '  (ss)ss)ss)ss)ss)                             ',
+  '  _(n@n@n@ww@n@n@n)_                           ',
+  ' (n@n@n@n@n##n@n@n@n)_                         ',
+  ' (ss)ss)ss)ss)ss)ss)jj)_                       ',
+  ' (jj.jjjjjjjjjjjj.jjjjjjj)_                    ',
+  ' |jj/jjjjj,jjjjjjj/jjjjjjjj)                   ',
+  ' |jjjjjjj/jjjjjjjjjjjjjjjjjj)                  ',
+  ' |jjjjjjjjjjjjjjjjjjjjjjjjjj|                  '
 ];
 const VM_BAT_HIT = [
-  '   \\\\    *    //               ',
-  '  *  ______________________    ',
-  ' =*=(w###wwwwwwww##www##www)---',
-  '  *  \\\\  *   //                ',
-  '   *     *       _(n@n@n)_     ',
-  '    *           (sssssssss)    ',
-  '                (s)ss)ss)s)    ',
-  '                (jjjjjj)_      ',
-  '                 (jj,jjjjj)_   ',
-  '                  (jjjjjjjjj)_ ',
-  '                   (jjjj/jjjjj)',
-  '                   (jjjjjjjjjj)',
-  '                   |jjj,jjjjjj|',
-  '                   |jjjjjjjjjj|'
+  '   \\\\     *      //                                ',
+  '  *   ______________________________________       ',
+  ' =*=(w###wwww##wwwwww##wwwwww##wwwwww##wwwww)------',
+  '  *   \\\\   *     //                                ',
+  '   *      *          _(n@n@ww@n@n)_                ',
+  '    *        *       (n@n@n@##n@n@n)               ',
+  '                     (ss)ss)ss)ss)s)               ',
+  '                     _(n@n@n@ww@n@n@n)_            ',
+  '                    (n@n@n@n@##n@n@n@n)            ',
+  '                    (ss)ss)ss)ss)ss)ss)            ',
+  '                    (jjjjjjjj,jjjjjjjj)_           ',
+  '                     (jjjjj/jjjjjjjjjjjj)_         ',
+  '                      (jjjjjjjjjjjjjjjjjjj)        ',
+  '                      |jjjj,jjjjjjjjjjjjjj|        ',
+  '                      |jjjjjjjjjjjjjjjjjjj|        '
 ];
 const VM_BAT_REC = [
-  '              ______           ',
-  '           __(nnnnnn)__        ',
-  '          (n@n@n@n@n@nn)       ',
-  '          (s)ss)ss)ss)s)       ',
-  '        __(ssssssssss,s)       ',
-  '     __(ww#sssssssss:ss)       ',
-  '   _(wwww/j.jjjjjjjj.jj)       ',
-  '  (www#/  |jj,jjjjj\\jjj|      ',
-  ' (wwww/   (jjjj/jjjjjjj)       ',
-  ' (ww#/    |jjjjjjjjjjjj|       ',
-  ' (ww/     |jjjjjjjjjjjj|       ',
-  ' (#/      |jjjjjjjjjjjj|       '
+  '                     ______             ',
+  '                  __(nnnnnn)__          ',
+  '                 (n@n@n@n@n@nn)         ',
+  '                 (ss)ss)ss)ss)s)        ',
+  '           _____(ssssssssssss,s)        ',
+  '       _(wwwww#ssssssssssss:sss)        ',
+  '    _(wwww##ww/jj.jjjjjjjjj.jjj)        ',
+  '  _(www##wwww/  |jj,jjjjjj/jjjj|        ',
+  ' (wwwww##ww/    (jjjj/jjjjjjjjj)        ',
+  ' (w##ww/        |jjjjjjjjjjjjjj|        ',
+  ' (ww#/          |jjjjjjjjjjjjjj|        ',
+  ' (#/            |jjjjjjjjjjjjjj|        '
 ];
 // each swing runs coil -> deeper coil -> smear -> smear travelling ->
 // impact -> impact settling -> follow-through -> follow-through dropping
@@ -6587,10 +6665,67 @@ const PIPE_SET = [VM_PIPE_WIND, shiftArt(VM_PIPE_WIND, 2, -1),
                   VM_PIPE_SMEAR, shiftArt(VM_PIPE_SMEAR, -3, 0),
                   VM_PIPE_HIT, shiftArt(VM_PIPE_HIT, -1, 1),
                   VM_PIPE_REC, shiftArt(VM_PIPE_REC, -2, 1)];
+const PIPE_SET_B = [VM_PIPE_WIND_B, shiftArt(VM_PIPE_WIND_B, -2, -1),
+                    VM_PIPE_SMEAR_B, shiftArt(VM_PIPE_SMEAR_B, 3, 0),
+                    VM_PIPE_HIT_B, shiftArt(VM_PIPE_HIT_B, 1, 1),
+                    VM_PIPE_REC_B, shiftArt(VM_PIPE_REC_B, 2, 1)];
 const BAT_SET = [VM_BAT_WIND, shiftArt(VM_BAT_WIND, 2, -1),
                  VM_BAT_SMEAR, shiftArt(VM_BAT_SMEAR, -4, 0),
                  VM_BAT_HIT, shiftArt(VM_BAT_HIT, -1, 1),
                  VM_BAT_REC, shiftArt(VM_BAT_REC, -2, 1)];
+/* Where each beat of a swing sits. The pose art alone cannot carry a
+   full-width arc, so the travel lives here - but anchoring by raw column
+   would break the moment the grid resized, because a wide pose is clamped
+   by its own row count rather than scaled to the screen. So each beat names
+   an EDGE of its own inked area and where on the screen that edge belongs:
+   'r' pins the far end of the swing to the right flank, 'l' to the left,
+   'm' centres it. The arc reads the same at 60 columns as at 200.
+
+   The bat is a two-handed haymaker: the barrel starts cocked off the right
+   shoulder and finishes past the left hip. The pipe runs the same shape over
+   a shorter, faster arc, and its backhand runs that arc the other way. */
+const BAT_AX    = [['r', 0.93], ['r', 0.95], ['r', 0.88], ['r', 0.80],
+                   ['m', 0.50], ['m', 0.49], ['l', 0.08], ['l', 0.10]];
+const PIPE_AX   = [['r', 0.92], ['r', 0.94], ['r', 0.86], ['r', 0.74],
+                   ['m', 0.52], ['m', 0.50], ['l', 0.12], ['l', 0.14]];
+const PIPE_AX_B = [['l', 0.08], ['l', 0.06], ['l', 0.14], ['l', 0.26],
+                   ['m', 0.48], ['m', 0.50], ['r', 0.88], ['r', 0.86]];
+// how far into its drawn columns a pose actually has ink, so a swing can be
+// hung by its blade rather than by the blank margin around it
+function inkSpan(art, tr){
+  const g = groundArt(art), gh = g.length, gw = viewW(g);
+  const t = Math.min(tr, Math.round(gh * 3.5));
+  const tc = Math.max(2, Math.round(t * gw / gh));
+  if (!art._ink) art._ink = {};
+  const hit = art._ink[tc];
+  if (hit) return hit;
+  let l = tc, r = -1;
+  for (let y = 0; y < t; y++){
+    const sr = g[(y * gh / t) | 0];
+    for (let x = 0; x < tc; x++){
+      const ch = sr[(x * gw / tc) | 0];
+      if (!ch || ch === ' ') continue;
+      if (x < l) l = x;
+      if (x > r) r = x;
+    }
+  }
+  if (r < 0){ l = 0; r = tc - 1; }
+  return (art._ink[tc] = { l, r });
+}
+// A swing pose is far wider than it is tall, and drawViewArt sizes it from
+// its HEIGHT - so on a small grid the barrel runs off both edges and most of
+// the pose is painted into nothing. Cap the request so the drawn art fits the
+// screen it is on. At full resolution this never binds.
+function fitTr(art, tr, cols){
+  const g = groundArt(art);
+  return Math.min(tr, Math.floor(cols * 1.02 * g.length / viewW(g)));
+}
+function swingAX(art, tr, rule, cols){
+  const k = inkSpan(art, tr), at = cols * rule[1];
+  return Math.round(rule[0] === 'r' ? at - k.r
+                  : rule[0] === 'l' ? at - k.l
+                                    : at - (k.l + k.r) * 0.5);
+}
 /* consuming, at full body scale - each item its own silhouette and grip:
    squat corrugated cup / slim tilted can / flat latched case */
 const VANIM = {
@@ -9587,8 +9722,10 @@ function hudPass(){
         const tw = Math.round(tr * viewW(fr) / fr.length);
         drawViewArt(fr, (cols - tw) >> 1, rows - tr, tr, vAnim.d.cmap);
       } else if (punchT > 0){
-        // the guard hand stays up, slightly withdrawn
-        {
+        const mw = meleeStats();
+        // Only bare hands keep a guard up. Both of the bat's hands are on its
+        // grip, and the pipe is a one-hander - its off hand is out of frame.
+        if (mw.id === 'fist'){
           const gt = Math.round(rows * 0.30);
           const gw = Math.round(gt * viewW(VM_FIST_R) / VM_FIST_R.length);
           const off = Math.round(cols * 0.19);
@@ -9596,7 +9733,6 @@ function hudPass(){
           else drawViewArt(VM_FIST_L, (cols >> 1) - off - gw, rows - gt + 2, gt, CM_ARM);
         }
         // eight beats to a swing: every pose gets a half-step of travel
-        const mw = meleeStats();
         const sc = punchDur / mw.cool;
         const e = punchDur - punchT;
         const b0 = mw.beats[0] * sc, b1 = mw.beats[1] * sc, b2 = mw.beats[2] * sc;
@@ -9604,14 +9740,20 @@ function hudPass(){
                  : e < b0 + (b1 - b0) * 0.5 ? 2 : e < b1 ? 3
                  : e < b1 + (b2 - b1) * 0.4 ? 4 : e < b2 ? 5
                  : e < b2 + (punchDur - b2) * 0.5 ? 6 : 7;
-        let art, cmA = CM_ARM;
-        if (mw.id === 'bat'){ cmA = CM_MELEE; art = BAT_SET[ph]; }
-        else if (mw.id === 'pipe'){ cmA = CM_MELEE; art = PIPE_SET[ph]; }
+        let art, cmA = CM_ARM, axf;
+        if (mw.id === 'bat'){ cmA = CM_MELEE; art = BAT_SET[ph]; axf = BAT_AX[ph]; }
+        else if (mw.id === 'pipe'){
+          cmA = CM_MELEE;                   // forehand, then the whip back
+          art = punchLeft ? PIPE_SET_B[ph] : PIPE_SET[ph];
+          axf = punchLeft ? PIPE_AX_B[ph] : PIPE_AX[ph];
+        }
         else art = punchLeft ? PUNCH_SET_L[ph] : PUNCH_SET[ph];
-        const tr = Math.round(rows * 0.56);            // the swing owns the screen
+        let tr = Math.round(rows * (mw.id === 'bat' ? 0.62 : 0.56));
+        if (axf !== undefined) tr = fitTr(art, tr, cols);   // keep it on screen
         const tw = Math.round(tr * viewW(art) / art.length);
         let ax;
-        if (ph === 2)                       // fist lands beside the reticle
+        if (axf !== undefined) ax = swingAX(art, tr, axf, cols);  // the arc is authored
+        else if (ph === 2)                  // fist lands beside the reticle
           ax = punchLeft ? (cols >> 1) - 6 - Math.round(tw * 0.75)
                          : (cols >> 1) + 6 - Math.round(tw * 0.25);
         else if (ph === 1)                  // the smear reaches across
@@ -9639,15 +9781,25 @@ function hudPass(){
                       (cols >> 1) - 3, gy - 3, 3, CM_MUZ);
       } else {
         const mw = meleeStats();
-        const hold = mw.id === 'bat' ? VM_BAT_HOLD : mw.id === 'pipe' ? VM_PIPE_HOLD : VM_FIST_R;
-        const tr = Math.round(rows * 0.34);
-        const tr2 = Math.round(rows * (mw.id === 'fist' ? 0.34 : 0.58));
-        const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
-        const tw2 = Math.round(tr2 * viewW(hold) / hold.length);
-        const off = Math.round(cols * 0.19);      // a boxer guard, framing the reticle
-        drawViewArt(VM_FIST_L, (cols >> 1) - off - tw, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
-        drawViewArt(hold, (cols >> 1) + off, rows - tr2 + (bob ? 0 : 1), tr2,
-                    mw.id === 'fist' ? CM_ARM : CM_MELEE);
+        if (mw.id === 'bat'){
+          // squared up: both fists on the grip, barrel over the right shoulder
+          const tr = Math.round(rows * 0.62);
+          const tw = drawnW(VM_BAT_HOLD, tr);
+          drawViewArt(VM_BAT_HOLD, (cols >> 1) - Math.round(tw * 0.44),
+                      rows - tr + (bob ? 0 : 1), tr, CM_MELEE);
+        } else if (mw.id === 'pipe'){
+          // one hand, low and off to the right; the elbow reaches back across
+          const tr = Math.round(rows * 0.54);
+          const tw = drawnW(VM_PIPE_HOLD, tr);
+          drawViewArt(VM_PIPE_HOLD, cols - tw - Math.round(cols * 0.03),
+                      rows - tr + (bob ? 0 : 1), tr, CM_MELEE);
+        } else {
+          const tr = Math.round(rows * 0.34);
+          const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
+          const off = Math.round(cols * 0.19);    // a boxer guard, framing the reticle
+          drawViewArt(VM_FIST_L, (cols >> 1) - off - tw, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
+          drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
+        }
       }
     }
     if (sitting){
