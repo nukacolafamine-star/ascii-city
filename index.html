@@ -9028,13 +9028,28 @@ let fxs = [];                                 // short-lived impact sparks
    1-2: the cameras notice you. 3-5: prices up a quarter, a third of doors
    refuse you. 6+: enforcers come looking. Ped-sourced corruption caps at 2
    (assault three different people = +1; killing = +1 each, into the cap). */
-function flockSees(){
-  // the ledger needs a witness: a live flock cam in range, and no jam
-  if (jamT > 0) return false;
-  for (const p of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
-    if (p.k === PK_CAM && !p.dead) return true;
-  return false;
+/* Who is actually watching you.
+
+   Four places asked this and only ONE of them wondered whether there was a
+   building in the way. So the EYES readout counted every camera within nine
+   tiles through walls, round corners and across whole blocks - and the
+   LEDGER did the same, which is the part that mattered: a crime committed in
+   a sealed alley still found a witness and still went on your record.
+
+   One answer now, and the readout, the ledger, the whisper and the hiding
+   check all read it. A camera needs a live pole, nine tiles, and an
+   uninterrupted line to you - the same line-of-sight test the rest of the
+   game uses, so a wall that stops a conversation stops a camera. */
+const CAM_SEE = 9;                              // tiles a flock pole covers
+const _qEye = [];
+function flockEyes(){
+  if (jamT > 0) return 0;                       // a jammed flock sees nothing
+  let n = 0;
+  for (const p of gridQuery(propGrid, cam.x, cam.y, CAM_SEE, _qEye))
+    if (p.k === PK_CAM && !p.dead && sightClear(p.x, p.y, cam.x, cam.y)) n++;
+  return n;
 }
+function flockSees(){ return flockEyes() > 0; } // the ledger needs a witness
 function crimeEvent(n, why){
   if (!flockSees()){                            // no witness, no record
     toast('no cameras saw that');
@@ -9199,11 +9214,12 @@ function hideFrame(dt){
     hideT = 0; toast('you moved - still on the books'); return;
   }
   if (hurtT > 0.5){ hideT = 0; toast('a hit is a location'); return; }
-  // seen: a live camera close, or standing in the spotlight
-  for (const q of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
-    if (q.k === PK_CAM && !q.dead && sightClear(q.x, q.y, cam.x, cam.y)){
-      hideT = 0; toast('a camera has you - kill its eye or move on'); return;
-    }
+  // seen: a live camera with a line on you, or standing in the spotlight.
+  // This already asked properly; it reads the shared answer now, which also
+  // means a jammed flock cannot give away a hiding place.
+  if (flockEyes() > 0){
+    hideT = 0; toast('a camera has you - kill its eye or move on'); return;
+  }
   if (heli && Math.hypot(cam.x - heli.sx, cam.y - heli.sy) < 2.2){
     hideT = 0; toast('not in the light, you will not'); return;
   }
@@ -9225,11 +9241,7 @@ function corruptionTick(){                    // polled every half second
   camWhisperT -= 0.5;
   if (camWhisperT <= 0){
     camWhisperT = 22 + Math.random() * 30;
-    const near = gridQuery(propGrid, cam.x, cam.y, 9, _q1);
-    for (let i = 0; i < near.length; i++)
-      if (near[i].k === PK_CAM && !near[i].dead){
-        toast('a camera swivels to follow you'); break;
-      }
+    if (flockEyes() > 0) toast('a camera swivels to follow you');
   }
   const c = player.corruption, cap = enfCap();
   if (cap > 0){
@@ -14317,10 +14329,7 @@ function hudPass(){
     if (jamT > 0) chips.push('JAM ' + Math.ceil(jamT));
     if (snifferT > 0) chips.push('SNIF ' + Math.ceil(snifferT));
     if (invCount('saw') || invCount('camjack') || invCount('jammer')){
-      let eyes = 0;
-      for (const pe of gridQuery(propGrid, cam.x, cam.y, 9, _q1))
-        if (pe.k === PK_CAM && !pe.dead) eyes++;
-      chips.push('EYES ' + eyes);
+      chips.push('EYES ' + flockEyes());     // what can see you, not what is near
     }
     if (hideT > 0) chips.push('HIDING ' + hideT.toFixed(1));
     if (heli) chips.push(heli.lock > 0.5 ? 'SPOTLIT' : 'HELI');
