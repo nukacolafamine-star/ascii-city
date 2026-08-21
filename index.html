@@ -403,7 +403,7 @@ let walkG = new Uint8Array(MAP * MAP);   // 0 blocked, else step cost x10
    stone channel wall and plugged the river with masonry at every crossing.
    The riverbed is recorded once when it is cut, and nothing overwrites it. */
 const riverBed = new Uint8Array(MAP * MAP);
-const DECK_T = 0.62;                     // how deep a bridge deck is, in metres
+const DECK_T = 1.9;                      // how deep a bridge deck is, in metres
 function inChannel(ix, iy){
   return tType[iy * MAP + ix] === T_WATER || riverBed[iy * MAP + ix] === 1;
 }
@@ -13113,7 +13113,7 @@ function floorPass(){
            its fog twenty tiles behind where the wall actually stands - a
            three-metre cut bank rendered like distant haze, which is what made
            the edges look like paper rather than ground. */
-        let wallD = -1, wix = ix2, wiy = iy2, onDeck = 0;
+        let wallD = -1, wix = ix2, wiy = iy2;
         const span = dW - d;
         const nStep = Math.min(40, Math.max(2, Math.ceil(span * 0.8)));
         for (let sI = 1; sI <= nStep; sI++){
@@ -13121,16 +13121,9 @@ function floorPass(){
           const sx2 = cam.x + rayX[x] * ds, sy2 = cam.y + rayY[x] * ds;
           const six = sx2 | 0, siy = sy2 | 0;
           if (sx2 < 0 || sy2 < 0 || six >= MAP || siy >= MAP){ wallD = ds; break; }
-          const st2 = tType[siy * MAP + six];
-          if (st2 === T_BRIDGE){
-            // A deck is a slab with a beam down its side, not a sheet of
-            // paper laid on the water. While the ray is still inside its
-            // depth it stops on that edge; below it, the river carries on.
-            if (cam.z * (1 - ds / d) > -DECK_T){
-              wallD = ds; wix = six; wiy = siy; onDeck = 1; break;
-            }
-            continue;
-          }
+          // a deck overhead is not the bed - the river runs under it, and its
+          // SIDE is a vertical face drawn by the wall pass, not a colour
+          // smeared across whichever floor row this ray happened to land in
           if (!inChannel(six, siy)){ wallD = ds; wix = six; wiy = siy; break; }
         }
         if (wallD < 0){                            // clear all the way down
@@ -13140,13 +13133,6 @@ function floorPass(){
           waterShade(wx2, wy2);
           // a deck overhead puts the water in its shadow
           if (tType[iy2 * MAP + ix2] === T_BRIDGE) _wd *= 0.62;
-        } else if (onDeck){                        // the side of the deck
-          const tw = wallD / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = wallD;
-          const drop = clamp(-cam.z * (1 - wallD / d) / DECK_T, 0, 1);  // 0 top, 1 soffit
-          _wb = drop < 0.34 ? C.deck : C.deckOld;  // edge beam, then the shadow under
-          _wd = 0.50 - drop * 0.26 + hash3(wix, wiy, 29) * 0.07;
-          if (((wix + wiy) & 3) === 0) _wd += 0.05;      // girder spacing
-          _wwet = 0;
         } else {                                   // the channel wall, in place
           const tw = wallD / viewD; lv = levelOf(tw); dmm = densMul(tw); uD = wallD;
           const f = clamp((wallD - d) / Math.max(0.001, span), 0, 1);
@@ -13361,6 +13347,42 @@ function wallPass(){
       if (d > viewD) break;
       if (mapX < 0 || mapY < 0 || mapX >= MAP || mapY >= MAP) break;
       const id = mapY * MAP + mapX, h = tH[id];
+      /* A BRIDGE DECK is a slab, and its side is a vertical face standing on
+         the tile boundary you just crossed. It has to be drawn here, in the
+         wall pass, for the same reason every other vertical surface is: the
+         floor pass picks one surface per screen cell from where the ray meets
+         a HORIZONTAL plane, so a face pushed through it lands in whatever row
+         the water would have been in. That is what made the deck edges shear
+         into diagonal bands and drop out as you walked past a corner.
+         Only where the ray comes off open water - inside the deck, and at the
+         abutments where it meets the bank, there is nothing to see. */
+      if (tType[id] === T_BRIDGE){
+        const pmx = side === 0 ? mapX - stepX : mapX;
+        const pmy = side === 0 ? mapY : mapY - stepY;
+        if (inMap(pmx, pmy) && tType[pmy * MAP + pmx] === T_WATER){
+          const uR = projRows / d;
+          const fT = horizon + cam.z * uR;               // z = 0, the deck top
+          const fB = horizon + (cam.z + DECK_T) * uR;    // and its soffit
+          let a0 = Math.ceil(fT - 0.5), a1 = Math.floor(fB - 0.5);
+          if (a0 < 0) a0 = 0;
+          if (a1 > rows - 1) a1 = rows - 1;
+          const tt = d / viewD, lv2 = levelOf(tt), dm2 = densMul(tt);
+          const span = Math.max(0.001, fB - fT);
+          for (let r = a0; r <= a1; r++){
+            const idx = r * cols + x;
+            if (dBuf[idx] < d - 0.02) continue;
+            const f = clamp((r + 0.5 - fT) / span, 0, 1);
+            let dd = 0.54 - f * 0.26 + hash3(mapX, mapY, 29) * 0.06;
+            if (((mapX + mapY) & 3) === 0) dd += 0.05;   // girders across it
+            const g = Math.round(clamp(dd * dm2, 0, 1) * RMAX);
+            if (!g) continue;
+            gBuf[idx] = g; bBuf[idx] = f < 0.28 ? C.deck : C.deckOld;
+            lBuf[idx] = lv2; dBuf[idx] = d;
+            refBuf[idx] = 0; srcBuf[idx] = 0;
+            statCells++;
+          }
+        }
+      }
       if (h <= 0) continue;
       const unitRows = projRows / d;
       const rowB = horizon + cam.z * unitRows;
@@ -13764,7 +13786,11 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
         if (dBuf[idx] < t - 0.02) continue;
         gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
         refBuf[idx] = 0;
-        srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
+        // srcBuf is the "worth mirroring" mask that reflectPass sweeps
+        // afterwards - a second mirror entirely, and the one that was still
+        // printing the railings into the water after the inline one below
+        // had been told not to
+        srcBuf[idx] = _noRef ? 0 : (EMISSIVE[base] ? 2 : 1);
         statCells++;
       }
       // and what the wet street gives back
