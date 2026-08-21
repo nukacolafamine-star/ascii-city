@@ -387,7 +387,7 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_RAIL = 5, PK_STALL = 6, PK_BENCH = 7, PK_CAM = 8, PK_PLAY = 9,
       PK_METRO = 10, PK_APPLE = 11, PK_TURBINE = 12, PK_ITEM = 13,
       PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17, PK_RACK = 18,
-      PK_FURN = 19;
+      PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22;
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -564,7 +564,7 @@ function carveBridge(k, worn){
     if (!worn && (y % 8) === 0 && tType[y * MAP + wx0 + 1] === T_BRIDGE)
       props.push({ x: wx0 + 1.5, y: y + 0.5, k: PK_LAMP, s: 0.05, r: 0.16 });
   }
-  landmarks.push({ name: worn ? 'OLD CROSSING' : 'CENTRAL BRIDGE',
+  landmarks.push({ name: worn ? placeWord() + ' CROSSING' : 'CENTRAL BRIDGE',
                    x: (wx0 + wx1) * 0.5, y: (yTop + yBot) * 0.5 });
   return { x0: wx0, x1: wx1, yTop, yBot };
 }
@@ -870,21 +870,68 @@ function stampPark(bi, bj, bw, bh, kind){
         if (r < 0.022) props.push({ x: x + 0.5, y: y + 0.5, k: PK_APPLE, s: rnd(), r: 0.4 });
         else if (r < 0.062) props.push({ x: x + 0.5, y: y + 0.5,
           k: rnd() < 0.55 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
+        else if (r < 0.075) props.push({ x: x + 0.5, y: y + 0.5,
+          k: PK_BENCH, s: 0, r: 0.35 });        // somewhere to sit in a big park
       } else {
         if (r < 0.040) props.push({ x: x + 0.5, y: y + 0.5,
           k: rnd() < 0.55 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
         else if (r < 0.065) props.push({ x: x + 0.5, y: y + 0.5, k: PK_BENCH, s: 0, r: 0.35 });
       }
     }
-  if (kind !== 'main'){
+  let title;
+  if (kind === 'main'){
+    title = placeWord() + ' ' + ['PARK', 'GARDENS', 'COMMONS', 'GREEN',
+                                 'MEADOW'][(rnd() * 5) | 0];
+  } else {
+    // Three kinds of small park, and the equipment decides which one it is.
     const px = (x0 + x1) * 0.5, py = (y0 + y1) * 0.5;
-    for (let k = 0; k < 3; k++)
-      props.push({ x: px + rr(-4, 4), y: py + rr(-3, 3), k: PK_PLAY, s: rnd(), r: 0.7 });
-    for (let k = 0; k < 4; k++)
-      props.push({ x: px + rr(-6, 6), y: py + rr(-5, 5), k: PK_BENCH, s: 0, r: 0.35 });
+    const theme = (rnd() * 3) | 0;
+    const place = placeWord();
+    if (theme === 0){
+      // a half court: two hoops facing each other down the long axis, a rail
+      // along the touchline, and somewhere to sit and wait for next game
+      title = place + ' COURTS';
+      const along = (x1 - x0) >= (y1 - y0);
+      const half = (along ? (x1 - x0) : (y1 - y0)) * 0.5 - 2.5;
+      for (const sgn of [-1, 1]){
+        const hx = px + (along ? sgn * half : 0), hy = py + (along ? 0 : sgn * half);
+        // a hoop faces down the court, which is back the way it came
+        const yaw = along ? (sgn > 0 ? Math.PI : 0) : (sgn > 0 ? -Math.PI / 2 : Math.PI / 2);
+        props.push({ x: hx, y: hy, k: PK_HOOP, s: rnd(), r: 0.55, fix: yaw });
+      }
+      const rw2 = (along ? half : 4.5), rh2 = (along ? 4.5 : half);
+      for (let t = -rh2; t <= rh2; t += 2.4){
+        props.push({ x: px - rw2 - 0.6, y: py + t, k: PK_RAIL, s: 1, r: 0.14 });
+        props.push({ x: px + rw2 + 0.6, y: py + t, k: PK_RAIL, s: 1, r: 0.14 });
+      }
+      for (let k = 0; k < 3; k++)
+        props.push({ x: px + rr(-7, 7), y: py + rr(-6, 6), k: PK_BENCH, s: 0, r: 0.35 });
+    } else if (theme === 1){
+      // a swing set, and the trees you sit under while somebody else swings
+      title = place + ' SWINGS';
+      for (let k = 0; k < 2; k++)
+        props.push({ x: px + (k ? 2.6 : -2.6), y: py + rr(-1, 1),
+                     k: PK_SWING, s: rnd(), r: 0.9, fix: 0 });
+      for (let k = 0; k < 4; k++)
+        props.push({ x: px + rr(-7, 7), y: py + rr(-6, 6), k: PK_BENCH, s: 0, r: 0.35 });
+      for (let k = 0; k < 3; k++)
+        props.push({ x: px + rr(-8, 8), y: py + rr(-7, 7),
+                     k: rnd() < 0.6 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
+    } else {
+      // a frame to climb, a slide off it, and a couple of things to sit on
+      title = place + ' ADVENTURE';
+      props.push({ x: px, y: py, k: PK_CLIMB, s: rnd(), r: 1.4, fix: 0 });
+      if ((x1 - x0) > 14)
+        props.push({ x: px + 5.5, y: py + rr(-2, 2), k: PK_CLIMB, s: rnd(),
+                     r: 1.4, fix: Math.PI });
+      for (let k = 0; k < 2; k++)
+        props.push({ x: px + rr(-7, 7), y: py + rr(-6, 6), k: PK_SWING, s: rnd(),
+                     r: 0.9, fix: Math.PI / 2 });
+      for (let k = 0; k < 4; k++)
+        props.push({ x: px + rr(-7, 7), y: py + rr(-6, 6), k: PK_BENCH, s: 0, r: 0.35 });
+    }
   }
-  landmarks.push({ name: kind === 'main' ? 'CENTRAL PARK' : 'PLAYGROUND',
-                   x: (x0 + x1) * 0.5, y: (y0 + y1) * 0.5 });
+  landmarks.push({ name: title, x: (x0 + x1) * 0.5, y: (y0 + y1) * 0.5 });
 }
 
 // --- data centre: four blocks of windowless concrete, watched ------------
@@ -1005,7 +1052,7 @@ function stampWindFarm(){
     const x = bi * P + 4 + rnd() * (2 * P - 8), y = bj * P + 4 + rnd() * (2 * P - 8);
     props.push({ x, y, k: PK_TURBINE, s: rnd(), r: 0.35 });
   }
-  landmarks.push({ name: 'WIND FARM', x: (bi + 1) * P, y: (bj + 1) * P });
+  landmarks.push({ name: placeWord() + ' WIND FARM', x: (bi + 1) * P, y: (bj + 1) * P });
 }
 function stampSilos(){
   const b = findBlock(1, 1, undefined, 3);
@@ -1021,7 +1068,7 @@ function stampSilos(){
     lmFill(sx, sy, sx + 1, sy + 1, T_BLD, rec.h, rec.id);
   }
   lmSign(cx, cy - 2.6, 3.4, 0, -1, 'GRAIN', C.nAmber, false);
-  landmarks.push({ name: 'GRAIN SILOS', x: cx, y: cy - 4 });
+  landmarks.push({ name: placeWord() + ' SILOS', x: cx, y: cy - 4 });
 }
 function stampMast(){
   const b = findBlock(1, 1, undefined, 3) || findBlock(1, 1, undefined, 2);
@@ -1038,7 +1085,7 @@ function stampMast(){
   for (let k = 0; k < 4; k++)
     props.push({ x: cx + Math.cos(k * 1.57) * 4, y: cy + Math.sin(k * 1.57) * 4,
                  k: PK_CAM, s: rnd(), r: 0.16 });
-  landmarks.push({ name: 'RADIO MAST', x: cx, y: cy - 5 });
+  landmarks.push({ name: placeWord() + ' MAST', x: cx, y: cy - 5 });
 }
 function stampLake(){
   const b = findBlock(2, 2, undefined, 3);
@@ -1054,10 +1101,48 @@ function stampLake(){
       const id = y * MAP + x;
       tType[id] = T_WATER; tH[id] = 0; tB[id] = -1;
     }
-  landmarks.push({ name: 'RESERVOIR', x: cx, y: cy - rr - 3 });
+  landmarks.push({ name: placeWord() + ' RESERVOIR', x: cx, y: cy - rr - 3 });
 }
 
+/*------------------------- one of a kind, each of them ----------------------
+  Seven CENTRAL PARKs and ten PLAYGROUNDs is not a map, it is a legend with
+  the same word on it repeatedly. Every landmark now takes a name off a pool
+  dealt without replacement for the life of the city, so a direction like
+  "meet me at CARRICK GREEN" means exactly one place.
+============================================================================*/
+const LM_PLACE = ['MERCER', 'HOLLOWAY', 'SABLE', 'KESTREL', 'ARDEN', 'VANTAGE',
+  'THISTLE', 'CARRICK', 'LOWELL', 'BRAMBLE', 'OSPREY', 'MARLOW', 'QUAYSIDE',
+  'FENN', 'ASHGROVE', 'REDPOLL', 'STILLWATER', 'HAWKER', 'GRANTLEY', 'NORWOOD',
+  'CALLOW', 'PENFOLD', 'WINDER', 'GALLOWAY', 'TASKER', 'ELMLEY', 'CORVID',
+  'SEDGE', 'HARROW', 'BILLET', 'CASTLETON', 'DRAYTON', 'FALLOW', 'GRIMSBY',
+  'KEELING', 'LATCHFORD', 'MOSSGATE', 'NETTLE', 'PARLOW', 'RUSKIN'];
+let lmPool = [];
+function resetLandmarkNames(){
+  lmPool = LM_PLACE.slice();
+  for (let i = lmPool.length - 1; i > 0; i--){    // dealt from the seed
+    const j = (rnd() * (i + 1)) | 0;
+    const t = lmPool[i]; lmPool[i] = lmPool[j]; lmPool[j] = t;
+  }
+}
+function placeWord(){
+  return lmPool.length ? lmPool.pop() : 'BLOCK ' + (landmarks.length + 1);
+}
+/* last line of defence: if anything still collides, it gets a compass point,
+   so the map can never print the same word twice */
+function uniqueLandmarks(){
+  const seen = Object.create(null);
+  const cx0 = MAP * 0.5, cy0 = MAP * 0.5;
+  for (const l of landmarks){
+    if (!seen[l.name]){ seen[l.name] = 1; continue; }
+    const dir = Math.abs(l.x - cx0) > Math.abs(l.y - cy0)
+              ? (l.x > cx0 ? 'EAST' : 'WEST') : (l.y > cy0 ? 'SOUTH' : 'NORTH');
+    let nm = dir + ' ' + l.name;
+    while (seen[nm]) nm = nm + "'";
+    l.name = nm; seen[nm] = 1;
+  }
+}
 function stampLandmarks(){
+  resetLandmarkNames();
   stampFields();
   stampDome();
   stampDataCentre();
@@ -1076,6 +1161,7 @@ function stampLandmarks(){
   for (let k = 0; k < 2; k++) stampMast();
   for (let k = 0; k < 2; k++) stampLake();
   stampMetro();
+  uniqueLandmarks();
 }
 
 function buildCity(seed){
@@ -1355,6 +1441,7 @@ const MODEL_FOOT = [];
   f(PK_BIN, 1.0);         f(PK_LAMP, 0.9);      f(PK_TLIGHT, 0.9);
   f(PK_HYDR, 0.9);        f(PK_CAM, 0.9);       f(PK_ITEM, 0.7);
   f(PK_RAIL, 0.95);       f(PK_CROP, 0.9);
+  f(PK_HOOP, 1.9, 1.0);   f(PK_SWING, 3.4, 1.8); f(PK_CLIMB, 3.0, 3.0);
 })();
 /* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
    generators scatter by per-tile chance, which clumps. Minimum gap between
@@ -1366,13 +1453,15 @@ const MODEL_SPACE = [];
   g(PK_BIN, 7);     g(PK_BENCH, 6);   g(PK_TLIGHT, 6);
   g(PK_CAM, 6);     g(PK_PLAY, 5);    g(PK_APPLE, 5);
   g(PK_TREE, 4);    g(PK_SAKURA, 4);  g(PK_ROCK, 3);
-  g(PK_METRO, 8);
+  g(PK_METRO, 8);   g(PK_SWING, 7);   g(PK_CLIMB, 7);
+  g(PK_HOOP, 9);
 })();
 // placed on purpose first, scattered dressing last - and the first three
 // are never moved, because other systems know where they are
 // Rails come high: they are a run along a bridge edge at a fixed interval,
 // and one post lost to a passing bench leaves a visible gap in the railing.
-const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_RAIL, PK_STALL, PK_BENCH,
+const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_RAIL, PK_HOOP, PK_SWING,
+                     PK_CLIMB, PK_STALL, PK_BENCH,
                      PK_CAM, PK_TLIGHT, PK_HYDR, PK_LAMP, PK_TURBINE,
                      PK_APPLE, PK_PLAY, PK_BIN, PK_RACK, PK_CROP,
                      PK_ROCK, PK_TREE, PK_SAKURA];
@@ -1393,6 +1482,7 @@ function isKerb(tx, ty){
 }
 // the facing a prop will be drawn at - its footprint turns with it
 function propFacing(p){
+  if (p.fix !== undefined) return p.fix;      // set down deliberately, and aimed
   if (p.k === PK_STALL) return stallYaw(p);
   if (p.k === PK_BENCH) return benchYaw(p);
   return propYaw(p) + (MODEL_TURN[p.k] || 0);
@@ -1461,7 +1551,7 @@ function placeProps(){
     (rank[a.k] === undefined ? 99 : rank[a.k]) - (rank[b.k] === undefined ? 99 : rank[b.k]));
   const keep = [];
   let moved = 0, dropped = 0;
-  const _p = { k: 0, x: 0, y: 0 };            // scratch, to probe a candidate
+  const _p = { k: 0, x: 0, y: 0, fix: undefined };   // scratch, to probe a candidate
   for (const q of order){
     const hx = Math.floor(q.x), hy = Math.floor(q.y);
     const homeT = inMap(hx, hy) ? tType[hy * MAP + hx] : -1;
@@ -1485,7 +1575,7 @@ function placeProps(){
     let got = null;
     for (let i = 0; i < cand.length; i++){
       let cx = cand[i][1] + 0.5, cy = cand[i][2] + 0.5;
-      _p.k = q.k; _p.x = cx; _p.y = cy;
+      _p.k = q.k; _p.x = cx; _p.y = cy; _p.fix = q.fix;
       let yaw, fw, fd, kx = cx, ky = cy, kw, kd;
       if (q.k === PK_STALL){
         const d = stallSpot(_p);
@@ -1523,7 +1613,7 @@ function placeProps(){
     }
     if (!got && pin){                          // these hold their ground regardless
       const cx = hx + 0.5, cy = hy + 0.5;
-      _p.k = q.k; _p.x = cx; _p.y = cy;
+      _p.k = q.k; _p.x = cx; _p.y = cy; _p.fix = q.fix;
       const yaw = propFacing(_p), fb = footBox(q.k, yaw);
       got = { cx, cy, yaw, kx: cx, ky: cy, kw: fb[0], kd: fb[1] };
     }
@@ -2126,6 +2216,7 @@ const ART = {
   bench: benchArt(),
   cam:   parseArt(['MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   play:  parseArt(['.SSSSS.', 'MSSSSSM', 'M.....M', 'M.....M', 'MM...MM', 'M.....M']),
+  hoop:  hoopArt(), swing: swingArt(), climb: climbArt(),
   metro: parseArt(['XXXXXXX', 'M.....M', 'MKKKKKM', 'M.KKK.M', 'M..K..M']),
   apple: parseArt(['..VSV..', '.VVVVV.', 'VSVVVSV', 'VVVVVVV', '.VSVVV.', '..VVV..',
                    '...K...', '...K...', '..KKK..']),
@@ -2158,6 +2249,136 @@ const ART = {
   Local frame: u along its length, v from the front edge (0) to the back
   (1), z up from the path.
 ============================================================================*/
+/*---------------------- what a playground is made of ------------------------
+  A park used to get three copies of one abstract climbing shape. These are
+  three pieces of real equipment, authored as volumes so they read from any
+  angle: a hoop on a pole, a swing set with the seats hanging off the bar,
+  and a climbing frame with a slide down one side.
+============================================================================*/
+// backboard, rim and a pole to bolt them to
+function hoopArt(){
+  const vol = function(aw, vd, ah){
+    const H = 3.4, M = ROLE.M, W = ROLE.W, X = ROLE.X;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x < 0 || y < 0 || z < 0 || x >= aw || y >= vd || z >= ah) return;
+      out[(z * vd + y) * aw + x] = r;
+    };
+    const zOf = h => Math.round((1 - h / H) * (ah - 1));
+    const cx = (aw - 1) / 2;
+    const box = (h0, h1, x0, x1, y0, y1, r) => {
+      const za = zOf(h1), zb = zOf(h0);
+      for (let z = Math.min(za, zb); z <= Math.max(za, zb); z++)
+        for (let y = y0; y <= y1; y++)
+          for (let x = x0; x <= x1; x++) set(x, y, z, r);
+    };
+    const bk = vd - 2;                          // the pole stands at the back
+    box(0.00, 2.75, cx - 0.5 | 0, cx + 0.5 | 0, bk, bk + 1, M);   // post
+    box(0.00, 0.16, cx - 2 | 0, cx + 2 | 0, bk - 1, vd - 1, M);   // ground plate
+    box(2.62, 3.38, 1, aw - 2, bk, bk, W);                        // backboard
+    box(2.80, 3.18, cx - 2 | 0, cx + 2 | 0, bk - 1, bk - 1, X);   // the square on it
+    // the rim, hung off the BOTTOM edge of the board so it stands clear of it
+    const cy = bk - 3;
+    for (const zr of [zOf(2.50), zOf(2.42)])
+      for (let y = 0; y < vd; y++)
+        for (let x = 0; x < aw; x++){
+          const dx = x - cx, dy = y - cy;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d > 1.5 && d <= 2.6 && y <= bk - 1) set(x, y, zr, X);
+        }
+    const zn = zOf(2.42);
+    for (let k = 1; k <= 4; k++)                // and a net under it
+      for (let y = 0; y < vd; y++)
+        for (let x = 0; x < aw; x++){
+          const dx = x - cx, dy = y - cy;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d > 1.9 - k * 0.22 && d <= 2.5 - k * 0.22 && y <= bk - 1 &&
+              ((x + y + k) & 1) === 0) set(x, y, zn + k, W);
+        }
+    return out;
+  };
+  return { w: 12, h: 22, data: new Uint8Array(12 * 22), vol };
+}
+// two A-frames, a bar across, and two seats swinging off it
+function swingArt(){
+  const vol = function(aw, vd, ah){
+    const H = 2.4, M = ROLE.M, K = ROLE.K, X = ROLE.X;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x < 0 || y < 0 || z < 0 || x >= aw || y >= vd || z >= ah) return;
+      out[(z * vd + y) * aw + x] = r;
+    };
+    const zOf = h => Math.round((1 - h / H) * (ah - 1));
+    const cy = (vd - 1) / 2;
+    // an A-frame: two legs leaning in toward the bar
+    const frame = (fx) => {
+      for (let h = 0; h <= 2.2; h += 0.08){
+        const t = h / 2.2, spread = (1 - t) * (vd * 0.34);
+        const z = zOf(h);
+        set(fx, Math.round(cy - spread), z, M);
+        set(fx, Math.round(cy + spread), z, M);
+        set(fx + 1, Math.round(cy - spread), z, M);
+        set(fx + 1, Math.round(cy + spread), z, M);
+      }
+    };
+    frame(1); frame(aw - 3);
+    for (let x = 1; x <= aw - 2; x++)          // the bar they all hang from
+      for (const h of [2.30, 2.22, 2.14])
+        for (let y = Math.round(cy) - 1; y <= Math.round(cy) + 1; y++)
+          set(x, y, zOf(h), M);
+    // two seats, chains down from the bar
+    for (const sx of [(aw * 0.32) | 0, (aw * 0.66) | 0]){
+      for (let h = 0.62; h <= 2.12; h += 0.08){
+        set(sx, Math.round(cy), zOf(h), K);
+        set(sx + 1, Math.round(cy), zOf(h), K);
+      }
+      for (let x = sx - 1; x <= sx + 2; x++)
+        for (let y = Math.round(cy) - 1; y <= Math.round(cy) + 1; y++)
+          set(x, y, zOf(0.58), X);
+    }
+    return out;
+  };
+  return { w: 18, h: 16, data: new Uint8Array(18 * 16), vol };
+}
+// a lattice cube to climb, with a slide off the front of it
+function climbArt(){
+  const vol = function(aw, vd, ah){
+    const H = 2.2, M = ROLE.M, X = ROLE.X, W = ROLE.W;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x < 0 || y < 0 || z < 0 || x >= aw || y >= vd || z >= ah) return;
+      out[(z * vd + y) * aw + x] = r;
+    };
+    const zOf = h => Math.round((1 - h / H) * (ah - 1));
+    const x0 = 1, x1 = (aw * 0.62) | 0, y0 = 1, y1 = vd - 2;
+    // four uprights
+    for (let h = 0; h <= 2.0; h += 0.07){
+      const z = zOf(h);
+      set(x0, y0, z, M); set(x1, y0, z, M); set(x0, y1, z, M); set(x1, y1, z, M);
+    }
+    // rungs at three heights, all the way round
+    for (const h of [0.7, 1.35, 2.0]){
+      const z = zOf(h);
+      for (let x = x0; x <= x1; x++){ set(x, y0, z, M); set(x, y1, z, M); }
+      for (let y = y0; y <= y1; y++){ set(x0, y, z, M); set(x1, y, z, M); }
+    }
+    // a deck at the top of the far side, and the slide down off it
+    for (let x = x1 - 3; x <= x1; x++)
+      for (let y = y0 + 1; y <= y1 - 1; y++) set(x, y, zOf(1.42), W);
+    const sy0 = ((vd - 1) / 2 - 1) | 0;
+    for (let k = 0; k <= 10; k++){
+      const h = 1.42 - k * 0.13, x = x1 + 1 + ((k * (aw - x1 - 2) / 10) | 0);
+      for (let y = sy0; y <= sy0 + 2; y++){
+        set(x, y, zOf(h), X);
+        set(x, y, zOf(h) + 1, X);
+      }
+      set(x, sy0 - 1, zOf(h + 0.14), M);        // the rails either side
+      set(x, sy0 + 3, zOf(h + 0.14), M);
+    }
+    return out;
+  };
+  return { w: 16, h: 16, data: new Uint8Array(16 * 16), vol };
+}
 function benchArt(){
   const vol = function(aw, vd, ah){
     const H = 0.95;                             // world height of the grid
@@ -2311,6 +2532,16 @@ ART.rack = parseArt(['MMMMMMMMM',
 PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
                      sl: slots({ M: [C.rail, 0.6], S: [C.nMag, 0.85],
                                  W: [C.nWhite, 0.8], P: [C.nViolet, 0.8] }) };
+// playground equipment: authored volumes, so they read from every angle
+PROPDEF[PK_HOOP]  = { art: ART.hoop,  w: 1.9, h: 3.4, dep: 0.85,
+                      sl: slots({ M: [C.rail, 0.72], W: [C.nWhite, 0.92],
+                                  X: [C.tlAmb, 1.0] }) };
+PROPDEF[PK_SWING] = { art: ART.swing, w: 3.4, h: 2.4, dep: 0.55,
+                      sl: slots({ M: [C.rail, 0.70], K: [C.tire, 0.86],
+                                  X: [C.nCyan, 0.95] }) };
+PROPDEF[PK_CLIMB] = { art: ART.climb, w: 3.0, h: 2.2, dep: 1.0,
+                      sl: slots({ M: [C.nGreen, 0.78], W: [C.nWhite, 0.85],
+                                  X: [C.camRed, 0.95] }) };
 
 /*----------------------------- item models ---------------------------------
   Every item in the game is its own little solid: the cup noodles is a cup,
@@ -13287,6 +13518,7 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_TURBINE, 0.5, 0);set(PK_ITEM, 0.9, 1);    set(PK_SAKURA, 1.0, 0);
   set(PK_CROP, 0.9, 0);   set(PK_ROCK, 1.0, 0);    set(PK_STAIR, 0.9, 1);
   set(PK_RACK, 0.6, 1);
+  set(PK_HOOP, 0.45, 0);  set(PK_SWING, 0.16, 0); set(PK_CLIMB, 0.33, 0);
 })();
 /* How a cart stands: backed up against a building, counter looking out over
    the street at the frontage on the far side. That is what a real pitch is -
