@@ -4897,10 +4897,20 @@ function spawnActors(){
       start: { text: 'New face. The city notices those. It also pays them, if they turn out useful.',
         opts: [{ t: 'Useful how?', next: 'offer' },
                { t: 'Just passing through', next: 'pass' }] },
-      offer: { text: 'The depots out in the industrial belt shed scrap electronics nobody counts. Bring me three units. Twenty-five credits each, no questions in either direction.',
+      offer: { text: () => 'The depots out in ' + indPlaces() + ' shed scrap electronics nobody counts. Bring me three units. Twenty-five credits each, no questions in either direction.',
         opts: [{ t: 'Deal', do(){ startQuest('scrap'); }, next: 'deal' },
                { t: 'Not interested', next: 'pass' }] },
-      deal: { text: 'Follow the fences east until the neon runs out. Depot doors are never locked - nobody steals what nobody counts. Mind the razors, though. The belt has teeth.' },
+      deal: { text: () => {
+          const d = nearestDepot();
+          const way = d ? compassTo(d.x, d.y) : '';
+          // name the yard you are actually being pointed at, not just the
+          // first one on the list - being sent west and warned about the
+          // eastern yard is the whole problem in miniature
+          const yard = d ? regionName(d.x, d.y) : indPlaces();
+          return 'Follow the fences ' + (way || 'out') +
+                 ' until the neon runs out - anything signed DEPOT will do. Those doors are never locked; nobody steals what nobody counts. Mind the razors, though. ' +
+                 yard + ' has teeth.';
+        } },
       pass: { text: 'Everyone is just passing through. The city keeps them anyway.' },
       job: { text: () => 'The count stands at ' + (player.qvar.scrap || 0) + ' of 3. The offer holds.',
         opts: [{ t: 'Sell scrap - 25 cr', if: () => invCount('scrap') > 0,
@@ -4913,7 +4923,7 @@ function spawnActors(){
                            invCount('ammo') <= ITEMS.ammo.stack - 8,
                  do(){ player.credits -= 20; invAdd('ammo', 8); toast('+ 8 ROUNDS'); }, next: 'job' },
                { t: 'Still working on it' }] },
-      after: { text: 'The belt never runs dry, and neither do I. Scrap is still twenty-five.',
+      after: { text: () => indPlaces('and') + ' never run dry, and neither do I. Scrap is still twenty-five.',
         opts: [{ t: 'You mentioned work that MEANS something',
                  if: () => player.quests.mq1 === undefined,
                  do(){ mqStart('mq1'); }, next: 'handoff' },
@@ -6982,8 +6992,16 @@ const MQ1 = {
       target: toHideout,
       auto(){ return invCount('deck') > 0 && atHideout(6); } }] },
   mq6: { name: 'NOBODY COUNTS IT', act: 1,
-    stages: [{ log: 'lift 5 SCRAP ELECTRONICS from the belt and bring them to ROOK',
-      target: toHideout,
+    stages: [{ log: () => invCount('scrap') >= 5
+                 ? 'take the five units of SCRAP ELECTRONICS back to ROOK'
+                 : 'lift 5 SCRAP ELECTRONICS - the depots in ' + indPlaces() +
+                   ' are the place for it (' + invCount('scrap') + ' of 5)',
+      // point at the work until it is done, then at the man who wanted it
+      target(){
+        if (invCount('scrap') >= 5) return toHideout();
+        const d = nearestDepot();
+        return d ? { x: d.x, y: d.y, name: regionName(d.x, d.y) + ' DEPOT' } : toHideout();
+      },
       auto(){ return invCount('scrap') >= 5 && atHideout(6); } }] },
   mq7: { name: 'A LOUD DISTRACTION', act: 1,
     stages: [{ log: 'set off FIRECRACKERS at the marked junction to pull the patrols',
@@ -8451,7 +8469,7 @@ function openInventory(){
     for (const id of qids){
       const s = player.quests[id];
       const due = (player.qvar.owed || {})[id];
-      items.push({ info: s !== 'done' ? '! ' + QUESTS[id].name + ': ' + QUESTS[id].stages[s].log
+      items.push({ info: s !== 'done' ? '! ' + QUESTS[id].name + ': ' + questLog(QUESTS[id].stages[s])
                  : due ? '$ ' + QUESTS[id].name + ' - done, ' + due + ' cr waiting with ' +
                          ((player.qvar.giver || {})[id] || 'somebody')
                  : '* ' + QUESTS[id].name + ' - done' });
@@ -8674,19 +8692,15 @@ const QUESTS = {
   scrap: {
     name: 'QUIET PROCUREMENT',
     stages: [
-      { log: 'sell 3 SCRAP ELECTRONICS to the watcher (depot doors, industrial belt)',
+      { log: () => 'sell 3 SCRAP ELECTRONICS to the watcher - the depots in ' +
+                   indPlaces() + ' are stacked with it',
         target(){
           if (invCount('scrap') > 0){
             const a = actors.find(x => x.name === 'THE WATCHER');
             return a && { x: a.x, y: a.y, name: 'THE WATCHER' };
           }
-          let best = null, bd = 1e9;
-          for (const d of doors){
-            if (buildings[d.b].dist !== D_IND) continue;
-            const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
-            if (dd < bd){ bd = dd; best = d; }
-          }
-          return best && { x: best.x, y: best.y, name: 'INDUSTRIAL BELT' };
+          const d = nearestDepot();
+          return d && { x: d.x, y: d.y, name: regionName(d.x, d.y) + ' DEPOT' };
         } }
     ]
   },
@@ -8975,6 +8989,36 @@ function vanceTree(){
   };
 }
 function questStage(id){ return player.quests[id]; }
+/* An objective that names a place cannot be a fixed string: the places are
+   dealt per city. Stage logs may be functions, and everything that shows one
+   asks for it through here. */
+function questLog(st){ return typeof st.log === 'function' ? st.log() : st.log; }
+/* Where the scrap actually is. Depots are the only rooms that stock it, and
+   the only use dealt in the industrial regions, so the nearest one is both
+   the right errand and the right direction. */
+function nearestDepot(){
+  let best = null, bd = 1e9;
+  for (const d of doors){
+    const b = buildings[d.b];
+    if (!b || buildingUse(b) !== 'depot') continue;
+    const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
+    if (dd < bd){ bd = dd; best = d; }
+  }
+  return best;
+}
+/* The city names its own industry - GANTRY ROW, RUSTYARD, THE SMELTERS - and
+   those names are on the map. Quests use them instead of inventing one. */
+function indPlaces(join){
+  const n = REGIONS.filter(r => r.type === D_IND).map(r => r.name);
+  return n.length === 0 ? 'the industrial yards'
+       : n.length === 1 ? n[0]
+       : n.slice(0, -1).join(', ') + ' ' + (join || 'or') + ' ' + n[n.length - 1];
+}
+function compassTo(x, y, fx, fy){
+  const dx = x - (fx === undefined ? cam.x : fx), dy = y - (fy === undefined ? cam.y : fy);
+  return (Math.abs(dy) > Math.abs(dx) * 0.5 ? (dy > 0 ? 'south' : 'north') : '') +
+         (Math.abs(dx) > Math.abs(dy) * 0.5 ? (dx > 0 ? 'east' : 'west') : '');
+}
 /* Whoever's card is open. Read from the stack rather than tracked in a
    variable, so it cannot be left pointing at somebody you stopped talking to
    ten minutes ago. */
@@ -9094,7 +9138,7 @@ function advanceQuest(id){
   } else {
     player.quests[id] = s;
     sfx('ui_select', { vol: 0.5 });
-    toast(q.stages[s].log);
+    toast(questLog(q.stages[s]));
   }
 }
 /* the fee, for the quest log */
