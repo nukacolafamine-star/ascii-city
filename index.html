@@ -2595,6 +2595,11 @@ const ITEM_DEF = {};
     ['box', 8, 4, 0, 11, 8, 5, 11],
     ['dot', 9, 4, 6, 13], ['dot', 10, 7, 6, 13]],
     { K: [TR, 0.9], M: [MET, 0.9], X: [C.nCyan, 1.0] });
+  d('credchip', 0.20, 0.10, [                   // a dropped chip of money
+    ['box', 3, 4, 0, 8, 7, 0, 13],
+    ['box', 4, 4, 1, 7, 7, 1, 9],
+    ['dot', 5, 5, 1, 2], ['dot', 6, 6, 1, 2]],
+    { S: [C.nAmber, 0.95], K: [DK, 0.9], W: [W, 1.0] });
   d('deck', 0.52, 0.16, [                       // the kickdeck on its wheels
     ['box', 0, 4, 3, 11, 7, 4, 13],
     ['box', 0, 4, 4, 1, 7, 4, 13], ['box', 10, 4, 4, 11, 7, 4, 13],
@@ -3906,9 +3911,10 @@ function buildInterior(bld, door, floor){
     furn(IOX + (rw >> 1) + 0.5, IOY + 1.6, 'holoboard');    // what to admire
     if (rnd() < 0.6) furn(IOX + 1.5, IOY + 1.6, 'planter');
   } else if (kind === 'depot'){
+    furn(IOX + 1.8, IOY + 1.8, 'cratepile');    // the freight, and the work
     for (let y = IOY + 2; y < IOY + rh - 2; y += 2)
       for (let x = IOX + 2; x < IOX + rw - 2; x += 3)
-        if (rnd() < 0.6 && Math.abs(x - doorX) > 1.5)
+        if (rnd() < 0.6 && Math.abs(x - doorX) > 1.5 && (x > IOX + 3 || y > IOY + 3))
           ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
     dropItem(IOX + 2.5, IOY + rh - 2.5, 0, 'scrap');
     if (rnd() < 0.5) dropItem(IOX + rw - 2.5, IOY + 2.5, 0, 'scrap');
@@ -4086,6 +4092,11 @@ function probeInteract(){
   for (let i = 0; i < nearP.length; i++){
     const p = nearP[i];
     if (p.k === PK_ITEM){
+      if (p.item === 'credchip'){
+        probeConsider(p.x, p.y, { kind: 'item', p,
+          prompt: '[SPACE]  TAKE - ' + (p.cval || 10) + ' CR' });
+        continue;
+      }
       const cost = p.price ? (player.corruption >= 3 ? Math.ceil(p.price * 1.25) : p.price) : 0;
       probeConsider(p.x, p.y, { kind: 'item', p,
         prompt: !p.price ? '[SPACE]  TAKE - ' + ITEMS[p.item].name
@@ -4103,6 +4114,12 @@ function probeInteract(){
       else if (p.fid === 'cabinet')
         probeConsider(p.x, p.y, { kind: 'stash', prompt: '[SPACE]  THE STASH' });
     }
+    else if (p.k === PK_FURN && inside && p.fid === 'terminal')
+      probeConsider(p.x, p.y, { kind: 'shift', desk: 1,
+        prompt: '[SPACE]  WORK A DESK SHIFT - 6h, +60 cr, it takes something' });
+    else if (p.k === PK_FURN && inside && p.fid === 'cratepile')
+      probeConsider(p.x, p.y, { kind: 'shift', desk: 0,
+        prompt: '[SPACE]  HAUL FREIGHT - 6h, +90 cr, it takes more' });
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
       probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[SPACE]  SIT - BENCH' });
     else if ((p.k === PK_CAM || p.k === PK_LAMP) && !p.dead && invCount('saw'))
@@ -4150,6 +4167,8 @@ function tryInteract(){
     openDialog(t.p.ident.name, [pedLine(t.p)]);
   } else if (t.kind === 'door'){
     if (t.exit) exitInterior(); else enterInterior(t.door);
+  } else if (t.kind === 'shift'){
+    workShift(t.desk);
   } else if (t.kind === 'buyhome'){
     openBuyHome(t.hm);
   } else if (t.kind === 'sleep'){
@@ -4187,6 +4206,17 @@ function tryInteract(){
   } else if (t.kind === 'stairs'){
     openFloorMenu();
   } else if (t.kind === 'item'){
+    if (t.p.item === 'credchip'){
+      const v = t.p.cval || 10;
+      player.credits += v;
+      const i = props.indexOf(t.p);
+      if (i >= 0) props.splice(i, 1);
+      indexProps(); indexSpriteProps();
+      if (t.p.key) worldDelta.taken[t.p.key] = 1;
+      sfx('ui_select', { rate: 1.5, vol: 0.65 });
+      toast('+' + v + ' cr');
+      return;
+    }
     const def = ITEMS[t.p.item];
     const st = player.inv.find(s => s.id === t.p.item);
     const space = def.stack - (st ? st.qty : 0);
@@ -5969,6 +5999,23 @@ function openBuyHome(h){
     ]
   }));
 }
+/* a shift: six hours gone, credits in, and the body pays the difference.
+   Desk work bruises the soul; freight bruises everything else. */
+function workShift(desk){
+  const cost = desk ? 10 : 18, pay = desk ? 60 : 90;
+  if (player.hp <= cost + 8){ toast('you are in no state to work'); return; }
+  player.hp -= cost;
+  player.credits += pay;
+  clock += 6;
+  while (clock >= 24){ clock -= 24; dayTick(); }
+  fade = 1;
+  wxUpdate(6 * 60);
+  updateClock(0);
+  hurtT = Math.max(hurtT, 0.4);
+  sfx('ui_select', { vol: 0.5, rate: 0.6 });
+  toast((desk ? 'six hours of forms. ' : 'six hours of lifting. ') +
+        '+' + pay + ' cr, and the clock says ' + clockStr());
+}
 function sleepToMorning(){
   let target = 8;
   if (clock >= 8) target = 8 + 24;
@@ -6561,6 +6608,8 @@ const ITEMS = {
              use(){ return lightUp(); } },
   battery: { name: 'BATTERY', pcol: C.nCyan, stack: 8, cat: 'misc', price: 6,
              hint: 'everything here runs on these' },
+  credchip:{ name: 'CREDIT CHIP', pcol: C.nAmber, stack: 1, cat: 'misc', price: 0,
+             hint: 'spends itself the moment you lift it' },
   deck:    { name: 'KICKDECK', pcol: C.nMag, stack: 1, cat: 'misc', price: 280,
              hint: 'press V away from traffic to ride; SPACE ollies, Q/E flip' }
 };
@@ -7893,6 +7942,11 @@ function damagePed(p, d){
   }
   if (p.hp <= 0){
     pedCrime(1, 'murder');
+    if (Math.random() < 0.4){                   // some of them carried something
+      props.push({ x: p.x, y: p.y, k: PK_ITEM, s: 0, r: 0,
+                   item: 'credchip', cval: 4 + ((Math.random() * 12) | 0) });
+      indexProps(); indexSpriteProps();
+    }
     if (p.sit){ p.sit.occ--; p.sit = null; }
     const t = randWalkNear(cam.x, cam.y, 60, STREAM_R * 0.8);   // the crowd renews
     if (t && !inPanicZone(t[0], t[1])){ p.x = t[0] + 0.5; p.y = t[1] + 0.5; }
@@ -7953,6 +8007,22 @@ function characterInSights(maxD, halfW){
   halfW = halfW || 0.45;
   const hit = hostileInSights(maxD, halfW);
   let best = hit ? hit.a : null, bd = hit ? hit.d : 1e9, ped = false;
+  {                                             // the civil cast can bleed too
+    const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+    const wd = Math.min(bd, wallDist(maxD));
+    for (const a of actors){
+      if (a.brain === 'hostile' || !!a.interior !== !!inside) continue;
+      if (!actorTargetable(a)) continue;
+      const rx = a.x - cam.x, ry = a.y - cam.y;
+      const f = rx * vx + ry * vy;
+      if (f < 0.3 || f > wd) continue;
+      if (Math.abs(vy * rx - vx * ry) > halfW) continue;
+      if (f < bd){
+        bd = f; best = a; ped = false;
+        if (a.hp === undefined || a.hp <= 0){ a.hp = 30; a.maxHp = 30; }
+      }
+    }
+  }
   if (!inside){
     const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
     const wd = Math.min(bd, wallDist(maxD));
@@ -8221,12 +8291,32 @@ function fireWeapon(){
 }
 function killActor(a){
   actors.splice(actors.indexOf(a), 1);
+  if (a.brain !== 'hostile'){
+    // a working person, murdered for the till: the till is real, and so is
+    // what it does to your name
+    props.push({ x: a.x, y: a.y, k: PK_ITEM, s: 0, r: 0,
+                 item: 'credchip', cval: 50 + ((Math.random() * 51) | 0) });
+    indexProps(); indexSpriteProps();
+    crimeEvent(3, 'murder');
+    panicHere(cam.x, cam.y, 120);
+    sfx('hit', { vol: 0.8, rate: 0.55 });
+    toast(a.name.toLowerCase() + ' drops the till - and the city saw');
+    return;
+  }
   const roll = Math.random();
   props.push({ x: a.x, y: a.y, k: PK_ITEM, s: 0, r: 0,
                item: roll < 0.6 ? 'ammo' : 'scrap', qty: roll < 0.6 ? 3 : 1 });
   indexProps(); indexSpriteProps();
   sfx('hit', { vol: 0.8, rate: 0.6 });
   toast('the ' + (a.kind === 'enforcer' ? 'enforcer' : 'razor') + ' drops');
+}
+/* who a bullet or a blade may touch: hostiles always; working actors too,
+   unless the story needs them alive */
+const VITAL = new Set(['THE WATCHER', 'THE FIXER', 'CHEMIST', 'DRIFTER',
+                       'STALL COOK', 'VANCE', 'REGISTRAR', 'SKYPARK ATTENDANT']);
+function actorTargetable(a){
+  if (a.brain === 'hostile') return true;
+  return !VITAL.has(a.name);
 }
 function damagePlayer(d){
   if (player.hp <= 0 || godMode) return;
