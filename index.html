@@ -4581,19 +4581,25 @@ function buildInterior(bld, door, floor){
       a.interior = 1;
     }
   } else if (kind === 'hideout'){
-    // No sign, no counter, no stock. Somebody has been sleeping here: a table
-    // under the only lamp anybody bothered to fix, crates instead of chairs,
-    // and a shelf of things you do not leave where the street can see them.
-    const hx = IOX + (rw >> 1), hy = IOY + (rh >> 1);
-    furn(hx + 0.5, hy + 0.2, 'conftable');
-    furn(hx - 1.8, hy + 1.8, 'cratepile', 0);
-    furn(IOX + 1.6, IOY + rh - 2.2, 'cratepile');
-    furn(IOX + rw - 2.2, IOY + 1.8, 'shelfunit');
-    if (rw > 8) furn(IOX + 1.5, IOY + 1.7, 'bed', 0);
-    furn(hx + 2.4, hy - 1.6, 'floorlamp');           // the one working light
-    if (rnd() < 0.6) furn(IOX + rw - 2.4, IOY + rh - 2.4, 'generator');
+    /* No sign, no counter, no stock. Somebody has been sleeping here: a bed
+       in the corner, crates for chairs, a shelf of things you do not leave
+       where the street can see them, and one lamp somebody bothered to fix.
+
+       Everything goes ROUND the edge. This room is small and it is the room
+       the whole main line walks into - it was laid out by hand at fixed
+       offsets with no clearance test at all, which put two crate piles four
+       tenths of a tile apart, left barely half the floor reachable and, in
+       six cities out of six, walled ROOK off where you could not talk to him. */
+    wall('w', 0.14, 'bed');
+    wall('e', 0.16, 'shelfunit');
+    wall('n', 0.30, 'cratepile');
+    if (rnd() < 0.8) wall('s', 0.20, 'cratepile');
+    if (rnd() < 0.7) wall('e', 0.70, 'generator');
+    wall('w', 0.72, 'floorlamp');                    // the one working light
+    if (rw >= 9 && rh >= 8) wall('n', 0.72, 'conftable');   // room for a table
+    // the cell stands in the middle, on floor you can actually reach
     const place = (k2, off, o) => {
-      const a = spawnClear(k2, hx + 0.5 + off, hy - 1.6, o);
+      const a = spawnClear(k2, IOX + (rw >> 1) + 0.5 + off, IOY + (rh >> 1) + 0.5, o);
       a.interior = 1;
       return a;
     };
@@ -7029,7 +7035,14 @@ function initMainQuest(){
       cand.push(d);
     }
     if (!cand.length) return null;
-    return cand[(hash3(worldSeed, salt, 3) * cand.length) | 0];
+    // prefer a deep building: the cell needs a room, and the smallest shells
+    // on the mile are barely six tiles across once the walls are in
+    cand.sort((a, c) => {
+      const A = buildings[a.b], B = buildings[c.b];
+      return ((B.x1 - B.x0) * (B.y1 - B.y0)) - ((A.x1 - A.x0) * (A.y1 - A.y0));
+    });
+    const top = cand.slice(0, Math.max(1, cand.length >> 2));
+    return top[(hash3(worldSeed, salt, 3) * top.length) | 0];
   };
   const d = pick(D_RED, 601) || pick(D_IND, 611) || pick(D_STRIP, 621);
   if (d){
