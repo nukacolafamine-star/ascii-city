@@ -5393,6 +5393,9 @@ function spawnActors(){
     spawnActor('citizen', isp.x, isp.y, {
       name: 'MERIDIAN MANAGER', brain: 'still', shirt: C.nWhite,
       tree: { entry(){
+          // once the lights stayed on, the man you shook down owns you a
+          // little and you own him a little, and that is what corpo work is
+          if (spireOpen()) return spireNode();
           if (player.qvar.mq21code) return 'after';
           if (mqLive('mq21')) return 'lean';
           return 'idle';
@@ -5412,7 +5415,8 @@ function spawnActors(){
                          toast('the code is yours'); }, next: 'gave' },
                  { t: 'Too rich' }] },
         gave: { text: 'It rotates monthly. You have until it does. We are done knowing each other.' },
-        after: { text: 'We are done knowing each other. Please.' } } });
+        after: { text: 'We are done knowing each other. Please.' },
+        ...spireTree() } });
   }
   if (DEALER){
     const v = spawnActor('citizen', DEALER.lot.x, DEALER.lot.y, {
@@ -7819,7 +7823,8 @@ function endTheWorld(){
 function cellAmbushTick(){
   if (!player.qvar.betrayed || inside) return;
   const have = actors.filter(a => a.name === 'CELL RAZOR' && a.hp > 0).length;
-  if (have >= 3 || Math.random() > 0.012) return;
+  const hunt = mqLive('sp3');
+  if (have >= (hunt ? 4 : 3) || Math.random() > (hunt ? 0.05 : 0.012)) return;
   const t = randWalkNear(cam.x, cam.y, 16, 28);
   if (!t) return;
   const a = spawnActor('razor', t[0] + 0.5, t[1] + 0.5,
@@ -7959,6 +7964,7 @@ function openQuestLog(){
   const items = [];
   let anywhere = false;
   for (const L of QUEST_LINES){
+    if (L.hide && L.hide()) continue;
     const st = lineState(L);
     if (!st.known){
       items.push({ info: L.name + '  -  not started' });
@@ -9412,6 +9418,127 @@ const MQ2 = {
 };
 Object.assign(QUESTS, MQ2);
 Object.assign(QUESTS, MQ4);
+/*======================== what the towers owe you ==========================
+  Leave the switch ON and the city keeps its light, the cell decides you are
+  the worst thing that ever happened to it, and the game has always stopped
+  right there - hunters in the street, HOMES.penthouse sitting unreachable.
+
+  This is the other half. MERIDIAN watched which way the lights went and who
+  was standing next to the switch, and the manager you once leaned on for a
+  code is the man who calls you now. Five jobs, and every one of them is an
+  act-one job run backwards: you marked walls for the cell, now you burn
+  those marks off; you cut the eyes out of a block, now you are the eye; you
+  carried ROOK's package, now you carry the schematics back to the people it
+  was taken from. The room at the top is the point of it. You did not get
+  out. You got promoted, which is the more expensive ending.
+============================================================================*/
+const SPIRE = {
+  sp1: { name: 'THE CALL', act: 5,
+    stages: [{ log: 'MERIDIAN wants a word with whoever left the lights on - the manager, downtown',
+      target: toManager }] },
+  sp2: { name: 'LOOSE ENDS', act: 5,
+    stages: [{ log: () => 'burn over the cell\u2019s marks - ' +
+                 ((player.qvar.vandal || 0) - (player.qvar.sp2Base || 0)) + ' of 3 walls',
+      tool: 'burner',
+      auto(){ return (player.qvar.vandal || 0) - (player.qvar.sp2Base || 0) >= 3; } }] },
+  sp3: { name: 'THE HOLDOUTS', act: 5,
+    stages: [{ log: () => 'the cell keeps sending people - put down 4 of them (' +
+                 (player.qvar.spKills || 0) + ')',
+      target(){ const a = actors.find(x => x.name === 'CELL RAZOR' && x.hp > 0);
+                return a ? { x: a.x, y: a.y, name: 'A FAMILIAR FACE' } : null; },
+      auto(){ return (player.qvar.spKills || 0) >= 4; } }] },
+  sp4: { name: 'THE PAPERWORK', act: 5,
+    stages: [{ log: 'go back into THE WORKS and recover the schematics you took for ROOK',
+      tool: 'shim',
+      target: toWorks,
+      auto(){ return !!player.qvar.spPapers; } },
+      { log: 'carry the schematics to the manager', target: toManager }] },
+  sp5: { name: 'A ROOM AT THE TOP', act: 5,
+    stages: [{ log: 'the manager has keys for you. go and be somebody',
+      target: toManager }] }
+};
+Object.assign(QUESTS, SPIRE);
+function toManager(){
+  const a = actors.find(x => x.name === 'MERIDIAN MANAGER');
+  return a ? { x: a.x, y: a.y, name: 'MERIDIAN' } : mqSpot(711, D_DOWN);
+}
+/* the line exists only for somebody who left the switch alone and got home */
+function spireOpen(){ return !!player.qvar.betrayed && player.quests.mq30 === 'done'; }
+/* Which room of the conversation you are standing in. Read top-down: the
+   job you are carrying beats the job he is about to hand you. */
+function spireNode(){
+  const q = player.quests;
+  if (q.sp5 === 'done') return 'spDone';
+  if (q.sp5 === 0) return 'spKeys';
+  if (q.sp4 === 'done') return 'spToKeys';
+  if (q.sp4 === 1) return 'spPapersIn';
+  if (q.sp4 === 0) return 'spPapersWait';
+  if (q.sp3 === 'done') return 'spToPapers';
+  if (q.sp3 === 0) return 'spHoldWait';
+  if (q.sp2 === 'done') return 'spToHold';
+  if (q.sp2 === 0) return 'spMarkWait';
+  if (q.sp1 === 'done') return 'spToMark';
+  return 'spFirst';                            // called in, or walked in cold
+}
+/* He is not ROOK. ROOK asked you to believe in something; this man is
+   offering a salary, and is faintly embarrassed about how well it works. */
+function spireTree(){
+  return {
+    spFirst: { text: 'You. I know exactly who you are, which is a sentence I have practised. Half this tower watched the grid not die and then watched the room it did not die in, and there was one person standing in it. My employers would like to buy you a drink. My employers do not drink. What they mean is a job.',
+      opts: [{ t: 'I\u2019m listening',
+               do(){ startQuest('sp1'); advanceQuest('sp1'); startQuest('sp2');
+                     mqBase('sp2Base', 'vandal'); player.track = 'sp2'; },
+               next: 'spToMark' },
+             { t: 'I don\u2019t work for towers' }] },
+    spToMark: { text: 'First: your own handwriting. Your cell\u2019s mark is on walls all over the lower districts and every one of them is a photograph of you waiting to be taken. Burn over three of them. Yes, with the same burner. I appreciate the symmetry as much as you do.',
+      opts: [{ t: 'Three walls' }] },
+    spMarkWait: { text: () => 'Three walls. You have done ' +
+                    ((player.qvar.vandal || 0) - (player.qvar.sp2Base || 0)) + '.' },
+    spToHold: { text: 'Clean. Now the harder one, and I am going to say it plainly because you will hear it anyway: they are still coming for you. Four of them, at least, working the street in shifts. This is not us asking you to hunt anyone. This is us asking you to survive four times and let me file it as work.',
+      opts: [{ t: 'File it', do(){ startQuest('sp3'); player.track = 'sp3'; },
+               next: 'spHoldWait' },
+             { t: 'They were my people' }] },
+    spHoldWait: { text: () => 'Four. You are at ' + (player.qvar.spKills || 0) +
+                    '. They will find you - they always do.' },
+    spToPapers: { text: 'Then the paperwork, which is the part nobody writes songs about. The schematics you lifted out of THE WORKS for your friend are still in that building - nobody has been brave enough to go back in. Bring them to me. It is the last thing with your name on it out there.',
+      opts: [{ t: 'I\u2019ll go back in', do(){ startQuest('sp4'); player.track = 'sp4'; },
+               next: 'spPapersWait' }] },
+    spPapersWait: { text: 'THE WORKS. The cabinet you already know about. Take a shim.' },
+    spPapersIn: { text: 'You have them. Hand them over and it is finished.',
+      opts: [{ t: '(hand over the schematics)',
+               do(){ advanceQuest('sp4'); startQuest('sp5'); player.track = 'sp5'; },
+               next: 'spToKeys' }] },
+    spToKeys: { text: 'That is everything. Nothing out there says your name any more except the people who say it carefully. So. My employers do not give bonuses; they give addresses. Sixty-first floor, the spire over the water - the one that has never once blinked, which I believe was somebody\u2019s original complaint.',
+      opts: [{ t: '(take the keys)',
+               do(){ advanceQuest('sp5'); spireKeys(); }, next: 'spDone' }] },
+    spKeys: { text: 'The keys are on the desk. Take them. This is the part where you go up.',
+      opts: [{ t: '(take the keys)',
+               do(){ advanceQuest('sp5'); spireKeys(); }, next: 'spDone' }] },
+    spDone: { text: () => 'How is the view? ... Everyone says that. Everyone stands at that window and says the lights look the same from up here, and they are wrong. They look the same from DOWN there. From up here you can see which ones we leave on.' }
+  };
+}
+/* the deed. The line has been paying in credits; this pays in an address */
+function spireKeys(){
+  if (HOMES && HOMES.penthouse) grantHome('penthouse');
+  player.qvar.spire = 1;
+  toast('THE SPIRE PENTHOUSE is yours - it is marked on your map');
+  sfx('ui_select', { vol: 0.8, rate: 1.4 });
+}
+/* sp3 counts the ambushers cellAmbushTick already sends; while the job is
+   live they come harder, because a job that waits on a random roll is a job
+   that sends you wandering */
+function spireKill(a){
+  if (mqLive('sp3') && a.name === 'CELL RAZOR')
+    player.qvar.spKills = (player.qvar.spKills || 0) + 1;
+}
+/* sp4: the schematics are where you left them, in the tower you climbed */
+function spirePapers(){
+  if (!mqLive('sp4') || player.qvar.spPapers) return;
+  if (!inside || !WORKS || inside.bld !== WORKS.bld) return;
+  player.qvar.spPapers = 1;
+  toast('the schematics are still in the cabinet. nobody came back for them');
+  sfx('ui_select', { vol: 0.6, rate: 1.1 });
+}
 /* a condemned tower to send the player into, remembered once chosen */
 let mqDgnBld = null;
 function mqDungeon(){
@@ -9675,7 +9802,12 @@ const QUEST_PAY = {
   mq17: 0, mq18: 60, mq19: 45, mq20: 30, mq21: 45, mq22: 40,
   mq23: 0, mq24: 0,
   // ---- act four: nobody is counting any more ----
-  mq25: 0, mq26: 50, mq27: 85, mq28: 125, mq29: 0, mq30: 0
+  mq25: 0, mq26: 50, mq27: 85, mq28: 125, mq29: 0, mq30: 0,
+  /* the other side of it. Corpo money is not cell money - these are the
+     first purses in the game that are not the bare minimum, because that is
+     the whole difference between the two employers. The last one pays in a
+     deed, which is worth more than all of them. */
+  sp1: 150, sp2: 200, sp3: 260, sp4: 340, sp5: 0
 };
 /* Finishing a job is not the same as being paid for one. Cutting three
    cameras in an alley used to put the fee straight in your pocket, which made
@@ -9733,6 +9865,9 @@ function advanceQuest(id){
       if (rk){ rk.brain = 'hostile'; rk.tree = null; rk.dialog = null;
                rk.hp = 220; rk.maxHp = 220; rk.atk = 12; rk.spd = 2.4; rk.aggro = 0; }
       toast('the lights stay on. the cell hunts you now. the city is yours to keep');
+      // and the towers, who were watching, start dialling
+      startQuest('sp1'); player.track = 'sp1';
+      setTimeout(() => toast('an unknown number: "MERIDIAN. Downtown. Ask for the manager."'), 4000);
     }
     if (player.track === id)
       player.track = Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
@@ -9793,7 +9928,13 @@ const QUEST_STORY = {
   mq27: 'The approach to THE WORKS, walked once, in daylight, like a man with business there.',
   mq28: 'Up through THE WORKS floor by floor, past everything they pay to keep the lights on.',
   mq29: 'The switch, and the choice nobody in the cell would make out loud.',
-  mq30: 'What you did with that switch is the only part of this the city will remember.'
+  mq30: 'What you did with that switch is the only part of this the city will remember.',
+  // ---- and after, for the ones who left it on ----
+  sp1: 'A tower called you by name. They had watched the grid not die, and they had watched who was standing next to it, and they wanted to talk about your future - a word nobody in the cell had ever used out loud.',
+  sp2: 'You went back to the walls you marked for ROOK and burned over your own handwriting, three of them, with the same burner you were given for the first job you ever did.',
+  sp3: 'The cell kept sending people, and you stopped four of them, and afterwards the manager filed it as work, which is a way of saying it out loud without having to hear it.',
+  sp4: 'The schematics were still in the cabinet in THE WORKS. Nobody had been brave enough to go back for them. You carried them out of the building you once climbed to end it, and handed them to the people they were taken from.',
+  sp5: 'They gave you an address instead of a fee. Sixty-first floor of the spire over the water - the tower that had never once blinked, which had been somebody\u2019s whole complaint.'
 };
 /* The lines the city runs, and the one-off work that is nobody\u2019s line. */
 const QUEST_LINES = [
@@ -9805,7 +9946,14 @@ const QUEST_LINES = [
     ids: ['wheels1', 'wheels2', 'wheels3', 'wheels4', 'wheels5'] },
   { id: 'odd', name: 'ODD JOBS',
     blurb: 'errands the street hands out',
-    ids: ['noodles', 'test', 'quiet', 'scrap', 'sphere'] }
+    ids: ['noodles', 'test', 'quiet', 'scrap', 'sphere'] },
+  // This one does not exist until you have earned it, and listing it as
+  // 'not started' would give away that there is another ending - so it is
+  // hidden outright rather than merely empty.
+  { id: 'spire', name: 'THE SPIRE',
+    blurb: 'what the towers owe the one who left the lights on',
+    hide(){ return !spireOpen(); },
+    ids: ['sp1', 'sp2', 'sp3', 'sp4', 'sp5'] }
 ];
 function lineState(L){
   let done = 0, live = null, known = 0;
@@ -10378,6 +10526,7 @@ function hideFrame(dt){
 }
 function corruptionTick(){                    // polled every half second
   if (!inside){ mqWorksGuards(); cellAmbushTick(); }
+  else spirePapers();
   if (player.corruption <= 0 || inside || jamT > 0) return;
   camWhisperT -= 0.5;
   if (camWhisperT <= 0){
@@ -10786,6 +10935,7 @@ function fireWeapon(){
 function killActor(a){
   actors.splice(actors.indexOf(a), 1);
   if (typeof mqWorksKill === 'function') mqWorksKill(a);
+  if (typeof spireKill === 'function') spireKill(a);
   if (a.brain !== 'hostile'){
     // a working person, murdered for the till: the till is real, and so is
     // what it does to your name
