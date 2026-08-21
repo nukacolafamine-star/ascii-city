@@ -1224,6 +1224,7 @@ function buildCity(seed){
   placeProps();
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
   placeWeaponCaches();
+  initHomes();
   bakeSolidProps();
 }
 
@@ -3445,6 +3446,7 @@ const INT_FLAVOR = {
            'The odds are on the wall. Reading them is free. Only that is.'] },
   dungeon: { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [
            'The lights gave up on this floor years ago.'] },
+  myhome:  { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [] },
   parlor:  { keeper: 'MADAME', floorA: 0, floorB: 0, lines: [
            'Sit anywhere, sugar. Somebody will find you.',
            'House rules: pay first, no names, no cameras. ESPECIALLY no cameras.'] }
@@ -3564,6 +3566,9 @@ function buildInterior(bld, door, floor){
   if (floor === 1 && bld.dist === D_DOWN && hash3(bld.id, 62, 5) < 0.3)
     kind = 'shop';                             // ground-floor retail downtown
   if (isDungeon(bld)) kind = floor === 1 ? 'depot' : 'dungeon';
+  const myHome = homeAt(bld.id);
+  if (myHome && player.homes && player.homes[myHome.id] && floor === 1)
+    kind = 'myhome';
   const trade = kind === 'shop' ? shopTypeFor(bld) : null;
   const F = INT_FLAVOR[kind];
   const TF = trade && SHOP_FLAVOR[trade];
@@ -3717,6 +3722,34 @@ function buildInterior(bld, door, floor){
         if (rnd() < 0.6) ip.push({ x: IOX + 0.6, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.3 });
       if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
                             r: 0.5, dist: bld.dist, yaw: 0 });   // counter to the room
+    }
+  } else if (kind === 'myhome'){
+    const tier = myHome.def.tier;
+    // every home has the essentials: a bed that saves you, a stash that keeps
+    furn(IOX + 1.6, IOY + 1.8, 'bed', Math.PI / 2);
+    furn(IOX + rw - 1.5, IOY + 1.8, 'cabinet', -Math.PI / 2);
+    furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
+    if (tier >= 1) furn(IOX + rw - 1.7, IOY + rh - 2.0, 'kitchenette', -Math.PI / 2);
+    if (tier >= 2){
+      furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.2, 'sofa', 0);
+      furn(IOX + (rw >> 1) + 0.5, IOY + 2.6, 'tvunit', Math.PI);
+      if (rw > 8) furn(IOX + 2.0, IOY + Math.min(5, rh - 3) + 0.5, 'planter');
+    }
+    if (tier >= 3){
+      furn(IOX + (rw >> 1) - 2.5, IOY + 2.0, 'holoboard');
+      furn(IOX + rw - 2.0, IOY + Math.min(6, rh - 3) + 0.5, 'displaycase', -Math.PI / 2);
+      if (rw > 9) furn(IOX + 2.2, IOY + rh - 2.4, 'conftable', 0);
+    }
+    // the visit, if the paperwork went through
+    if (worldDelta.swatDue && player.corruption >= 4){
+      worldDelta.swatDue = 0;
+      for (let i2 = 0; i2 < 2; i2++){
+        const a = spawnActor('enforcer', IOX + 2 + i2 * 2, IOY + (rh >> 1),
+          { name: 'SWAT', brain: 'hostile', hp: 55, shirt: C.carC, skin: C.dataDk });
+        a.aggro = 1; a.atk = 11; a.interior = 1;
+      }
+      toast('they were WAITING for you');
+      sfx('door', { rate: 0.4, vol: 0.9 });
     }
   } else if (kind === 'dungeon'){
     const fls = bldFloors(bld);
@@ -3917,7 +3950,9 @@ function openFloorMenu(){
   pushMode(makeListMenu({ name: 'floors', title: 'STAIRWELL', items }));
 }
 function enterInterior(door){
-  if (player.corruption >= 3 && hash3(door.b, 999, 7) < 0.35){
+  const own = homeAt(door.b);
+  if (player.corruption >= 3 && hash3(door.b, 999, 7) < 0.35 &&
+      !(own && player.homes && player.homes[own.id])){   // your own door knows you
     if (invCount('shim')){                     // a mag-shim eats one refusal
       invTake('shim', 1);
       toast('the mag-shim chews through the lock');
@@ -4013,6 +4048,13 @@ function probeInteract(){
     }
     else if (p.k === PK_BIN)
       probeConsider(p.x, p.y, { kind: 'bin', prompt: '[SPACE]  TRASH - STREET BIN' });
+    else if (p.k === PK_FURN && inside && homeAt(inside.bld) &&
+             player.homes && player.homes[homeAt(inside.bld).id]){
+      if (p.fid === 'bed')
+        probeConsider(p.x, p.y, { kind: 'sleep', prompt: '[SPACE]  SLEEP TO MORNING' });
+      else if (p.fid === 'cabinet')
+        probeConsider(p.x, p.y, { kind: 'stash', prompt: '[SPACE]  THE STASH' });
+    }
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
       probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[SPACE]  SIT - BENCH' });
     else if ((p.k === PK_CAM || p.k === PK_LAMP) && !p.dead && invCount('saw'))
@@ -4035,7 +4077,15 @@ function probeInteract(){
     for (let i = 0; i < doors.length; i++){
       const dr = doors[i];
       if (Math.abs(dr.x - cam.x) > 4 || Math.abs(dr.y - cam.y) > 4) continue;
-      probeConsider(dr.x, dr.y, { kind: 'door', door: dr, prompt: '[SPACE]  ENTER - ' + dr.name });
+      const hm = homeAt(dr.b);
+      if (hm && !(player.homes && player.homes[hm.id]) && hm.def.price > 0)
+        probeConsider(dr.x, dr.y, { kind: 'buyhome', hm,
+          prompt: '[SPACE]  FOR SALE - ' + hm.def.name + ' (' + hm.def.price + ' cr)' });
+      else if (hm && player.homes && player.homes[hm.id])
+        probeConsider(dr.x, dr.y, { kind: 'door', door: dr,
+          prompt: '[SPACE]  HOME - ' + hm.def.name });
+      else
+        probeConsider(dr.x, dr.y, { kind: 'door', door: dr, prompt: '[SPACE]  ENTER - ' + dr.name });
     }
   }
 }
@@ -4052,6 +4102,12 @@ function tryInteract(){
     openDialog(t.p.ident.name, [pedLine(t.p)]);
   } else if (t.kind === 'door'){
     if (t.exit) exitInterior(); else enterInterior(t.door);
+  } else if (t.kind === 'buyhome'){
+    openBuyHome(t.hm);
+  } else if (t.kind === 'sleep'){
+    sleepToMorning();
+  } else if (t.kind === 'stash'){
+    openStash();
   } else if (t.kind === 'bin'){
     trashMarks = {};
     openTrashMenu();
@@ -5713,6 +5769,111 @@ function companionTree(theme, comp){
       opts: [{ t: 'Back', next: 'start' }] },
     later: { text: 'Come back any time. The dark remembers you fondly.' }
   };
+}
+/*============================ 13k3. A PLACE OF YOUR OWN =====================
+  Three homes, three rungs of the ladder. A walk-up in the belt that honest
+  grinding can afford; a rowhouse in the suburbs the story hands you when
+  it needs you to have something to lose; and a penthouse over downtown for
+  whoever is still standing when the story is over. A home is a door that
+  knows you: a bed that sleeps to morning and heals, a stash cabinet that
+  keeps what you leave, and - if the paperwork went through - the
+  occasional visit from people with a battering ram.
+============================================================================*/
+let HOMES = null;
+function initHomes(){
+  HOMES = {};
+  const pick = (dist, score) => {
+    let best = null, bs = -1e9;
+    for (const d of doors){
+      const b = buildings.find(bb => bb.id === d.b);
+      if (!b || b.dist !== dist || isDungeon(b)) continue;
+      const sc = score(b);
+      if (sc > bs){ bs = sc; best = { d, b }; }
+    }
+    return best;
+  };
+  const ap = pick(D_IND, b => -Math.abs((b.x1 - b.x0) - 5) + hash3(b.id, 91, 1) * 0.5);
+  if (ap) HOMES.apartment = { bld: ap.b.id, price: 800, tier: 1,
+    name: 'THE WALK-UP', x: ap.d.x, y: ap.d.y };
+  const su = pick(D_SUB, b => (b.x1 - b.x0) + hash3(b.id, 92, 1));
+  if (su) HOMES.suburb = { bld: su.b.id, price: 0, tier: 2,
+    name: 'THE ROWHOUSE', x: su.d.x, y: su.d.y };
+  const ph = pick(D_DOWN, b => b.h);
+  if (ph) HOMES.penthouse = { bld: ph.b.id, price: 0, tier: 3,
+    name: 'THE SPIRE PENTHOUSE', x: ph.d.x, y: ph.d.y };
+  if (HOMES.apartment)
+    landmarks.push({ name: 'THE WALK-UP', x: HOMES.apartment.x, y: HOMES.apartment.y });
+}
+function homeAt(bldId){
+  if (!HOMES) return null;
+  for (const k in HOMES) if (HOMES[k].bld === bldId) return { id: k, def: HOMES[k] };
+  return null;
+}
+function grantHome(id){
+  if (!player.homes) player.homes = {};
+  if (player.homes[id]) return;
+  player.homes[id] = 1;
+  const def = HOMES[id];
+  if (def && !landmarks.some(l => l.name === def.name))
+    landmarks.push({ name: def.name, x: def.x, y: def.y });
+  toast('the keys to ' + (def ? def.name.toLowerCase() : id) + ' are yours');
+  sfx('ui_select', { vol: 0.7, rate: 0.8 });
+}
+function openBuyHome(h){
+  pushMode(makeListMenu({
+    name: 'buyhome', title: h.def.name + '  -  ' + h.def.price + ' CR',
+    items: [
+      { info: 'one room in the belt. thin walls, a working door,' },
+      { info: 'and nobody upstairs who asks questions.' },
+      { sep: true },
+      { label: 'BUY IT', value: () => player.credits >= h.def.price ? '' : 'SHORT',
+        act(){
+          if (player.credits < h.def.price){ toast('not enough credits'); return; }
+          player.credits -= h.def.price;
+          grantHome(h.id);
+          closeMenus();
+        } },
+      { label: 'NOT TODAY', act(){ popMode(); } }
+    ]
+  }));
+}
+function sleepToMorning(){
+  let target = 8;
+  if (clock >= 8) target = 8 + 24;
+  const dh = target - clock;
+  clock = target;
+  while (clock >= 24){ clock -= 24; dayTick(); }
+  player.hp = player.maxHp;
+  fade = 1;
+  wxUpdate(dh * 60);
+  updateClock(0);
+  toast('morning. ' + clockStr() + ' - you slept like the paid-for');
+  sfx('ui_select', { vol: 0.5, rate: 0.7 });
+}
+function openStash(){
+  if (!player.stash) player.stash = [];
+  const items = [{ info: 'CARRYING -> tap to stow      STASH -> tap to take' }, { sep: true }];
+  for (const st of player.inv)
+    items.push({ label: 'STOW ' + ITEMS[st.id].name, value: () => 'x' + st.qty,
+      act(){
+        const g = player.stash.find(q => q.id === st.id);
+        if (g) g.qty += 1; else player.stash.push({ id: st.id, qty: 1 });
+        invTake(st.id, 1);
+        popMode(); openStash();
+      } });
+  items.push({ sep: true });
+  if (!player.stash.length) items.push({ info: 'the stash is empty' });
+  for (const st of player.stash)
+    items.push({ label: 'TAKE ' + ITEMS[st.id].name, value: () => 'x' + st.qty,
+      act(){
+        invAdd(st.id, 1);
+        st.qty -= 1;
+        if (st.qty <= 0) player.stash.splice(player.stash.indexOf(st), 1);
+        popMode(); openStash();
+      } });
+  items.push({ sep: true });
+  items.push({ label: 'CLOSE', act(){ popMode(); } });
+  pushMode(makeListMenu({ name: 'stash', title: 'THE STASH', items }));
 }
 /* The pause menu is a hallway of doors now, not a wall of dials: each group
    of controls lives behind its own button, one green rule between each. */
