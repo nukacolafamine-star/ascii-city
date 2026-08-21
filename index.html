@@ -1559,7 +1559,6 @@ function pushSign(axis, n, plane, mid, wm, hm, z, nx, ny, art, col, blink){
   });
 }
 function makeSign(b, tx, ty, nx, ny, txt, col, vert, blink){
-  if (!vert && b.word === undefined) b.word = txt;   // the door borrows the sign's name
   const axis = nx !== 0 ? 0 : 1, n = nx !== 0 ? nx : ny;
   const run = faceRun(b, tx, ty, nx, ny);
   const runLen = run[1] - run[0];
@@ -1576,6 +1575,78 @@ function makeSign(b, tx, ty, nx, ny, txt, col, vert, blink){
   if (z < 1.1 || z + hm > hostH - 0.1) return;  // does not fit on this wall
   const face = axis === 0 ? (nx > 0 ? tx + 1 : tx) : (ny > 0 ? ty + 1 : ty);
   pushSign(axis, n, face, (run[0] + run[1]) * 0.5, wm, hm, z, nx, ny, art, col, blink);
+}
+/*=========================== WHAT A BUILDING IS =============================
+  There used to be two unrelated rolls: the door borrowed whatever word the
+  first sign happened to paint, and the interior picked a trade from its own
+  hash. So a door reading HARDWARE opened onto a fruit market, and a LOVE
+  HOTEL sold gummies. One decision now settles both - the building's USE -
+  and the door, the map symbol and the room all read it.
+
+  Signage is advertising and says nothing binding about the building any
+  more; brands come and go on a facade, the door does not.
+
+  Uses with `kind` are built. The rest are real doors onto rooms nobody has
+  furnished yet: they open, they are empty, and they say so, waiting for the
+  day laundries and arcades mean something.
+============================================================================*/
+const USES = {
+  grocery:    { door: 'MARKET',     kind: 'shop', trade: 'grocery' },
+  bodega:     { door: 'BODEGA',     kind: 'shop', trade: 'bodega' },
+  general:    { door: 'GOODS',      kind: 'shop', trade: 'general' },
+  clothier:   { door: 'THREADS',    kind: 'shop', trade: 'clothier' },
+  jeweler:    { door: 'GOLD',       kind: 'shop', trade: 'jeweler' },
+  armory:     { door: 'ARMS',       kind: 'shop', trade: 'armory' },
+  tools:      { door: 'HARDWARE',   kind: 'shop', trade: 'tools' },
+  dispensary: { door: 'DISPENSARY', kind: 'shop', trade: 'dispensary' },
+  lobby:      { door: 'LOBBY',      kind: 'lobby' },
+  depot:      { door: 'DEPOT',      kind: 'depot' },
+  home:       { door: 'APARTMENTS', kind: 'home' },
+  // doors onto rooms that do not exist yet
+  laundry:    { door: 'LAUNDRY' },   club:    { door: 'CLUB' },
+  arcade:     { door: 'ARCADE' },    cafe:    { door: 'CAFE' },
+  bakery:     { door: 'BAKERY' },    clinic:  { door: 'CLINIC' },
+  bar:        { door: 'BAR' },       school:  { door: 'SCHOOL' },
+  sushi:      { door: 'SUSHI' },     noodles: { door: 'NOODLE BAR' },
+  garage:     { door: 'GARAGE' },    church:  { door: 'CHURCH' },
+  pharmacy:   { door: 'PHARMACY' },  gym:     { door: 'GYM' }
+};
+/* the mix each district draws from - developed uses and undeveloped ones
+   side by side, so the city reads varied without lying about any door */
+const USE_MIX = [
+  // repeats are weights. Roughly a fifth of the city is a door onto a room
+  // that does not exist yet - enough to promise a bigger city later, not so
+  // much that a street is all shutters.
+  ['lobby','lobby','lobby','general','general','clothier','clothier',
+   'jeweler','jeweler','cafe','clinic','gym'],                                // D_DOWN
+  ['clothier','clothier','tools','tools','jeweler','jeweler','general',
+   'general','armory','armory','dispensary','noodles','sushi','bar','club',
+   'arcade','bakery'],                                                        // D_STRIP
+  ['grocery','grocery','grocery','bodega','bodega','bodega','general',
+   'general','home','home','laundry','pharmacy','cafe','clinic','bakery'],    // D_RES
+  ['depot','depot','depot','tools','tools','tools','armory','armory',
+   'general','garage'],                                                       // D_IND
+  ['home','home','home','home','grocery','grocery','bodega','bodega',
+   'general','garage','school','church','laundry'],                           // D_SUB
+  ['home','home','grocery','grocery','general','church','bakery'],            // D_RURAL
+  ['dispensary','dispensary','dispensary','bodega','bodega','jeweler',
+   'jeweler','tools','armory','general','bar','club','clinic']                // D_RED
+];
+function buildingUse(b){
+  if (!b || b.landmark || b.x0 === undefined) return null;
+  if (typeof isDungeon === 'function' && isDungeon(b)) return 'dungeon';
+  if ((b.dist === D_RED || b.dist === D_STRIP) && hash3(b.id, 63, 7) < 0.22)
+    return 'casino';
+  if (b.dist === D_RED && hash3(b.id, 65, 11) < 0.30) return 'parlor';
+  const mix = USE_MIX[b.dist] || USE_MIX[0];
+  return mix[(hash3(b.id, 31, 7) * mix.length) | 0];
+}
+/* the word over the door: the truth about the room behind it */
+function useDoorName(b){
+  const u = buildingUse(b);
+  if (!u) return null;
+  if (u === 'dungeon' || u === 'casino' || u === 'parlor') return specialWordFor(b);
+  return (USES[u] && USES[u].door) || 'DOOR';
 }
 /* The sign, the door and the room have to agree. Casinos, parlors and the
    condemned towers are dealt by hash inside buildInterior, so their names
@@ -1604,13 +1675,8 @@ function buildSigns(){
     if (b.landmark) continue;
     const D = DISTRICT[b.dist];
     const words = b.redlight ? RED_WORDS : D.words;
-    // a shop's first sign says what it sells, so trades can be found by eye
-    const shopish = INTERIOR_KIND[b.dist] === 'shop' ||
-                    (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3) ||
-                    (b.dist === D_DOWN && hash3(b.id, 62, 5) < 0.3);
-    const sw = specialWordFor(b);
-    let forced = sw ? sw
-               : shopish && rnd() < 0.6 ? SHOP_SIGN[shopTypeFor(b)] : null;
+    // a sign is an advertisement, not a nameplate: it may say anything
+    let forced = null;
     // one bucket per outward direction, so a shop faces every street it fronts
     const faces = [[], [], [], []];
     for (let y = b.y0; y <= b.y1; y++)
@@ -3511,6 +3577,7 @@ const INT_FLAVOR = {
            'Do not knock on 4C. Trust me.'] },
   storage: { keeper: 'CARETAKER', floorA: 0, floorB: 0, lines: [
            'Everything here belongs to somebody who forgot it.'] },
+  empty:   { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [] },
   casino:  { keeper: 'PIT BOSS', floorA: 0, floorB: 0, lines: [
            'Play or make room for somebody who will.',
            'The odds are on the wall. Reading them is free. Only that is.'] },
@@ -3604,7 +3671,7 @@ function buildDoors(){
     const D = DISTRICT[b.dist];
     doors.push({ x: c[0] + 0.5 + nx * 0.62, y: c[1] + 0.5 + ny * 0.62,
                  bx: c[0], by: c[1], nx, ny, b: b.id,
-                 name: specialWordFor(b) || b.word ||
+                 name: useDoorName(b) ||
                        D.words[(hash3(b.id, 5, 1) * D.words.length) | 0] });
   }
 }
@@ -3629,22 +3696,17 @@ function buildInterior(bld, door, floor){
   S.tType.fill(0); S.tH.fill(0); S.tB.fill(-1); S.walkG.fill(0);
   const keep = rngState;
   srand((((bld.seed ^ 0x51ab) + floor * 2654435761) >>> 0) || 1);
-  let kind = floor === 1 ? INTERIOR_KIND[bld.dist]
-             : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
-  if (floor === 1 && bld.dist === D_IND && hash3(bld.id, 61, 3) < 0.3)
-    kind = 'shop';                             // the belt keeps a few counters
-  if (floor === 1 && (bld.dist === D_RED || bld.dist === D_STRIP) &&
-      hash3(bld.id, 63, 7) < 0.22)
-    kind = 'casino';                           // the house always finds a room
-  else if (floor === 1 && bld.dist === D_RED && hash3(bld.id, 65, 11) < 0.30)
-    kind = 'parlor';                           // the mile's older institution
-  if (floor === 1 && bld.dist === D_DOWN && hash3(bld.id, 62, 5) < 0.3)
-    kind = 'shop';                             // ground-floor retail downtown
-  if (isDungeon(bld)) kind = floor === 1 ? 'depot' : 'dungeon';
+  const use = buildingUse(bld);
+  const uDef = use && USES[use];
+  let kind = floor === 1
+    ? (use === 'dungeon' ? 'depot'
+       : use === 'casino' || use === 'parlor' ? use
+       : uDef && uDef.kind ? uDef.kind : 'empty')
+    : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
   const myHome = homeAt(bld.id);
   if (myHome && player.homes && player.homes[myHome.id] && floor === 1)
     kind = 'myhome';
-  const trade = kind === 'shop' ? shopTypeFor(bld) : null;
+  const trade = kind === 'shop' ? (uDef && uDef.trade) || 'general' : null;
   const F = INT_FLAVOR[kind];
   const TF = trade && SHOP_FLAVOR[trade];
   intFloorA = TF ? TF.floorA : F.floorA;
@@ -3952,6 +4014,17 @@ function buildInterior(bld, door, floor){
         tree: companionTree(theme, comp) });
       a.interior = 1;
     }
+  } else if (kind === 'empty'){
+    // a door onto a room nobody has furnished yet. It is honest about that.
+    const note = (USES[use] && USES[use].door) || 'PREMISES';
+    const a = spawnClear('citizen', IOX + (rw >> 1) + 0.5, IOY + 2.2, {
+      name: note, brain: 'still',
+      tree: { start: { text: 'The ' + note.toLowerCase() + ' is not open yet. ' +
+                             'Fittings on order, permits pending, the usual. ' +
+                             'Come back when the city gets round to it.',
+        opts: [{ t: 'I\u2019ll come back' }] } } });
+    a.interior = 1;
+    if (rnd() < 0.5) furn(IOX + 1.6, IOY + rh - 2.0, 'cratepile');
   } else if (kind === 'lobby'){
     for (const bx of [IOX + 2, IOX + rw - 3])
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
@@ -3975,7 +4048,8 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.5) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
   }
-  if (kind !== 'dungeon' && rnd() < (kind === 'storage' ? 0.35 : 0.85)){
+  if (kind !== 'dungeon' && kind !== 'empty' &&
+      rnd() < (kind === 'storage' ? 0.35 : 0.85)){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
     const a = spawnClear('vendor', kx, IOY + 1.4,
                          { name: TF ? TF.keeper : F.keeper, brain: 'still',
@@ -4004,7 +4078,7 @@ function buildInterior(bld, door, floor){
   }
   rngState = keep;
   return { props: ip, stairs,
-           shop: kind === 'shop' ? shopTypeFor(bld) : null,
+           shop: trade,
            px: floor === 1 ? doorX + 0.5 : (stairs ? stairs.x : doorX + 0.5),
            py: floor === 1 ? IOY + rh - 1.6 : (stairs ? stairs.y + 1.3 : IOY + rh - 1.6),
            ang: floor === 1 ? -Math.PI / 2 : Math.PI / 2,
@@ -7916,7 +7990,7 @@ const QUESTS = {
           let best = null, bd = 1e9;
           for (const d of doors){
             const B = buildings[d.b];
-            if (!B || INTERIOR_KIND[B.dist] !== 'shop' || shopTypeFor(B) !== 'tools') continue;
+            if (!B || buildingUse(B) !== 'tools') continue;
             const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
             if (dd < bd){ bd = dd; best = d; }
           }
@@ -8383,16 +8457,9 @@ const SHOP_TYPES = {
   dispensary: { name: 'DISPENSARY',
                 stock: ['chill', 'haze', 'staticd', 'numb', 'rush', 'ghost', 'overclock', 'mirror', 'sake'] }
 };
-function shopTypeFor(bld){
-  if (bld.word === 'HARDWARE') return 'tools';   // hardware IS the anarchy aisle
-  const h = hash3(bld.id, 31, 7);
-  switch (bld.dist){
-    case D_RES: case D_SUB: return h < 0.5 ? 'grocery' : h < 0.85 ? 'bodega' : 'general';
-    case D_STRIP: return ['clothier', 'tools', 'grocery', 'jeweler', 'general', 'armory'][(h * 6) | 0];
-    case D_RED:   return h < 0.45 ? 'dispensary' : h < 0.7 ? 'bodega' : h < 0.9 ? 'jeweler' : 'tools';
-    case D_IND:   return h < 0.6 ? 'tools' : 'armory';
-    default:      return h < 0.4 ? 'clothier' : h < 0.7 ? 'jeweler' : 'general';
-  }
+function shopTypeFor(bld){                    // one answer, from the use
+  const u = buildingUse(bld);
+  return (u && USES[u] && USES[u].trade) || 'general';
 }
 function shopStock(){
   const t = SHOP_TYPES[(inside && inside.shop) || 'general'];
@@ -11350,11 +11417,9 @@ function doorTag(bldId){
         sw === 'SIGNAL HOUSE' || sw === 'STEAM SILK') return ['X', H_PUR];
     return ['W', H_RED];                        // the condemned towers
   }
-  const shopish = INTERIOR_KIND[b.dist] === 'shop' ||
-                  (b.dist === D_IND && hash3(b.id, 61, 3) < 0.3) ||
-                  (b.dist === D_DOWN && hash3(b.id, 62, 5) < 0.3);
-  if (shopish) return TRADE_TAG[shopTypeFor(b)] || null;
-  return null;
+  const u = buildingUse(b);
+  if (u && USES[u] && USES[u].trade) return TRADE_TAG[USES[u].trade] || null;
+  return u && !USES[u].kind ? ['?', H_DIM] : null;   // a door onto nothing yet
 }
 function drawMapMode(m){
   const cols = R.cols, rows = R.rows;
