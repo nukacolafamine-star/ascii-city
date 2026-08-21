@@ -7,24 +7,24 @@ ships until it is measured in the live page.
 ## Phase A — foundations and quick wins
 Small, unblocking, or restructuring work that later phases hook into.
 
-- [ ] **A1. Ped collision with solid props.** Pedestrians currently walk
+- [x] **A1. Ped collision with solid props.** Pedestrians currently walk
   through benches, stalls, everything. Route `propBlocked` (with the stall
   box test) into ped steering — cheap check against propGrid, and bake
   solid-prop tiles out of `walkG` so A* routes around rather than into
   furniture. Actors (vendors are pinned) unaffected.
-- [ ] **A2. Quest markers on both maps.** The tracked quest's `target()`
+- [x] **A2. Quest markers on both maps.** The tracked quest's `target()`
   drawn as a pulsing glyph on the minimap edge (clamped, arrow at edge when
   off-screen) and on the city map via `sx()/plot()` (respect chirality —
   never raw +x math). Selected-quest plumbing already exists in
   `player.track`.
-- [ ] **A3. HUD / pause-menu restructure.** Remove the KEYS panel and the
+- [x] **A3. HUD / pause-menu restructure.** Remove the KEYS panel and the
   ASCII CITY box from the HUD. Date/time/district/coords go in a block
   under the minimap. New bottom-centre element: HP + ammo. CR shown in
   inventory only. Pause menu gains sub-menus with green separator lines:
   CONTROLS (the old keys text), SETTINGS (bloom, char grid, minimap,
   touch), SOUNDS (all volume sliders), SAVES (save/load/new city), DEBUG
   (nearest landmark, substances, on-foot/skate flag, clock, weather).
-- [ ] **A4. Item voxel models — one per item, no sharing.** Every single
+- [x] **A4. Item voxel models — one per item, no sharing.** Every single
   ITEMS entry gets its own authored voxel volume (~40 of them): the cup
   noodles is a cup with a lid and steam, the cola a can, the pistol a
   pistol, each garment its own folded shape, each tool its own silhouette.
