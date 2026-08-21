@@ -8965,8 +8965,15 @@ function openInventory(){
     { info: tabLine },
     { sep: true }
   ];
+  // an empty tab says so by being empty - a line reading 'nothing in this
+  // tab' only tells you what you can already see. Blank rows rather than no
+  // rows, so the two rules do not collapse into one doubled-up line and the
+  // card keeps a body: black space, which is the whole point of the change.
+  // The row is a SPACE, not '': every reader of .info tests it for truth, so
+  // an empty string both crashes the width pass and lets the cursor land on
+  // a row that is not there.
   const shown = player.inv.filter(st => invTabOf(st.id) === INV_TABS[invTab][1]);
-  if (!shown.length) items.push({ info: 'nothing in this tab' });
+  if (!shown.length) for (let i = 0; i < 3; i++) items.push({ info: ' ' });
   for (const st of shown){
     const def = ITEMS[st.id];
     const wearable = def.cat === 'clothing' || def.cat === 'accessory';
@@ -8991,17 +8998,9 @@ function openInventory(){
   if (INV_TABS[invTab][1] === 'weapon')
     items.push({ label: 'FISTS', value: () => weaponId() === 'fist' ? 'EQUIPPED' : '',
                  hint: 'always with you', act(){ equipWeapon('fist'); refreshInventory(); } });
-  // the objectives used to live down here under the socks. They have a room
-  // of their own now, off the pause menu.
-  {
-    const live = Object.keys(player.quests || {})
-                   .filter(id => QUESTS[id] && player.quests[id] !== 'done').length;
-    if (live){
-      items.push({ sep: true });
-      items.push({ info: live + (live === 1 ? ' job open' : ' jobs open') +
-                         '  -  ESC then QUEST LOG' });
-    }
-  }
+  // the objectives used to live down here under the socks; they have a room
+  // of their own off the pause menu now, and the signpost that pointed at it
+  // is gone too - this card is for what you are carrying, nothing else
   items.push({ sep: true });
   items.push({ label: 'CLOSE', hint: 'TAB or ESC also closes; A/D switch tabs', act(){ popMode(); } });
   pushMode(makeListMenu({ name: 'inventory', title: 'INVENTORY', items,
