@@ -1220,35 +1220,50 @@ function buildCity(seed){
   buildSigns();
   buildDoors();
   placeStreetItems();
-  deoverlapProps();
-  // the nudge can shuffle a cart off a spot that worked; a cart that no
-  // longer has a wall behind it and a frontage in front is not a pitch
-  props = props.filter(q => q.k !== PK_STALL || stallSpot(q) >= 0);
-  for (const q of props) if (q.k === PK_STALL) q.yaw = stallYaw(q);
+  placeProps();
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
 }
 
-/* Now that props are solids rather than flat cards, two of them sharing a
-   tile visibly interpenetrate. Every model declares how much room it wants
-   and the city is swept once at generation: the things that were placed
-   deliberately keep their spot, and anything scattered on top of them is
-   nudged clear or dropped. */
-const MODEL_CLEAR = [];
+// cart dimensions: the model, its collision box and its footprint all read
+// these, so they sit up here where every one of them can see them
+const STALL_H = 3.4, STALL_W = 3.0;    // tall enough to stand a cook up in
+const STALL_DEPTH = 0.85;              // depth as a fraction of the frontage
+const STALL_D = STALL_W * STALL_DEPTH; // ... and in world units, for collision
+/*--------------------------- placing the furniture --------------------------
+  The city is meant to read as laid out, not sprinkled: every prop on a tile
+  centre, nothing overlapping anything, nothing standing in a doorway, and
+  the things that line a street all sitting the same distance off the kerb.
+
+  Scattering first and nudging the clashes apart could not deliver that. A
+  nudge lands wherever the circle test stops complaining, which is how props
+  ended up fractionally off-grid and still occasionally stacked - a circle is
+  a poor stand-in for a three-metre cart, and the nudge itself had no notion
+  of the lattice. So nothing is nudged any more. Every prop CLAIMS a
+  tile-aligned rectangle out of an occupancy map, in priority order: the
+  things placed on purpose go first and take the spot they were given, the
+  scattered dressing fills in around them. If a prop's own tile is taken it
+  tries the tiles around it - never a fraction of a tile - and if none of
+  those are clear it is not placed at all.
+============================================================================*/
+const OCC_FREE = 0, OCC_TAKEN = 1, OCC_DOOR = 2;
+let occ = null;                             // one cell per map tile
+/* What a model actually stands on, in world units, before it is turned.
+   Kept at or under one tile for anything laid in a deliberate run - rails
+   along a bridge, crops in a furrow - so consecutive tiles never fight. */
+const MODEL_FOOT = [];
 (function(){
-  const c = (k, r) => { MODEL_CLEAR[k] = r; };
-  c(PK_TREE, 2.4);   c(PK_SAKURA, 2.4);  c(PK_TURBINE, 2.0);
-  c(PK_STALL, 1.1);  c(PK_METRO, 0.9);   c(PK_BENCH, 0.7);
-  c(PK_RACK, 0.6);   c(PK_ROCK, 0.5);    c(PK_PLAY, 0.4);
-  c(PK_STAIR, 0.4);  c(PK_BIN, 0.35);    c(PK_TLIGHT, 0.35);
-  c(PK_LAMP, 0.3);   c(PK_RAIL, 0.28);   c(PK_HYDR, 0.28);
-  c(PK_APPLE, 0.3);  c(PK_CAM, 0.25);    c(PK_ITEM, 0.2);
-  c(PK_CROP, 0.16);
+  const f = (k, w, d) => { MODEL_FOOT[k] = [w, d === undefined ? w : d]; };
+  f(PK_TREE, 4.6);        f(PK_SAKURA, 3.2);    f(PK_APPLE, 2.6);
+  f(PK_TURBINE, 3.6);     f(PK_STALL, STALL_W, STALL_D);
+  f(PK_METRO, 2.8, 2.4);  f(PK_PLAY, 3.2, 1.6); f(PK_BENCH, 2.0, 0.9);
+  f(PK_RACK, 1.8, 1.2);   f(PK_STAIR, 1.5);     f(PK_ROCK, 1.1);
+  f(PK_BIN, 1.0);         f(PK_LAMP, 0.9);      f(PK_TLIGHT, 0.9);
+  f(PK_HYDR, 0.9);        f(PK_CAM, 0.9);       f(PK_ITEM, 0.7);
+  f(PK_RAIL, 0.95);       f(PK_CROP, 0.9);
 })();
-/* Clearance only stops things touching. Furniture also wants to be SPREAD:
-   the generators scatter by per-tile chance, which clumps. This is the
-   minimum gap between two of the same kind, in tiles - a clump is thinned
-   until what is left is evenly placed. Rails and crops are laid in
-   deliberate runs, so they are left out of it. */
+/* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
+   generators scatter by per-tile chance, which clumps. Minimum gap between
+   two of the same kind, in tiles. Runs are exempt. */
 const MODEL_SPACE = [];
 (function(){
   const g = (k, d) => { MODEL_SPACE[k] = d; };
@@ -1260,67 +1275,78 @@ const MODEL_SPACE = [];
 })();
 // placed on purpose first, scattered dressing last - and the first three
 // are never moved, because other systems know where they are
-const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_STALL, PK_BENCH, PK_CAM,
-                     PK_TLIGHT, PK_RAIL, PK_HYDR, PK_LAMP, PK_TURBINE,
+// Rails come high: they are a run along a bridge edge at a fixed interval,
+// and one post lost to a passing bench leaves a visible gap in the railing.
+const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_RAIL, PK_STALL, PK_BENCH,
+                     PK_CAM, PK_TLIGHT, PK_HYDR, PK_LAMP, PK_TURBINE,
                      PK_APPLE, PK_PLAY, PK_BIN, PK_RACK, PK_CROP,
                      PK_ROCK, PK_TREE, PK_SAKURA];
-function deoverlapProps(){
-  const CELL = 8, STRIDE = 4096;
-  const buckets = new Map();
-  const clearOf = q => MODEL_CLEAR[q.k] !== undefined ? MODEL_CLEAR[q.k]
-                     : Math.max(q.r || 0.2, 0.3);
-  const bkey = (x, y) => (((y / CELL) | 0) * STRIDE + ((x / CELL) | 0));
-  const put = q => {
-    const k = bkey(q.x, q.y);
-    let a = buckets.get(k); if (!a) buckets.set(k, a = []);
-    a.push(q);
+// things that line a street want the kerb lane, so a run of them reads as a
+// row rather than a scatter across the width of the pavement
+const KERB_KIND = [];
+(function(){ for (const k of [PK_LAMP, PK_BIN, PK_HYDR, PK_CAM, PK_TLIGHT,
+                              PK_BENCH, PK_RACK]) KERB_KIND[k] = 1; })();
+const PIN_KIND = [];
+(function(){ for (const k of [PK_METRO, PK_STAIR, PK_ITEM]) PIN_KIND[k] = 1; })();
+function isKerb(tx, ty){
+  if (tileAt(tx, ty) !== T_WALK) return false;
+  for (let d = 0; d < 4; d++){
+    const q = tileAt(tx + DIRV[d][0], ty + DIRV[d][1]);
+    if (q === T_ROAD || q === T_CROSS) return true;
+  }
+  return false;
+}
+// the facing a prop will be drawn at - its footprint turns with it
+function propFacing(p){
+  return p.k === PK_STALL ? stallYaw(p) : propYaw(p) + (MODEL_TURN[p.k] || 0);
+}
+function footBox(k, yaw){
+  const m = MODEL_FOOT[k];
+  let w = m ? m[0] : (PROPDEF[k] ? PROPDEF[k].w : 0.8);
+  let d = m ? m[1] : w;
+  // every facing in this world is a quarter turn, so the swap is exact
+  if (Math.abs(Math.round(yaw / (Math.PI / 2))) % 2){ const t = w; w = d; d = t; }
+  return [w, d];
+}
+function placeProps(){
+  if (!occ) occ = new Uint8Array(MAP * MAP);
+  occ.fill(OCC_FREE);
+  // doorways are claimed before anything else gets a look in
+  for (const d of doors)
+    for (let step = 1; step <= 2; step++){
+      const ix = Math.floor(d.bx + d.nx * step), iy = Math.floor(d.by + d.ny * step);
+      if (inMap(ix, iy)) occ[iy * MAP + ix] = OCC_DOOR;
+    }
+  const span = (c, size) => [Math.floor(c - size * 0.5 + 1e-6),
+                             Math.floor(c + size * 0.5 - 1e-6)];
+  const cellsFree = (cx, cy, w, d) => {
+    const [x0, x1] = span(cx, w), [y0, y1] = span(cy, d);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++){
+        if (!inMap(x, y) || occ[y * MAP + x] !== OCC_FREE) return false;
+      }
+    return true;
   };
-  const clashAt = (q, x, y, R) => {
-    const bx = (x / CELL) | 0, by = (y / CELL) | 0;
-    const sp = MODEL_SPACE[q.k];
-    const sp2 = sp !== undefined ? sp * sp : 0;
+  const claim = (cx, cy, w, d) => {
+    const [x0, x1] = span(cx, w), [y0, y1] = span(cy, d);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) occ[y * MAP + x] = OCC_TAKEN;
+  };
+  // same-kind spread, on a coarse bucket grid
+  const SP = 8, SPS = 4096, sbuck = new Map();
+  const twinTooClose = (k, cx, cy) => {
+    const sp = MODEL_SPACE[k];
+    if (sp === undefined) return false;
+    const sp2 = sp * sp, bx = (cx / SP) | 0, by = (cy / SP) | 0;
     for (let jy = -1; jy <= 1; jy++)
       for (let jx = -1; jx <= 1; jx++){
-        const a = buckets.get((by + jy) * STRIDE + (bx + jx));
+        const a = sbuck.get((by + jy) * SPS + (bx + jx));
         if (!a) continue;
         for (let i = 0; i < a.length; i++){
           const o = a[i];
-          if (o === q) continue;
-          const dx = o.x - x, dy = o.y - y;
-          const d2 = dx * dx + dy * dy;
-          const rr = R + clearOf(o);
-          if (d2 < rr * rr) return true;
-          if (sp2 && o.k === q.k && d2 < sp2) return true;   // too close a twin
-        }
-      }
-    return false;
-  };
-  // Doorways stay walkable. A cart is three metres wide and will wall off an
-  // entrance its centre never comes near, so this is measured against the
-  // model's real footprint rather than the little collision circle.
-  const dbuck = new Map();
-  for (const d of doors)
-    for (let step = 0; step <= 1; step++){
-      const dx = d.x + d.nx * step, dy = d.y + d.ny * step;
-      const k = bkey(dx, dy);
-      let a = dbuck.get(k); if (!a) dbuck.set(k, a = []);
-      a.push(dx); a.push(dy);
-    }
-  // reach of the thing as the player will actually feel it: a cart's far
-  // corner, or a post's collision circle plus a body's width
-  const footOf = q => q.k === PK_STALL
-    ? Math.hypot(STALL_W, STALL_D) * 0.5 + 0.45
-    : Math.max(clearOf(q), (q.r || 0.3) + 0.4);
-  const blocksDoor = (q, x, y) => {
-    const F = footOf(q), F2 = F * F;
-    const bx = (x / CELL) | 0, by = (y / CELL) | 0;
-    for (let jy = -1; jy <= 1; jy++)
-      for (let jx = -1; jx <= 1; jx++){
-        const a = dbuck.get((by + jy) * STRIDE + (bx + jx));
-        if (!a) continue;
-        for (let i = 0; i < a.length; i += 2){
-          const dx = a[i] - x, dy = a[i + 1] - y;
-          if (dx * dx + dy * dy < F2) return true;
+          if (o.k !== k) continue;
+          const dx = o.x - cx, dy = o.y - cy;
+          if (dx * dx + dy * dy < sp2) return true;
         }
       }
     return false;
@@ -1329,31 +1355,56 @@ function deoverlapProps(){
   for (let i = 0; i < CLEAR_ORDER.length; i++) rank[CLEAR_ORDER[i]] = i;
   const order = props.slice().sort((a, b) =>
     (rank[a.k] === undefined ? 99 : rank[a.k]) - (rank[b.k] === undefined ? 99 : rank[b.k]));
-  const pinned = { [PK_METRO]: 1, [PK_STAIR]: 1, [PK_ITEM]: 1 };
   const keep = [];
   let moved = 0, dropped = 0;
+  const _p = { k: 0, x: 0, y: 0 };            // scratch, to probe a candidate
   for (const q of order){
-    const R = clearOf(q);
-    if (!clashAt(q, q.x, q.y, R) && !blocksDoor(q, q.x, q.y)){
-      keep.push(q); put(q); continue;
-    }
-    if (pinned[q.k]){ keep.push(q); put(q); continue; }   // these hold their ground
-    let placed = false;
-    for (let ring = 1; ring <= 3 && !placed; ring++){
-      for (let a = 0; a < 8; a++){
-        const th = a * Math.PI / 4;
-        const nx = q.x + Math.cos(th) * ring * 0.55;
-        const ny = q.y + Math.sin(th) * ring * 0.55;
-        const ix = nx | 0, iy = ny | 0;
-        if (!inMap(ix, iy)) continue;
-        if (tType[iy * MAP + ix] !== tType[(q.y | 0) * MAP + (q.x | 0)]) continue;
-        if (clashAt(q, nx, ny, R) || blocksDoor(q, nx, ny)) continue;
-        q.x = nx; q.y = ny; placed = true; moved++;
-        break;
+    const hx = Math.floor(q.x), hy = Math.floor(q.y);
+    const homeT = inMap(hx, hy) ? tType[hy * MAP + hx] : -1;
+    const pin = PIN_KIND[q.k], wantKerb = KERB_KIND[q.k];
+    // Every tile this prop would accept, best first. Nearest wins, except
+    // for the things that line a street: for those the kerb lane outranks
+    // the inner pavement outright, so a lamp two tiles from the kerb walks
+    // out to it rather than sitting back in the middle of the footway. That
+    // is what turns a scatter into a row.
+    const cand = [];
+    const maxRing = pin ? 0 : 2;
+    for (let dy = -maxRing; dy <= maxRing; dy++)
+      for (let dx = -maxRing; dx <= maxRing; dx++){
+        const ring = Math.max(Math.abs(dx), Math.abs(dy));
+        const tx = hx + dx, ty = hy + dy;
+        if (!inMap(tx, ty)) continue;
+        if (ring && tType[ty * MAP + tx] !== homeT) continue;   // stay on its surface
+        cand.push([(wantKerb && !isKerb(tx, ty) ? 8 : 0) + ring, tx, ty]);
       }
+    cand.sort((a, b) => a[0] - b[0]);
+    let got = null;
+    for (let i = 0; i < cand.length; i++){
+      const cx = cand[i][1] + 0.5, cy = cand[i][2] + 0.5;
+      _p.k = q.k; _p.x = cx; _p.y = cy;
+      if (q.k === PK_STALL && stallSpot(_p) < 0) continue;   // needs its pitch
+      const yaw = propFacing(_p);
+      const fb = footBox(q.k, yaw);
+      if (!cellsFree(cx, cy, fb[0], fb[1])) continue;
+      if (twinTooClose(q.k, cx, cy)) continue;
+      got = { cx, cy, yaw, fw: fb[0], fd: fb[1] };
+      break;
     }
-    if (placed){ keep.push(q); put(q); }
-    else dropped++;
+    if (!got && pin){                          // these hold their ground regardless
+      const cx = hx + 0.5, cy = hy + 0.5;
+      _p.k = q.k; _p.x = cx; _p.y = cy;
+      const yaw = propFacing(_p), fb = footBox(q.k, yaw);
+      got = { cx, cy, yaw, fw: fb[0], fd: fb[1] };
+    }
+    if (!got){ dropped++; continue; }
+    if (got.cx !== q.x || got.cy !== q.y) moved++;
+    q.x = got.cx; q.y = got.cy; q.yaw = got.yaw;
+    claim(got.cx, got.cy, got.fw, got.fd);
+    const kk = ((q.y / SP) | 0) * SPS + ((q.x / SP) | 0);
+    let a = sbuck.get(kk);
+    if (!a) sbuck.set(kk, a = []);
+    a.push(q);
+    keep.push(q);
   }
   props = keep;
   return { moved, dropped };
@@ -1747,9 +1798,6 @@ const ART = {
   the shelving (1), z up from the pavement. Roles are the same letters the
   flat art uses, so the colour slots and the neon `dyn` channel carry over.
 ============================================================================*/
-const STALL_H = 3.4, STALL_W = 3.0;    // tall enough to stand a cook up in
-const STALL_DEPTH = 0.85;              // depth as a fraction of the frontage
-const STALL_D = STALL_W * STALL_DEPTH; // ... and in world units, for collision
 function stallVolume(sp){
   const roof = ROLE[sp.roof], trim = ROLE[sp.trim], sign = ROLE[sp.sign],
         ctr = ROLE[sp.counter], front = ROLE[sp.front], back = ROLE[sp.back],
