@@ -7841,6 +7841,14 @@ function openPauseMenu(){
       { label: 'INVENTORY', hint: 'TAB opens it any time; credits live in here',
         act(){ openInventory(); } },
       { sep: true },
+      { label: 'QUEST LOG',
+        hint: 'the lines you are on, what you have done, and what to walk toward',
+        value: () => { let n = 0;
+                       for (const id in player.quests)
+                         if (QUESTS[id] && player.quests[id] !== 'done') n++;
+                       return n ? n + ' OPEN' : ''; },
+        act(){ openQuestLog(); } },
+      { sep: true },
       { label: 'CONTROLS', hint: 'every key, in one place',
         act(){ openControlsMenu(); } },
       { sep: true },
@@ -7876,6 +7884,102 @@ function openControlsMenu(){
       { label: 'BACK', act(){ popMode(); } }
     ]
   }));
+}
+/*=============================== the quest log ==============================
+  Three screens. The top one is the lines the city runs - the cell, VANCE,
+  and the errands that belong to nobody - each showing how far through it you
+  are. Inside a line you get its jobs: what is done, what is open, and which
+  one the compass is currently pointing at. Anything open can be made the
+  active one, and if AUTO PATH is on the red line redraws to it as you choose
+  it, because choosing what you are doing next and being shown the way there
+  are the same action.
+============================================================================*/
+function setActiveQuest(id){
+  if (player.quests[id] === undefined || player.quests[id] === 'done') return;
+  player.track = id;
+  autoPathKey = '';                            // this is a new objective now
+  autoPathTick();
+  toast('tracking: ' + QUESTS[id].name);
+  sfx('ui_select', { vol: 0.5, rate: 1.15 });
+}
+/* the story so far, as prose, for the jobs of this line you have finished */
+function openQuestStory(L){
+  const told = [];
+  for (const id of L.ids){
+    const st = player.quests[id];
+    if (st === undefined) continue;
+    const line = QUEST_STORY[id];
+    if (!line) continue;
+    if (st === 'done') told.push(line);
+    else { told.push(line); break; }           // the one you are living now
+  }
+  if (!told.length){
+    openDialog(L.name, ['Nothing to tell yet. You have not done anything on this one.']);
+    return;
+  }
+  // three beats to a page: long enough to read as prose, short enough to fit
+  const pages = [];
+  for (let i = 0; i < told.length; i += 3) pages.push(told.slice(i, i + 3).join('  '));
+  openDialog(L.name + '  -  SO FAR', pages);
+}
+function openQuestLine(L){
+  const items = [];
+  const st = lineState(L);
+  items.push({ info: L.blurb });
+  items.push({ info: st.done + ' of ' + st.total + ' done' });
+  items.push({ sep: true });
+  items.push({ label: 'THE STORY SO FAR', hint: 'what you have done on this, in order',
+               act(){ openQuestStory(L); } });
+  items.push({ sep: true });
+  let any = false;
+  for (const id of L.ids){
+    const q = player.quests[id];
+    if (q === undefined) continue;             // not offered yet: not your business
+    any = true;
+    const Q = QUESTS[id];
+    if (q === 'done'){
+      const due = (player.qvar.owed || {})[id];
+      items.push({ info: (due ? '$ ' : '* ') + Q.name +
+                         (due ? '  -  ' + due + ' cr waiting with ' +
+                                ((player.qvar.giver || {})[id] || 'somebody')
+                              : '  -  done') });
+    } else {
+      items.push({ label: (player.track === id ? '> ' : '  ') + Q.name,
+                   value: () => player.track === id ? 'TRACKING' : 'track',
+                   hint: questLog(Q.stages[q]),
+                   act(){ setActiveQuest(id); popMode(); openQuestLine(L); } });
+    }
+  }
+  if (!any) items.push({ info: 'nothing from this one yet' });
+  items.push({ sep: true });
+  items.push({ label: 'BACK', act(){ popMode(); } });
+  pushMode(makeListMenu({ name: 'questline', title: L.name, items }));
+}
+function openQuestLog(){
+  const items = [];
+  let anywhere = false;
+  for (const L of QUEST_LINES){
+    const st = lineState(L);
+    if (!st.known){
+      items.push({ info: L.name + '  -  not started' });
+      continue;
+    }
+    anywhere = true;
+    items.push({ label: L.name,
+      value: () => { const v = lineState(L);
+                     return v.live ? v.done + '/' + v.total + '  OPEN'
+                                   : v.done + '/' + v.total; },
+      hint: L.blurb,
+      act(){ openQuestLine(L); } });
+  }
+  if (!anywhere){
+    items.length = 0;
+    items.push({ info: 'You have not taken anything on yet.' });
+    items.push({ info: 'The city is full of people who will fix that.' });
+  }
+  items.push({ sep: true });
+  items.push({ label: 'BACK', act(){ popMode(); } });
+  pushMode(makeListMenu({ name: 'questlog', title: 'QUEST LOG', items }));
 }
 function openSettingsMenu(){
   pushMode(makeListMenu({
@@ -8881,17 +8985,15 @@ function openInventory(){
   if (INV_TABS[invTab][1] === 'weapon')
     items.push({ label: 'FISTS', value: () => weaponId() === 'fist' ? 'EQUIPPED' : '',
                  hint: 'always with you', act(){ equipWeapon('fist'); refreshInventory(); } });
-  const qids = Object.keys(player.quests || {}).filter(id => QUESTS[id]);
-  if (qids.length){
-    items.push({ sep: true });
-    items.push({ info: 'OBJECTIVES' });
-    for (const id of qids){
-      const s = player.quests[id];
-      const due = (player.qvar.owed || {})[id];
-      items.push({ info: s !== 'done' ? '! ' + QUESTS[id].name + ': ' + questLog(QUESTS[id].stages[s])
-                 : due ? '$ ' + QUESTS[id].name + ' - done, ' + due + ' cr waiting with ' +
-                         ((player.qvar.giver || {})[id] || 'somebody')
-                 : '* ' + QUESTS[id].name + ' - done' });
+  // the objectives used to live down here under the socks. They have a room
+  // of their own now, off the pause menu.
+  {
+    const live = Object.keys(player.quests || {})
+                   .filter(id => QUESTS[id] && player.quests[id] !== 'done').length;
+    if (live){
+      items.push({ sep: true });
+      items.push({ info: live + (live === 1 ? ' job open' : ' jobs open') +
+                         '  -  ESC then QUEST LOG' });
     }
   }
   items.push({ sep: true });
@@ -9639,6 +9741,81 @@ function advanceQuest(id){
     sfx('ui_select', { vol: 0.5 });
     toast(questLog(q.stages[s]));
   }
+}
+/*--------------------------- what happened so far --------------------------
+  One line per job, past tense, written the way you would tell it afterwards.
+  Only the ones you have actually done are read out, so the log tells the
+  story you have lived rather than the one that was written for you.
+============================================================================*/
+const QUEST_STORY = {
+  // ---- the odd jobs ----
+  noodles: 'A drifter under the overpass was hungry and said so plainly. You fed him. He remembered.',
+  test:    'A chemist wanted eyes on batch nine of the mirror. You rode it under the dome and came back able to describe it, which was more than the last one managed.',
+  quiet:   'The fixer wanted three blind corners on his street. You cut the eyes out of them and he paid without looking up.',
+  scrap:   'The watcher pays for scrap electronics and asks nothing. Three units out of the yards bought you a name with him.',
+  sphere:  'You stood under the dome downtown while it did whatever it does, and told a stall cook about it. He listened like it mattered.',
+  // ---- Vance ----
+  wheels1: 'VANCE wanted parts and called them parts. You brought him three units of somebody else\u2019s wiring.',
+  wheels2: 'A sealed package to the skypark attendant. You did not open it. He did not thank you.',
+  wheels3: 'The KESSLER CREW were sitting on a seized runner. They are not sitting on it now.',
+  wheels4: 'Paperwork, of a sort. The kind that makes a stolen car into a sold one.',
+  wheels5: 'VANCE put the keys in your hand and told you the lot had never seen you.',
+  // ---- act one ----
+  mq1:  'The watcher gave you an address on the red mile and stopped answering questions. Behind a door with no number, a room with the lights off and two people in it.',
+  mq2:  'ROOK wanted the cell\u2019s mark where the street could see it. Three walls, a burner, and your handwriting on the city for the first time.',
+  mq3:  'Three street cameras went dark on your account. The flock noticed the gap before it noticed you.',
+  mq4:  'A package across THE STRIP and a reply carried back. You did not open that one either.',
+  mq5:  'A board, because the next part of this needs you to be somewhere else quickly.',
+  mq6:  'Five units of scrap nobody counts, lifted out of the yards for a cell that counts everything.',
+  mq7:  'Firecrackers at a junction and every patrol in the district looking the wrong way.',
+  mq8:  'They boxed you in and you rode out of it. ROOK stopped talking to you like a stray after that.',
+  // ---- act two ----
+  mq9:  'VESPER wanted a word before the real work. She always does. She talks about the city like a patient rather than a target.',
+  mq10: 'A corpo lobby downtown, walked slowly, counting cameras and remembering where they cannot see.',
+  mq11: 'A relay downtown fed three blocks of eyes. You gave those blocks an hour of dark.',
+  mq12: 'A keycard, off somebody who will report it in the morning and be believed by nobody.',
+  mq13: 'VESPER again, quieter this time. She wanted you to understand what the plan costs before you helped pay it.',
+  mq14: 'A safe house out in the rows. Somewhere to be when this stops being deniable.',
+  mq15: 'Four more cameras off a downtown block. The gap in the flock is a shape now, and the shape is a route.',
+  mq16: 'You let a camera see you on purpose, and security came down the way the plan said it would.',
+  // ---- act three ----
+  mq17: 'ROOK laid the whole thing out at last. Not a protest. A grid.',
+  mq18: 'Schematics, out of a building that keeps them because nobody has ever needed them.',
+  mq19: 'The substation manager has a routine, and now you have it too.',
+  mq20: 'You walked the substation with VESPER, who wanted to see it with her own eyes before she signed anything.',
+  mq21: 'A code out of the MERIDIAN building, taken from a man who thought he was being helpful.',
+  mq22: 'One substation, killed as a test. Three blocks went quiet and the city did not even file it.',
+  mq23: 'VESPER went quiet and would not say why. She had already decided something.',
+  mq24: 'The roof. What happened up there is the reason the plan has a hole in it now.',
+  // ---- act four ----
+  mq25: 'You buried it, and then you stood up, because ROOK was waiting and the grid does not care who is dead.',
+  mq26: 'The last of the gear, gathered by people who have stopped pretending this is reversible.',
+  mq27: 'The approach to THE WORKS, walked once, in daylight, like a man with business there.',
+  mq28: 'Up through THE WORKS floor by floor, past everything they pay to keep the lights on.',
+  mq29: 'The switch, and the choice nobody in the cell would make out loud.',
+  mq30: 'What you did with that switch is the only part of this the city will remember.'
+};
+/* The lines the city runs, and the one-off work that is nobody\u2019s line. */
+const QUEST_LINES = [
+  { id: 'cell', name: 'THE CELL',
+    blurb: 'ROOK, VESPER, and turning the lights off',
+    ids: (function(){ const a = []; for (let i = 1; i <= 30; i++) a.push('mq' + i); return a; })() },
+  { id: 'wheels', name: 'WHEELS',
+    blurb: 'VANCE at THE LOT, and a set of keys',
+    ids: ['wheels1', 'wheels2', 'wheels3', 'wheels4', 'wheels5'] },
+  { id: 'odd', name: 'ODD JOBS',
+    blurb: 'errands the street hands out',
+    ids: ['noodles', 'test', 'quiet', 'scrap', 'sphere'] }
+];
+function lineState(L){
+  let done = 0, live = null, known = 0;
+  for (const id of L.ids){
+    const st = player.quests[id];
+    if (st === undefined) continue;
+    known++;
+    if (st === 'done') done++; else if (live === null) live = id;
+  }
+  return { done, live, known, total: L.ids.length };
 }
 /* the fee, for the quest log */
 function questFee(id){
