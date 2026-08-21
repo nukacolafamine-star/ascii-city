@@ -1081,6 +1081,10 @@ function stampLandmarks(){
 function buildCity(seed){
   srand(seed);
   buildings = []; props = []; signs = []; landmarks = []; metroStops = [];
+  // buildDoors asks buildingUse for every door name, and buildingUse asks
+  // whether the building is the hideout - so a stale id from the city before
+  // this one gets its door blanked as well. Forget it before anything reads it.
+  HIDEOUT = null;
   blockUsed.fill(0);
   tH.fill(0); tB.fill(-1);
   for (let y = 0; y < MAP; y++)
@@ -1713,6 +1717,7 @@ const USES = {
   lobby:      { door: 'LOBBY',      kind: 'lobby' },
   depot:      { door: 'DEPOT',      kind: 'depot' },
   home:       { door: 'APARTMENTS', kind: 'home' },
+  hideout:    { door: 'NO NUMBER',  kind: 'hideout' },
   // doors onto rooms that do not exist yet
   laundry:    { door: 'LAUNDRY' },   club:    { door: 'CLUB' },
   arcade:     { door: 'ARCADE' },    cafe:    { door: 'CAFE' },
@@ -1745,6 +1750,7 @@ const USE_MIX = [
 ];
 function buildingUse(b){
   if (!b || b.landmark || b.x0 === undefined) return null;
+  if (HIDEOUT && HIDEOUT.bld === b.id) return 'hideout';   // the cell's room
   if (typeof isDungeon === 'function' && isDungeon(b)) return 'dungeon';
   if ((b.dist === D_RED || b.dist === D_STRIP) && hash3(b.id, 63, 7) < 0.22)
     return 'casino';
@@ -3786,6 +3792,7 @@ const INT_FLAVOR = {
   storage: { keeper: 'CARETAKER', floorA: 0, floorB: 0, lines: [
            'Everything here belongs to somebody who forgot it.'] },
   empty:   { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [] },
+  hideout: { keeper: 'NOBODY', floorA: C.dataDk, floorB: C.tire, lines: [] },
   casino:  { keeper: 'PIT BOSS', floorA: 0, floorB: 0, lines: [
            'Play or make room for somebody who will.',
            'The odds are on the wall. Reading them is free. Only that is.'] },
@@ -4222,6 +4229,24 @@ function buildInterior(bld, door, floor){
         tree: companionTree(theme, comp) });
       a.interior = 1;
     }
+  } else if (kind === 'hideout'){
+    // No sign, no counter, no stock. Somebody has been sleeping here: a table
+    // under the only lamp anybody bothered to fix, crates instead of chairs,
+    // and a shelf of things you do not leave where the street can see them.
+    const hx = IOX + (rw >> 1), hy = IOY + (rh >> 1);
+    furn(hx + 0.5, hy + 0.2, 'conftable');
+    furn(hx - 1.8, hy + 1.8, 'cratepile', 0);
+    furn(IOX + 1.6, IOY + rh - 2.2, 'cratepile');
+    furn(IOX + rw - 2.2, IOY + 1.8, 'shelfunit');
+    if (rw > 8) furn(IOX + 1.5, IOY + 1.7, 'bed', 0);
+    furn(hx + 2.4, hy - 1.6, 'floorlamp');           // the one working light
+    if (rnd() < 0.6) furn(IOX + rw - 2.4, IOY + rh - 2.4, 'generator');
+    const place = (k2, off, o) => {
+      const a = spawnClear(k2, hx + 0.5 + off, hy - 1.6, o);
+      a.interior = 1;
+      return a;
+    };
+    hideoutCast(place);
   } else if (kind === 'empty'){
     // a door onto a room nobody has furnished yet. It is honest about that.
     const note = (USES[use] && USES[use].door) || 'PREMISES';
@@ -4256,7 +4281,7 @@ function buildInterior(bld, door, floor){
     if (rnd() < 0.5) furn(IOX + 1.4, IOY + rh - 1.6, 'floorlamp');
     if (rnd() < 0.6) dropItem(IOX + rw - 1.5, IOY + 2.6, 0, 'medkit');
   }
-  if (kind !== 'dungeon' && kind !== 'empty' &&
+  if (kind !== 'dungeon' && kind !== 'empty' && kind !== 'hideout' &&
       rnd() < (kind === 'storage' ? 0.35 : 0.85)){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
     const a = spawnClear('vendor', kx, IOY + 1.4,
@@ -4611,26 +4636,23 @@ function tryInteract(){
 /* The cast: three characters near the start, each carrying a quest. Their
    conversations are trees - see openTree - and quest state picks the entry
    node, so they greet you differently as their thread moves along. */
-/* Who is standing in the hideout depends on choices recorded in qvar, so it
-   has to be dealt AFTER those are known. On a fresh world that is any time;
-   on a load it is only true once the save has been applied, which is why
-   this is its own function and loadGame calls it again. */
-function spawnHideoutCast(){
-  if (!HIDEOUT) return;
-  for (let i = actors.length - 1; i >= 0; i--)
-    if (actors[i].name === 'ROOK' || actors[i].name === 'VESPER') actors.splice(i, 1);
+/* The cell, dealt from the choices you have actually made. The hideout room
+   is rebuilt from scratch every time you open its door, so this always reads
+   current state - there is no copy of ROOK standing on a corner going stale.
+   `place` comes from the room and puts them where there is floor. */
+function hideoutCast(place){
   if (player.qvar.betrayed){
     // the cell knows what you chose; its leader is done talking
-    const rk = spawnActor('razor', HIDEOUT.x, HIDEOUT.y, {
-      name: 'ROOK', brain: 'hostile', hp: 220, shirt: C.carC, skin: C.dataDk });
+    const rk = place('razor', 0, { name: 'ROOK', brain: 'hostile', hp: 220,
+                                   shirt: C.carC, skin: C.dataDk });
     rk.atk = 12; rk.spd = 2.4;
   } else {
-    const rk = spawnActor('citizen', HIDEOUT.x, HIDEOUT.y, {
-      name: 'ROOK', brain: 'still', shirt: C.carC, skin: C.dataDk, tree: rookTree() });
+    const rk = place('citizen', 0, { name: 'ROOK', brain: 'still',
+                                     shirt: C.carC, skin: C.dataDk, tree: rookTree() });
     rk.range = 2;
     if (!player.qvar.vesperDead)
-      spawnActor('citizen', HIDEOUT.x + 1.2, HIDEOUT.y, {
-        name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: vesperTree() });
+      place('citizen', 1.4, { name: 'VESPER', brain: 'still',
+                              shirt: C.nViolet, tree: vesperTree() });
   }
 }
 function spawnActors(){
@@ -4804,7 +4826,6 @@ function spawnActors(){
     { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
       a: 'tee', b: 'boba' }
   ];
-  spawnHideoutCast();
   {
     const isp = mqSpot(711, D_DOWN);
     spawnActor('citizen', isp.x, isp.y, {
@@ -5821,6 +5842,7 @@ function openDialog(title, pages){
    character greets you differently as their quest moves along. */
 function nodeText(n){ return typeof n.text === 'function' ? n.text() : n.text; }
 function openTree(title, tree){
+  payOwed(title);                             // settle before anything is said
   pushMode({
     name: 'dialog', pausesWorld: true, title, tree,
     node: (tree.entry && tree.entry()) || 'start',
@@ -6602,21 +6624,37 @@ function myCarFrame(f, dt){
   the save with everything else.
 ============================================================================*/
 let HIDEOUT = null;
+/* The cell does not meet on a street corner. Take a door on the red mile,
+   take the room behind it, and take the number off the door - from the
+   pavement it is one more shut door on a street full of them. */
 function initMainQuest(){
   HIDEOUT = null;
-  // a corner of the red mile, backed against a wall, off the main drag
-  const near = (dist, salt) => {
-    for (let t = 0; t < 500; t++){
-      const x = (hash3(worldSeed, salt, t) * MAP) | 0;
-      const y = (hash3(worldSeed, salt + 1, t) * MAP) | 0;
-      if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
-      if (districtAt(x, y) !== dist) continue;
-      return { x: x + 0.5, y: y + 0.5 };
+  const pick = (dist, salt) => {
+    const cand = [];
+    for (const d of doors){
+      const b = buildings[d.b];
+      if (!b || b.landmark || b.dist !== dist) continue;
+      if (typeof isDungeon === 'function' && isDungeon(b)) continue;
+      if (typeof homeAt === 'function' && homeAt(b.id)) continue;
+      cand.push(d);
     }
-    return null;
+    if (!cand.length) return null;
+    return cand[(hash3(worldSeed, salt, 3) * cand.length) | 0];
   };
-  HIDEOUT = near(D_RED, 601) || near(D_IND, 611) || { x: cam.x + 12, y: cam.y + 12 };
+  const d = pick(D_RED, 601) || pick(D_IND, 611) || pick(D_STRIP, 621);
+  if (d){
+    d.name = 'NO NUMBER';                      // nothing to read from the street
+    HIDEOUT = { x: d.x, y: d.y, bld: d.b };
+  } else {
+    HIDEOUT = { x: cam.x + 12, y: cam.y + 12, bld: -1 };
+  }
   landmarks.push({ name: 'THE HIDEOUT', x: HIDEOUT.x, y: HIDEOUT.y, hidden: 1 });
+}
+/* being AT the hideout now means being in the room, not near the doorstep -
+   except when you are still outside, where the doorstep is the whole point */
+function atHideout(r){
+  if (inside) return !!(HIDEOUT && inside.bld === HIDEOUT.bld);
+  return atSpot(HIDEOUT, r);
 }
 function mqAct(){ return player.qvar.act || 0; }
 function mqStep(){ return player.qvar.mstep || 0; }
@@ -6672,7 +6710,7 @@ function startChase(){
 function chaseFrame(dt){
   if (!chaseOn) return;
   chaseT -= dt;
-  if (mqLive('mq8') && atSpot(HIDEOUT, 5)){
+  if (mqLive('mq8') && atHideout(5)){
     chaseOn = false;
     mqDone('mq8', 2, 8);
     toast('inside. the door slams. ROOK is grinning');
@@ -6711,11 +6749,11 @@ const MQ1 = {
   mq5: { name: 'WHEELS', act: 1,
     stages: [{ log: 'get a KICKDECK (tool shops sell them) and meet ROOK',
       target: toHideout,
-      auto(){ return invCount('deck') > 0 && atSpot(HIDEOUT, 6); } }] },
+      auto(){ return invCount('deck') > 0 && atHideout(6); } }] },
   mq6: { name: 'NOBODY COUNTS IT', act: 1,
     stages: [{ log: 'lift 5 SCRAP ELECTRONICS from the belt and bring them to ROOK',
       target: toHideout,
-      auto(){ return invCount('scrap') >= 5 && atSpot(HIDEOUT, 6); } }] },
+      auto(){ return invCount('scrap') >= 5 && atHideout(6); } }] },
   mq7: { name: 'A LOUD DISTRACTION', act: 1,
     stages: [{ log: 'set off FIRECRACKERS at the marked junction to pull the patrols',
       target(){ return mqSpot(671, D_STRIP); },
@@ -6892,7 +6930,7 @@ function rookTree(){
       opts: [{ t: 'I’ll find one', do(){ mqStart('mq19'); } }] },
     wait19: { text: () => mqHasSpecial() ? 'You found something with teeth. Good. Bring it to me.'
                                          : 'The specials are LEFT places - behind the turbines, under the blossoms, wherever nobody looks. Find one.',
-      opts: [{ t: 'Delivered', if: () => mqHasSpecial() && atSpot(HIDEOUT, 6),
+      opts: [{ t: 'Delivered', if: () => mqHasSpecial() && atHideout(6),
                do(){ mqDone('mq19'); }, next: 'give20' }] },
     give20: { text: 'VESPER will not let the schematics go. Fine - go WITH her. There is a substation in the belt she wants to see with her own eyes. Humour her.',
       opts: [{ t: 'I’ll take her', do(){ mqStart('mq20'); } }] },
@@ -8181,8 +8219,11 @@ function openInventory(){
     items.push({ info: 'OBJECTIVES' });
     for (const id of qids){
       const s = player.quests[id];
-      items.push({ info: s === 'done' ? '* ' + QUESTS[id].name + ' - done'
-                                      : '! ' + QUESTS[id].name + ': ' + QUESTS[id].stages[s].log });
+      const due = (player.qvar.owed || {})[id];
+      items.push({ info: s !== 'done' ? '! ' + QUESTS[id].name + ': ' + QUESTS[id].stages[s].log
+                 : due ? '$ ' + QUESTS[id].name + ' - done, ' + due + ' cr waiting with ' +
+                         ((player.qvar.giver || {})[id] || 'somebody')
+                 : '* ' + QUESTS[id].name + ' - done' });
     }
   }
   items.push({ sep: true });
@@ -8337,11 +8378,6 @@ function loadGame(n){
   }
   refreshWear();                              // the arms wear what was saved
   if (!player.hotbar) player.hotbar = [null, null, null];
-  // The hideout cast is dealt from qvar flags, and spawnActors ran before
-  // those were restored - so a betrayed ROOK came back friendly and a dead
-  // VESPER came back alive. Re-deal exactly those two; everyone else on the
-  // street stays where the seed put them.
-  spawnHideoutCast();
   drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // no ride survives a rewind
   if (GL) glBuildPalette(); else buildAtlases();
   bgGrad = null; buildBackground();
@@ -8557,7 +8593,7 @@ const MQ2 = {
   mq19: { name: 'SOMETHING WITH TEETH', act: 3,
     stages: [{ log: 'the power room will be guarded - find one of the city\u2019s hidden SPECIAL weapons',
       target: toHideout,
-      auto(){ return mqHasSpecial() && atSpot(HIDEOUT, 6); } }] },
+      auto(){ return mqHasSpecial() && atHideout(6); } }] },
   mq20: { name: 'WHAT IT FEEDS', act: 3,
     stages: [{ log: 'VESPER found something in the schematics - go with her to the substation',
       target(){ return mqSpot(701, D_IND); },
@@ -8708,9 +8744,30 @@ function vanceTree(){
   };
 }
 function questStage(id){ return player.quests[id]; }
+/* Whoever's card is open. Read from the stack rather than tracked in a
+   variable, so it cannot be left pointing at somebody you stopped talking to
+   ten minutes ago. */
+function speakingTo(){
+  for (let i = modeStack.length - 1; i >= 0; i--){
+    const m = modeStack[i];
+    if (m.name === 'dialog' && m.title) return m.title;
+  }
+  return null;
+}
 function startQuest(id){
   if (player.quests[id] !== undefined) return;
   player.quests[id] = 0;
+  // remember whose job this is - the fee gets handed over in person - and
+  // where to find them again. Said indoors, that is the door you came in by;
+  // a name alone is no use once they are behind a wall.
+  const who = speakingTo();
+  if (who){
+    (player.qvar.giver = player.qvar.giver || {})[id] = who;
+    const src = actors.find(x => x.name === who);
+    const at = inside && inside.door ? { x: inside.door.x, y: inside.door.y }
+             : src ? { x: src.x, y: src.y } : null;
+    if (at) (player.qvar.giverAt = player.qvar.giverAt || {})[id] = at;
+  }
   player.track = id;
   sfx('ui_select', { vol: 0.6, rate: 0.8 });
   toast('new objective: ' + QUESTS[id].name);
@@ -8744,12 +8801,44 @@ const QUEST_PAY = {
   // ---- act four: nobody is counting any more ----
   mq25: 0, mq26: 150, mq27: 320, mq28: 500, mq29: 0, mq30: 0
 };
+/* Finishing a job is not the same as being paid for one. Cutting three
+   cameras in an alley used to put the fee straight in your pocket, which made
+   the walk back to whoever asked for it meaningless. The money now sits on
+   the books until you are standing in front of them again - unless you were
+   already standing there when the job closed, which is most of the errands
+   that end in "report back". */
 function payQuest(id){
   const n = QUEST_PAY[id];
   if (!n) return;
-  player.credits += n;
-  toast('paid: ' + n + ' cr');
-  sfx('ui_select', { vol: 0.6, rate: 1.35 });
+  const who = (player.qvar.giver || {})[id];
+  if (!who || who === speakingTo()){          // face to face already
+    player.credits += n;
+    toast('paid: ' + n + ' cr');
+    sfx('ui_select', { vol: 0.6, rate: 1.35 });
+    return;
+  }
+  (player.qvar.owed = player.qvar.owed || {})[id] = n;
+  toast('job done - ' + who + ' owes you ' + n + ' cr');
+  sfx('ui_select', { vol: 0.5, rate: 0.9 });
+}
+/* settling up, the moment their card opens */
+function payOwed(who){
+  const owed = player.qvar.owed;
+  if (!owed || !who) return;
+  const giver = player.qvar.giver || {};
+  let sum = 0, jobs = 0;
+  for (const id in owed)
+    if (giver[id] === who){ sum += owed[id]; jobs++; delete owed[id]; }
+  if (!sum) return;
+  player.credits += sum;
+  toast(who + ' settles up: ' + sum + ' cr for ' + jobs + (jobs > 1 ? ' jobs' : ' job'));
+  sfx('ui_select', { vol: 0.7, rate: 1.35 });
+}
+function owedTo(who){
+  const owed = player.qvar.owed, giver = player.qvar.giver || {};
+  let sum = 0;
+  for (const id in owed || {}) if (giver[id] === who) sum += owed[id];
+  return sum;
 }
 function advanceQuest(id){
   const q = QUESTS[id];
@@ -8784,11 +8873,31 @@ function questFee(id){
 }
 function questTarget(){
   const id = player.track;
-  if (!id || typeof player.quests[id] !== 'number') return null;
-  const st = QUESTS[id].stages[player.quests[id]];
-  if (!st || !st.target) return null;
-  const t = st.target();
-  return t ? { x: t.x, y: t.y, name: t.name, q: QUESTS[id].name } : null;
+  if (id && typeof player.quests[id] === 'number'){
+    const st = QUESTS[id].stages[player.quests[id]];
+    if (st && st.target){
+      const t = st.target();
+      if (t) return { x: t.x, y: t.y, name: t.name, q: QUESTS[id].name };
+    }
+  }
+  // nothing live to walk toward, but somebody is holding your money: point
+  // at them instead, or the job you finished is just a line in a menu
+  const owed = player.qvar.owed;
+  if (owed){
+    const giver = player.qvar.giver || {};
+    for (const oid in owed){
+      const who = giver[oid];
+      // a killed actor is spliced out of the list, so being in it is enough -
+      // and the people who hand out jobs stand at hp 0 by design
+      const a = who && actors.find(x => x.name === who);
+      const q = (QUESTS[oid] ? QUESTS[oid].name : oid) + ' - unpaid';
+      if (a) return { x: a.x, y: a.y, name: who, q };
+      // out of sight, behind a door: point at where they said it
+      const at = (player.qvar.giverAt || {})[oid];
+      if (at) return { x: at.x, y: at.y, name: who || 'THE JOB', q };
+    }
+  }
+  return null;
 }
 let qAcc = 0, quipT = 30;
 function quipTick(){                            // the street has opinions
