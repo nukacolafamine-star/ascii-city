@@ -141,6 +141,7 @@ mat('rail',    124,132,146);   mat('turf',     44,102, 62);
 mat('path',    118,110, 96);   mat('screen',   30, 34, 52);
 mat('dataDk',   30, 34, 40);   mat('camRed',  255, 70, 60);   mat('bank',     44, 46, 58);
 mat('signBack', 10, 11, 18);   mat('signCase', 62, 66, 84);
+mat('uphols',  122, 58, 46);   mat('upholD',   82, 40, 32);   // worn red-brown
 const NBASE  = BASE.length;
 const BLDC   = [C.bldA, C.bldB, C.bldC, C.bldD, C.bldE, C.bldF, C.bldG,
                 C.bldH, C.bldI, C.bldJ, C.bldK, C.bldL, C.bldM, C.bldN];
@@ -2738,10 +2739,13 @@ const FURN_DEF = {};
     ['box', 0, 1, 3, 0, 7, 7, 9]],
     { K: [TR, 0.85], W: [W, 0.85], X: [C.nPink, 0.8] });
   d('sofa', 1.8, 1.0, 0.7, 16, 9, [
-    ['box', 0, 1, 0, 15, 7, 3, 13],
-    ['box', 0, 5, 4, 15, 7, 7, 13],
-    ['box', 0, 1, 2, 2, 7, 5, 13], ['box', 13, 1, 2, 15, 7, 5, 13]],
-    { X: [C.nViolet, 0.85] });
+    ['box', 0, 1, 0, 15, 7, 1, 9],              // the frame it all sits on
+    ['box', 0, 1, 2, 15, 7, 3, 13],             // seat cushions
+    ['box', 5, 1, 2, 5, 7, 3, 9],               // and the seam between them
+    ['box', 10, 1, 2, 10, 7, 3, 9],
+    ['box', 0, 5, 4, 15, 7, 7, 13],             // the back
+    ['box', 0, 1, 2, 2, 7, 5, 13], ['box', 13, 1, 2, 15, 7, 5, 13]],  // arms
+    { X: [C.uphols, 0.86], K: [C.upholD, 0.9] });
   d('tvunit', 1.6, 1.4, 0.4, 16, 12, [
     ['box', 1, 3, 0, 14, 6, 2, 9],
     ['box', 2, 3, 4, 13, 4, 10, 2],
@@ -4541,10 +4545,18 @@ function buildInterior(bld, door, floor){
     stairs = { x: stx, y: sty };
   }
   rngState = keep;
+  // Where you land. This used to be taken on trust, and on an upper floor it
+  // is the head of the stairs plus a stride - which in a flat whose sofa sits
+  // in that corner drops you INSIDE the sofa, and propBlocked then will not
+  // let you back out of it. Run it through the same clearance the room uses
+  // for everybody else it stands up.
+  const spawn = floor === 1 ? clearSpot(doorX + 0.5, IOY + rh - 1.6)
+              : stairs ? clearSpot(stairs.x, stairs.y + 1.3)
+              : clearSpot(doorX + 0.5, IOY + rh - 1.6);
   return { props: ip, stairs,
            shop: trade,
-           px: floor === 1 ? doorX + 0.5 : (stairs ? stairs.x : doorX + 0.5),
-           py: floor === 1 ? IOY + rh - 1.6 : (stairs ? stairs.y + 1.3 : IOY + rh - 1.6),
+           px: spawn[0],
+           py: spawn[1],
            ang: floor === 1 ? -Math.PI / 2 : Math.PI / 2,
            exit: floor === 1 ? { x: doorX + 0.5, y: doorY - 0.45 } : null };
 }
