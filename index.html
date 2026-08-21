@@ -5671,6 +5671,7 @@ const VM_GUN = [
   'jj/                       \\jj'
 ];
 /* an idle fist, boxer guard - knuckle ridge, finger seams, thumb, cuff folds */
+const GUN_SIGHT_COL = VM_GUN[0].indexOf('|');   // the front sight post
 const VM_FIST_R = [
   '       ______       ',
   '    __(nnnnnn)_     ',
@@ -9024,14 +9025,20 @@ function hudPass(){
         drawViewArt(art, ax, rows - tr, tr, cmA);
       } else if (weaponId() === 'pistol'){
         const tr = Math.round(rows * 0.60);
-        const tw = Math.round(tr * viewW(VM_GUN) / VM_GUN.length);
+        // work out where the front sight will actually land once the art is
+        // grounded and scaled, then hang the gun so the post sits on the
+        // crosshair instead of beside it
+        const ga = groundArt(VM_GUN), gah = ga.length, gaw = viewW(ga);
+        const gtr = Math.min(tr, Math.round(gah * 3.5));
+        const gtc = Math.max(2, Math.round(gtr * gaw / gah));
+        const sightX = Math.round((GUN_SIGHT_COL + 0.5) * gtc / gaw - 0.5);
         // recoil in stages: the buck, the settle, the return
         const kick = muzzleT > 0.06 ? 3 : muzzleT > 0.03 ? 2 : muzzleT > 0 ? 1 : 0;
-        const gx = ((cols - tw) >> 1) + 3, gy = rows - tr + bob + kick;
+        const gx = (cols >> 1) - sightX, gy = rows - tr + bob + kick;
         drawViewArt(VM_GUN, gx, gy, tr, CM_GUN);
-        if (muzzleT > 0)
+        if (muzzleT > 0)                        // the flash leaves the bore
           drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
-                      gx + (tw >> 1) - 3, gy - 3, 3, CM_MUZ);
+                      (cols >> 1) - 3, gy - 3, 3, CM_MUZ);
       } else {
         const mw = meleeStats();
         const hold = mw.id === 'bat' ? VM_BAT_HOLD : mw.id === 'pipe' ? VM_PIPE_HOLD : VM_FIST_R;
