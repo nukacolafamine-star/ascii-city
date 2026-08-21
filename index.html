@@ -1903,7 +1903,7 @@ function streamAgents(){
     const p = peds[i];
     if (Math.abs(p.x - cam.x) < STREAM_R && Math.abs(p.y - cam.y) < STREAM_R) continue;
     const t = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
-    if (t){
+    if (t && !inPanicZone(t[0], t[1])){
       if (p.sit){ p.sit.occ--; p.sit = null; }
       p.x = t[0] + 0.5; p.y = t[1] + 0.5; p.path = null; p.pi = 0; p.cool = rnd() * 2;
     }
@@ -1942,20 +1942,66 @@ function pedNudge(p, dx, dy){
   const nx = p.x + dx, ny = p.y + dy;
   if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]){ p.x = nx; p.y = ny; }
 }
+// A panicked crowd does not jog into masonry: each runner takes the open
+// heading that gains the most ground on the bang, and the block it emptied
+// stays empty for two minutes.
+const FLEE_FAN = [0, 0.39, -0.39, 0.79, -0.79, 1.18, -1.18, 1.57, -1.57, 2.0, -2.0];
+const PANIC_R = 22;
+function panicHere(x, y, secs){
+  panicT = worldTime + (secs || 120);            // the area stays cleared
+  panicX = x; panicY = y;
+  for (const q of peds){
+    const dx = q.x - x, dy = q.y - y;
+    if (dx * dx + dy * dy > PANIC_R * PANIC_R) continue;
+    if (q.sit){ q.sit.occ--; q.sit = null; }
+    q.flee = worldTime + 14;                     // sprint first, then keep away
+    q.path = null; q.pi = 0; q.linger = false;
+  }
+}
+function inPanicZone(x, y){
+  if (worldTime >= panicT) return false;
+  const dx = x - panicX, dy = y - panicY;
+  return dx * dx + dy * dy < PANIC_R * PANIC_R;
+}
+function fleeStep(p, dt){
+  const dx = p.x - panicX, dy = p.y - panicY;
+  const d = Math.hypot(dx, dy) || 0.001;
+  const base = Math.atan2(dy, dx);
+  const step = p.spd * 2.9 * dt;
+  for (let i = 0; i < FLEE_FAN.length; i++){
+    const a = base + FLEE_FAN[i];
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const nx = p.x + ca * step, ny = p.y + sa * step;
+    // probe a stride ahead too, so nobody hugs a wall they cannot round
+    const lx = p.x + ca * 1.1, ly = p.y + sa * 1.1;
+    if (!walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]) continue;
+    if (!walkG[clamp(ly | 0, 0, MAP - 1) * MAP + clamp(lx | 0, 0, MAP - 1)]) continue;
+    p.x = nx; p.y = ny; p.dx = ca; p.dy = sa;
+    return true;
+  }
+  return false;
+}
 function updatePed(p, i, dt){
   const x0 = p.x, y0 = p.y;
   p.cool -= dt;
-  if (worldTime < panicT){                        // gunfire scatters the crowd
-    const dx = p.x - panicX, dy = p.y - panicY, d2 = dx * dx + dy * dy;
-    if (d2 < 260 && d2 > 0.001){
-      if (p.sit){ p.sit.occ--; p.sit = null; }    // nobody keeps their seat
-      const d = Math.sqrt(d2);
-      pedNudge(p, dx / d * p.spd * 2.6 * dt, dy / d * p.spd * 2.6 * dt);
-      p.dx = dx / d; p.dy = dy / d;
-      p.phase += p.spd * dt * 6; p.moving = 1;
-      p.path = null;
+  if (p.flee > worldTime){                        // running, and running smart
+    if (p.sit){ p.sit.occ--; p.sit = null; }
+    const dx = p.x - panicX, dy = p.y - panicY;
+    const out = dx * dx + dy * dy > (PANIC_R + 8) * (PANIC_R + 8);
+    if (out){ p.flee = 0; p.path = null; }        // clear of it - walk it off
+    else {
+      p.phase += p.spd * dt * 7; p.moving = 1; p.path = null;
+      if (!fleeStep(p, dt)) p.flee = Math.min(p.flee, worldTime + 0.5);
       return;
     }
+  }
+  if (p.flee && p.flee <= worldTime && inPanicZone(p.x, p.y)){
+    // still standing in the cleared block when the sprint ends: they left
+    const t2 = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
+    if (t2 && !inPanicZone(t2[0], t2[1])){
+      p.x = t2[0] + 0.5; p.y = t2[1] + 0.5; p.path = null; p.pi = 0;
+    }
+    p.flee = 0;
   }
   if ((!p.path || p.pi >= p.path.length) && p.cool <= 0){
     if (repathQ.indexOf(i) < 0) repathQ.push(i);
@@ -2040,7 +2086,7 @@ function serviceRepaths(){
     let best = null, toStall = false;
     if (rnd() < 0.34){ best = stallTile(sx, sy); toStall = !!best; }
     if (!best) best = randWalkNear(sx, sy, 14, 62);
-    if (!best) continue;
+    if (!best || inPanicZone(best[0], best[1])) continue;   // not back in there
     const path = astar(sx, sy, best[0], best[1], 7000);
     if (path){ p.path = path; p.pi = 1; p.linger = toStall; }
   }
@@ -2877,7 +2923,8 @@ function onPress(code, key){
   if (m){ if (m.onKey) m.onKey(code, key); return; }
   if (skating && airT > 0){                     // mid-air, the keys are trick inputs
     const TK = { KeyQ: ['kickflip', 10], KeyE: ['heelflip', 10],
-                 KeyW: ['nollie', 12], KeyS: ['shove-it', 8] };
+                 KeyW: ['nollie', 12], KeyS: ['shove-it', 8],
+                 KeyA: ['bigspin', 14], KeyD: ['impossible', 16] };
     if (TK[code]){
       const nm = TK[code][0], pts = TK[code][1];
       if (!skTrick) skTrick = { name: nm, pts, t: 0, dur: 0.3 };
@@ -2995,6 +3042,7 @@ let skating = false, wasSkating = false, airT = 0, airDur = 0.5, arcH = 0.9;
 let skV = 0, pushCd = 0, pushArtT = 0, dipT = 0, crouchT = 0, landT = 0;
 let stumbleT = 0, wobbleT = 0, carveT = 0, seamAcc = 0, nearT = 0, skLean = 0;
 let skTrick = null, skCombo = 0, comboT = 0, styleN = 0, styleAcc = 0;
+let ollieHold = -1;                            // >=0 while SPACE is charging
 let grind = null, grindT = 0;
 const skParts = [];
 function resetSkate(){
@@ -3009,10 +3057,32 @@ function cashOutDeck(){
   }
   styleN = 0; skCombo = 0; comboT = 0; skTrick = null; grind = null;
 }
+function grindableNear(r){                    // a rail or a bench under you
+  let best = null, bd = r;
+  for (const q of gridQuery(propGrid, cam.x, cam.y, Math.ceil(r) + 1, _q1)){
+    if (q.k !== PK_RAIL && q.k !== PK_BENCH) continue;
+    const d = Math.hypot(q.x - cam.x, q.y - cam.y);
+    if (d < bd){ bd = d; best = q; }
+  }
+  return best;
+}
 function ollie(){
-  if (airT > 0 || crouchT > 0 || stumbleT > 0) return;
+  if (stumbleT > 0) return;
   if (grind){ endGrind(true); return; }        // pop out of the grind, clean
+  if (airT > 0){                               // mid-air SPACE: hunt for a rail
+    const g = grindableNear(2.4);
+    if (g && skV > 2){
+      cam.x = g.x; cam.y = g.y;                // snap onto the line
+      airT = 0; skTrick = null;
+      grind = g; grindT = 0; styleAcc = 0;
+      toast(g.k === PK_RAIL ? 'rail grind' : 'bench grind');
+      sfx('ui_move', { rate: 2.2, vol: 0.5 });
+    }
+    return;
+  }
+  if (crouchT > 0) return;
   crouchT = 0.12;                              // dip first; the pop follows
+  ollieHold = 0;                               // and keep dipping while held
 }
 
 /*=========================== DEV CONSOLE ===================================
@@ -3231,7 +3301,7 @@ function updateCam(dt){
 }
 /* the deck is a physics object: pushes surge, friction coasts, carves cost
    speed, and the pavement seams are the speedometer */
-const SK_MAX = 7.2;
+const SK_MAX = 14.3;              // twice a sprint, flat out
 function skateFrame(dt){
   if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
   if (keys.KeyF) cam.pitch = clamp(cam.pitch - 26 * dt, -R.rows * 0.62, R.rows * 0.62);
@@ -3249,7 +3319,7 @@ function skateFrame(dt){
     if ((keys.KeyW || keys.ArrowUp || TOUCH.f > 0.35) &&
         skV < mx2 * 0.94 && pushCd <= 0 && crouchT <= 0 && stumbleT <= 0){
       pushCd = 0.55 + 0.35 * skV / mx2;         // kick less often at speed
-      skV = Math.min(mx2, skV + 2.4 * drugFx('speed', 1));
+      skV = Math.min(mx2, skV + 3.2 * drugFx('speed', 1));
       pushArtT = 0.2; dipT = 0.15;
       sfx('footstep', { rate: 0.55, vol: 0.75 });
     }
@@ -3262,7 +3332,7 @@ function skateFrame(dt){
     if (keys.KeyD || keys.ArrowRight || keys.KeyE) turn -= 1;
     turn = clamp(turn - TOUCH.s, -1, 1);
     if (turn && stumbleT <= 0){
-      cam.ang += turn * (2.6 / (1 + skV / 3.5)) * dt;   // heavy at speed
+      cam.ang += turn * (2.6 / (1 + skV / 6)) * dt;     // heavy at speed
       skV *= 1 - 0.25 * Math.abs(turn) * dt;            // carving costs
       skLean = turn;
       carveT -= dt;
@@ -3329,13 +3399,19 @@ function skateFrame(dt){
   let z = 1.62 + Math.sin(worldTime * (4 + skV * 1.3)) * (0.015 + 0.012 * skV / SK_MAX);
   if (dipT > 0){ dipT -= dt; z -= 0.05 * (dipT / 0.15); }
   z -= 0.06 * Math.abs(skLean);
-  if (crouchT > 0){
-    crouchT -= dt;
-    z -= 0.14 * Math.max(0, crouchT) / 0.12;
-    if (crouchT <= 0){                         // the pop
-      airDur = airT = 0.5;
-      arcH = 0.85 + 0.25 * skV / SK_MAX;
-      sfx('footstep', { rate: 1.9, vol: 0.9 });
+  if (crouchT > 0 || ollieHold >= 0){
+    // the longer you hold, the deeper the coil and the bigger the pop
+    const holding = ollieHold >= 0 && (keys.Space || TOUCH.hold) && ollieHold < 0.45;
+    if (holding) ollieHold += dt;
+    crouchT = Math.max(0, crouchT - dt);
+    // charge only counts past the crouch: a tap is the old hop exactly
+    const charge = ollieHold > 0 ? clamp((ollieHold - 0.12) / 0.33, 0, 1) : 0;
+    z -= 0.14 * (crouchT > 0 ? crouchT / 0.12 : 1) + 0.12 * charge;
+    if (crouchT <= 0 && !holding){             // the pop
+      arcH = (0.85 + 0.25 * skV / SK_MAX) * (1 + charge);   // tap x1, full hold x2
+      airDur = airT = 0.5 + 0.3 * charge;
+      ollieHold = -1;
+      sfx('footstep', { rate: 1.9 - 0.35 * charge, vol: 0.9 });
     }
   }
   if (airT > 0){
@@ -4075,22 +4151,50 @@ function drugFx(k, dflt){
   return dflt + (drug.fx[k] - dflt) * e;
 }
 /* what you wear is what your arms show, in every view art - and the ice
-   gilds the cuff seams and knuckles */
+   gilds the cuff seams and knuckles. Layers stack: the outermost piece
+   (the priciest one you have on) is the coat the world sees */
 const OUTFIT_COL = { tee: H_WHT, hoodie: H_PNT, tracksuit: H_BLU,
                      workjacket: H_YEL, puffer: H_PUR, vest: H_GRN };
-function setOutfit(id){
-  player.outfit = id || null;
+function wornList(){
+  if (!player.worn) player.worn = [];
+  return player.worn;
+}
+function isWorn(id){ return wornList().indexOf(id) >= 0; }
+function wearToggle(id){
+  const w = wornList(), i = w.indexOf(id);
+  if (i >= 0){ w.splice(i, 1); toast('took off ' + ITEMS[id].name.toLowerCase()); }
+  else {
+    w.push(id);
+    toast('wearing ' + ITEMS[id].name.toLowerCase() +
+          (dripScore() >= 200 ? ' - the street notices' : ''));
+  }
+  refreshWear();
+  sfx('ui_select', { vol: 0.5 });
+}
+function setOutfit(id){                       // legacy single-slot entry point
+  if (!player.worn) player.worn = [];
+  player.worn = player.worn.filter(w => ITEMS[w] && ITEMS[w].cat !== 'clothing');
+  if (id) player.worn.push(id);
   refreshWear();
 }
 function refreshWear(){
-  const id = player.outfit;
-  const col = (id && OUTFIT_COL[id] !== undefined) ? OUTFIT_COL[id] : H_JKT;
+  const w = wornList();
+  // the outer layer is whichever coat cost the most
+  let outer = null, best = -1;
+  for (const id of w){
+    const d = ITEMS[id];
+    if (!d || d.cat !== 'clothing' || OUTFIT_COL[id] === undefined) continue;
+    if ((d.price || 0) > best){ best = d.price || 0; outer = id; }
+  }
+  player.outfit = outer;
+  const col = outer ? OUTFIT_COL[outer] : H_JKT;
   CM_ARM.j = CM_GUN.j = CM_MELEE.j = col;
   for (const k in VANIM)
     if (VANIM[k] && VANIM[k].cmap && VANIM[k].cmap.j !== undefined) VANIM[k].cmap.j = col;
-  const gold = player.bling === 'chain' || player.bling === 'watch';
+  const gold = isWorn('chain') || isWorn('watch');
+  player.bling = isWorn('shades') ? 'shades' : gold ? 'chain' : isWorn('ring') ? 'ring' : null;
   CM_ARM['='] = CM_MELEE['='] = gold ? H_YEL : H_DRK;
-  CM_ARM['@'] = player.bling === 'ring' ? H_YEL : H_SKIN;
+  CM_ARM['@'] = isWorn('ring') ? H_YEL : H_SKIN;
 }
 function drugTick(dt){
   if (!drug) return;
@@ -4132,7 +4236,7 @@ let crackerCd = 0;
 function popFirecracker(){
   if (worldTime < crackerCd){ toast('your ears are still ringing'); return false; }
   crackerCd = worldTime + 2;
-  panicT = worldTime + 6; panicX = cam.x; panicY = cam.y;
+  panicHere(cam.x, cam.y, 120);
   flash = Math.max(flash, 0.5);
   sfx('shot', { vol: 0.9, rate: 1.6 });
   sfx('shot', { vol: 0.7, rate: 1.9 });
@@ -4293,19 +4397,12 @@ function useItem(id){
   const st = player.inv.find(s => s.id === id);
   if (!st) return;
   const def = ITEMS[id];
-  if (def.cat === 'clothing'){
-    setOutfit(id);                            // your own arms wear it
-    toast('wearing ' + def.name.toLowerCase() +
-          (def.price >= 200 ? ' - the street notices' : ''));
-    sfx('ui_select', { vol: 0.5 });
+  if (def.cat === 'clothing' || def.cat === 'accessory'){
+    wearToggle(id);                           // layers: wear as much as you like
     return;
   }
-  if (def.cat === 'accessory'){
-    player.bling = id;
-    refreshWear();
-    toast('wearing ' + def.name.toLowerCase() +
-          (def.price >= 200 ? ' - the street notices' : ''));
-    sfx('ui_select', { vol: 0.5 });
+  if (def.cat === 'weapon' && id !== 'ammo'){
+    equipWeapon(weaponId() === id ? 'fist' : id);
     return;
   }
   if (!def.use){ toast('no use for it yet'); return; }
@@ -4325,7 +4422,8 @@ function resetPlayer(){
   player.inv = [];
   player.quests = {}; player.qvar = {}; player.track = null;
   player.corruption = 0;
-  setOutfit(null); player.bling = null;
+  player.worn = []; setOutfit(null); player.bling = null;
+  player.weapon = null;
   player.hotbar = [null, null, null];
   drug = null; jamT = 0; snifferT = 0; tags = {}; bakeKey = -1;
 }
@@ -4348,8 +4446,10 @@ function openInventory(){
   const items = [
     { info: 'HP ' + player.hp + '/' + player.maxHp + '    CREDITS ' + player.credits +
             '    VIT ' + player.stats.VIT + '  AGI ' + player.stats.AGI + '  TECH ' + player.stats.TECH },
-    { info: 'WEARING ' + (player.outfit ? ITEMS[player.outfit].name : 'NOTHING') +
-            (player.bling ? '  +  ' + ITEMS[player.bling].name : '') },
+    { info: ('WEARING ' + ((player.worn || []).length
+              ? (player.worn || []).map(w => ITEMS[w] ? ITEMS[w].name : w).join(' + ')
+              : 'NOTHING') + '    HOLDING ' +
+             (weaponId() === 'fist' ? 'FISTS' : ITEMS[weaponId()].name)).slice(0, 60) },
     { sep: true },
     { info: tabLine },
     { sep: true }
@@ -4358,24 +4458,28 @@ function openInventory(){
   if (!shown.length) items.push({ info: 'nothing in this tab' });
   for (const st of shown){
     const def = ITEMS[st.id];
-    const worn = () => st.id === player.outfit || st.id === player.bling;
+    const wearable = def.cat === 'clothing' || def.cat === 'accessory';
+    const isGear = def.cat === 'weapon' && st.id !== 'ammo';
     items.push({ label: def.name, id: st.id,
-                 value: () => (worn() ? 'WORN  ' : '') + 'x' + st.qty +
+                 value: () => (wearable && isWorn(st.id) ? 'WORN  ' : '') +
+                              (isGear && weaponId() === st.id ? 'EQUIPPED  ' : '') +
+                              'x' + st.qty +
                               (player.hotbar && player.hotbar.indexOf(st.id) >= 0
                                 ? '  [' + (player.hotbar.indexOf(st.id) + 1) + ']' : ''),
-                 hint: def.cat === 'consumable' ? def.hint + '   (1-3 pins to hotbar)' : def.hint,
+                 hint: def.cat === 'consumable' ? def.hint + '   (1-3 pins to hotbar)'
+                     : isGear ? def.hint + '   (select to equip)'
+                     : wearable ? def.hint + '   (select to layer it on)' : def.hint,
                  act(){
                    const m0 = topMode();
-                   if (worn()){                 // selecting the worn piece removes it
-                     if (st.id === player.outfit) setOutfit(null);
-                     else { player.bling = null; refreshWear(); }
-                     toast('taken off');
-                   } else useItem(st.id);
+                   useItem(st.id);
                    // an item may open its own mode (cam-jack): never stack a
                    // fresh inventory card on top of it
                    if (topMode() === m0) refreshInventory();
                  } });
   }
+  if (INV_TABS[invTab][1] === 'weapon')
+    items.push({ label: 'FISTS', value: () => weaponId() === 'fist' ? 'EQUIPPED' : '',
+                 hint: 'always with you', act(){ equipWeapon('fist'); refreshInventory(); } });
   const qids = Object.keys(player.quests || {}).filter(id => QUESTS[id]);
   if (qids.length){
     items.push({ sep: true });
@@ -4525,7 +4629,12 @@ function loadGame(n){
     const sp = freeSpotNear(cam.x, cam.y);
     cam.x = sp[0]; cam.y = sp[1]; faceClear();
   }
-  setOutfit(player.outfit);                   // the arms wear what was saved
+  if (!player.worn){                          // saves from before layering
+    player.worn = [];
+    if (player.outfit) player.worn.push(player.outfit);
+    if (player.bling && player.bling !== player.outfit) player.worn.push(player.bling);
+  }
+  refreshWear();                              // the arms wear what was saved
   if (!player.hotbar) player.hotbar = [null, null, null];
   drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // no ride survives a rewind
   if (GL) glBuildPalette(); else buildAtlases();
@@ -4785,9 +4894,10 @@ const SHOP_FLAVOR = {
             'Everything in here wears off. That is the business model.',
             'The first one calms you down. The rest are curiosity.'] }
 };
-function dripScore(){
-  return (player.outfit && ITEMS[player.outfit] ? ITEMS[player.outfit].price : 0) +
-         (player.bling && ITEMS[player.bling] ? ITEMS[player.bling].price : 0);
+function dripScore(){                          // every layer counts
+  let t = 0;
+  for (const id of (player.worn || [])) if (ITEMS[id]) t += ITEMS[id].price || 0;
+  return t;
 }
 function makeShopTree(trade){
   const TF = SHOP_FLAVOR[trade] || SHOP_FLAVOR.general;
@@ -4854,9 +4964,9 @@ function openShopMenu(){
       act(){
         player.credits += sellPrice(st.id);     // price locked before the take
         invTake(st.id, 1);
-        if (!invCount(st.id)){                  // sold the one you were wearing
-          if (player.outfit === st.id) setOutfit(null);
-          if (player.bling === st.id){ player.bling = null; refreshWear(); }
+        if (!invCount(st.id) && isWorn(st.id)){   // sold the one you were wearing
+          player.worn.splice(player.worn.indexOf(st.id), 1);
+          refreshWear();
         }
         sfx('ui_select', { vol: 0.5, rate: 1.2 }); refreshShop();
       } });
@@ -4998,7 +5108,7 @@ function damagePed(p, d){
   p.hp -= d;
   addFx(p.x, p.y, 1.2);
   sfx('hit', { vol: 0.6 });
-  panicT = worldTime + 5; panicX = cam.x; panicY = cam.y;
+  panicHere(cam.x, cam.y, 120);
   if (!p.assaulted){
     p.assaulted = 1;
     player.qvar.assaults = (player.qvar.assaults || 0) + 1;
@@ -5008,8 +5118,9 @@ function damagePed(p, d){
     pedCrime(1, 'murder');
     if (p.sit){ p.sit.occ--; p.sit = null; }
     const t = randWalkNear(cam.x, cam.y, 60, STREAM_R * 0.8);   // the crowd renews
-    if (t){ p.x = t[0] + 0.5; p.y = t[1] + 0.5; }
+    if (t && !inPanicZone(t[0], t[1])){ p.x = t[0] + 0.5; p.y = t[1] + 0.5; }
     p.hp = undefined; p.assaulted = 0; p.path = null; p.pi = 0; p.cool = rnd() * 2;
+    p.flee = 0;
     toast('they drop. the street empties around you');
   }
 }
@@ -5083,11 +5194,28 @@ function characterInSights(maxD, halfW){
 }
 // bare knuckles: half a pistol round, arm's reach, a forgiving swing arc
 let punchT = 0;
-function meleeStats(){                        // the best bludgeon you carry
-  if (invCount('bat'))                        // slow, heavy, unreasonable
+/* what is actually in your hands: your pick if you still carry it, else
+   the best thing in the bag. FISTS is a real choice, not just an empty bag */
+function weaponId(){
+  const w = player.weapon;
+  if (w === 'fist') return 'fist';
+  if (w && invCount(w)) return w;
+  if (invCount('pistol')) return 'pistol';
+  if (invCount('bat')) return 'bat';
+  if (invCount('pipe')) return 'pipe';
+  return 'fist';
+}
+function equipWeapon(id){
+  player.weapon = id;
+  toast(id === 'fist' ? 'bare knuckles' : 'equipped ' + ITEMS[id].name.toLowerCase());
+  sfx('ui_select', { vol: 0.55, rate: id === 'fist' ? 1.2 : 0.85 });
+}
+function meleeStats(){                        // the swing you are holding
+  const w = weaponId();
+  if (w === 'bat')                            // slow, heavy, unreasonable
     return { d: 21, r: 7, reach: 2.2, cool: 0.85, kb: 0.9, stun: 0.4,
              beats: [0.20, 0.27, 0.55], id: 'bat' };
-  if (invCount('pipe'))                       // fast swings, honest dents
+  if (w === 'pipe')                           // fast swings, honest dents
     return { d: 9, r: 4, reach: 2.0, cool: 0.50, kb: 0.45, stun: 0.25,
              beats: [0.10, 0.16, 0.34], id: 'pipe' };
   return { d: 5, r: 3, reach: 1.7, cool: 0.40, kb: 0.25, stun: 0,
@@ -5147,7 +5275,7 @@ function fireWeapon(){
   if (cam.riding){ toast('not from up here'); return; }
   if (sitting){ toast('not from the bench'); return; }
   if (shotCool > 0) return;                   // the zip pistol is not a minigun
-  const armed = invCount('pistol') > 0;
+  const armed = weaponId() === 'pistol' && invCount('pistol') > 0;
   if (!armed || invCount('ammo') === 0){
     if (!armed && worldTime > unarmedT && meleeStats().id === 'fist'){
       unarmedT = worldTime + 12;
@@ -5162,7 +5290,7 @@ function fireWeapon(){
   muzzleT = 0.09;
   cam.pitch = clamp(cam.pitch + 1.3, -R.rows * 0.62, R.rows * 0.62);
   sfx('shot', { vol: 0.8, rate: 0.95 + Math.random() * 0.1 });
-  panicT = worldTime + 6; panicX = cam.x; panicY = cam.y;
+  panicHere(cam.x, cam.y, 120);
   for (const a of actors)                       // gunfire carries
     if (a.brain === 'hostile' && Math.hypot(a.x - cam.x, a.y - cam.y) < 15) a.aggro = 1;
   const hit = characterInSights(34);
@@ -5404,7 +5532,7 @@ function hudCell(cx, cy2, ch, ci){
 function viewW(rows){ let w = 0; for (const r of rows) w = Math.max(w, r.length); return w; }
 function drawViewArt(rows, ax, ay, tr, cmap){
   const ah = rows.length, aw = viewW(rows);
-  tr = Math.min(tr, ah);                     // never upscale - it goes blocky
+  tr = Math.min(tr, ah * 3);                 // chunky upscale beats a crushed one
   const tc = Math.max(2, Math.round(tr * aw / ah));
   for (let y = 0; y < tr; y++){
     const sr = rows[(y * ah / tr) | 0];
@@ -5415,6 +5543,29 @@ function drawViewArt(rows, ax, ay, tr, cmap){
     }
   }
   return tc;
+}
+function shiftArt(rows, dx, dy){              // slide a pose for an in-between
+  const w = viewW(rows), out = [];
+  for (let i = 0; i < rows.length; i++){
+    const src = i - dy;
+    if (src < 0 || src >= rows.length){ out.push(' '.repeat(w)); continue; }
+    const r = rows[src].padEnd(w);
+    out.push(dx >= 0 ? ' '.repeat(dx) + r.slice(0, w - dx)
+                     : r.slice(-dx) + ' '.repeat(-dx));
+  }
+  return out;
+}
+// twice the frames at the same tempo: between every authored pose, the next
+// one arriving a row low - the eye reads the travel instead of a cut
+function tweenFrames(frames){
+  if (!frames || frames.length < 2) return frames;
+  const out = [];
+  for (let i = 0; i < frames.length; i++){
+    out.push(frames[i]);
+    // the next pose arriving a row low, or - on the last - this one settling
+    out.push(shiftArt(frames[i + 1] || frames[i], 0, 1));
+  }
+  return out;                                 // exactly twice the frames
 }
 function mirrorView(rows){
   const w = viewW(rows);
@@ -5533,6 +5684,14 @@ const VM_PUNCH_WIND_L = mirrorView(VM_PUNCH_WIND);
 const VM_PUNCH_SMEAR_L = mirrorView(VM_PUNCH_SMEAR);
 const VM_PUNCH_HIT_L = mirrorView(VM_PUNCH_HIT);
 const VM_PUNCH_REC_L = mirrorView(VM_PUNCH_REC);
+const PUNCH_SET = [VM_PUNCH_WIND, shiftArt(VM_PUNCH_WIND, 2, -1),
+                   VM_PUNCH_SMEAR, shiftArt(VM_PUNCH_SMEAR, -3, 0),
+                   VM_PUNCH_HIT, shiftArt(VM_PUNCH_HIT, -1, 1),
+                   VM_PUNCH_REC, shiftArt(VM_PUNCH_REC, -2, 1)];
+const PUNCH_SET_L = [VM_PUNCH_WIND_L, shiftArt(VM_PUNCH_WIND_L, -2, -1),
+                     VM_PUNCH_SMEAR_L, shiftArt(VM_PUNCH_SMEAR_L, 3, 0),
+                     VM_PUNCH_HIT_L, shiftArt(VM_PUNCH_HIT_L, 1, 1),
+                     VM_PUNCH_REC_L, shiftArt(VM_PUNCH_REC_L, 2, 1)];
 /* bludgeons ride in the right hand: a rest pose and a full swing each */
 const CM_MELEE = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT,
                    '%': H_GRY, '#': H_DRK, w: H_YEL, '-': H_GRY, '*': H_YEL };
@@ -5753,6 +5912,16 @@ const VM_BAT_REC = [
   ' (ww/     |jjjjjjjjjjjj|       ',
   ' (#/      |jjjjjjjjjjjj|       '
 ];
+// each swing runs coil -> deeper coil -> smear -> smear travelling ->
+// impact -> impact settling -> follow-through -> follow-through dropping
+const PIPE_SET = [VM_PIPE_WIND, shiftArt(VM_PIPE_WIND, 2, -1),
+                  VM_PIPE_SMEAR, shiftArt(VM_PIPE_SMEAR, -3, 0),
+                  VM_PIPE_HIT, shiftArt(VM_PIPE_HIT, -1, 1),
+                  VM_PIPE_REC, shiftArt(VM_PIPE_REC, -2, 1)];
+const BAT_SET = [VM_BAT_WIND, shiftArt(VM_BAT_WIND, 2, -1),
+                 VM_BAT_SMEAR, shiftArt(VM_BAT_SMEAR, -4, 0),
+                 VM_BAT_HIT, shiftArt(VM_BAT_HIT, -1, 1),
+                 VM_BAT_REC, shiftArt(VM_BAT_REC, -2, 1)];
 /* consuming, at full body scale - each item its own silhouette and grip:
    squat corrugated cup / slim tilted can / flat latched case */
 const VANIM = {
@@ -6259,6 +6428,8 @@ VANIM.coffee = va(1.0,                          // squat can, steam not fizz
     '      /CCCC/                ',
     '      (____)                ' ]);
 
+for (const k in VANIM)                        // every ritual, twice the frames
+  if (VANIM[k] && VANIM[k].frames) VANIM[k].frames = tweenFrames(VANIM[k].frames);
 let vAnim = null;
 function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
 
@@ -6925,12 +7096,8 @@ function interiorWall(b, gu, z, side, hitX, hitY){
     if (z > 1.0) _wb = C.worktop;                     // just the rounded lip
     return;
   }
-  if (inside && inside.shop && SHOP_FLAVOR[inside.shop] &&
-      SHOP_FLAVOR[inside.shop].band !== undefined && z > 1.2 && z < 1.7){
-    _wb = SHOP_FLAVOR[inside.shop].band; _wd = 0.8;   // the trade's shelf band
-    return;
-  }
-  // the way out, clamped to exactly the door tile's inner face
+  // the way out, clamped to exactly the door tile's inner face - the door
+  // outranks any shelf dressing, so no band ever paints across the exit
   if (side === 1 && Math.abs(hitY - b.doorY) < 0.08){
     const du = gu - b.doorX;                          // 0..1 across the door
     if (du >= 0 && du <= 1 && z < 2.25){
@@ -6945,6 +7112,11 @@ function interiorWall(b, gu, z, side, hitX, hitY){
       if (z < 0.42) _wb = C.trunk;
       return;
     }
+  }
+  if (inside && inside.shop && SHOP_FLAVOR[inside.shop] &&
+      SHOP_FLAVOR[inside.shop].band !== undefined && z > 1.2 && z < 1.7){
+    _wb = SHOP_FLAVOR[inside.shop].band; _wd = 0.8;   // the trade's shelf band
+    return;
   }
   if (z < 0.42){ _wb = C.trunk; _wd = 0.55; }         // skirting board
   else if (z > INT_CEIL - 0.3){ _wb = C.signCase; _wd = 0.5; }   // cornice
@@ -8314,11 +8486,12 @@ function hudPass(){
         else if (crouchT > 0) dart = VM_DECK_CROUCH;
         else if (landT > 0) dart = VM_DECK_LAND;
         else if (pushArtT > 0) dart = VM_DECK_PUSH;
-        const dw = Math.round(4 * viewW(dart) / dart.length);
+        const dh = Math.max(4, Math.round(rows * 0.16));   // a deck you can see
+        const dw = Math.round(dh * viewW(dart) / dart.length);
         const rise = airT > 0
           ? Math.round(Math.sin(Math.min(1, 1 - Math.max(0, airT) / airDur) * Math.PI) * 3) : 0;
         const shift = Math.round(-skLean * 2);  // the board tracks out under a carve
-        drawViewArt(dart, (cols >> 1) - (dw >> 1) + shift, rows - 4 - rise, 4, CM_DECK);
+        drawViewArt(dart, (cols >> 1) - (dw >> 1) + shift, rows - dh - rise, dh, CM_DECK);
         for (const p2 of skParts) hudCell(p2.c, p2.r, p2.ch, p2.col);
         if (styleN > 0 || skCombo > 1){
           const stx = 'STYLE ' + styleN + (skCombo > 1 ? ' x' + skCombo : '');
@@ -8328,36 +8501,32 @@ function hudPass(){
       if (vAnim){
         const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
                      (vAnim.t / vAnim.d.dur * vAnim.d.frames.length) | 0)];
-        const tr = Math.min(fr.length, Math.round(rows * 0.52));
+        const tr = Math.round(rows * 0.42);            // 2.5x the old ritual
         const tw = Math.round(tr * viewW(fr) / fr.length);
         drawViewArt(fr, (cols - tw) >> 1, rows - tr, tr, vAnim.d.cmap);
       } else if (punchT > 0){
         // the guard hand stays up, slightly withdrawn
         {
-          const gt = Math.min(VM_FIST_R.length, Math.round(rows * 0.26));
+          const gt = Math.round(rows * 0.30);
           const gw = Math.round(gt * viewW(VM_FIST_R) / VM_FIST_R.length);
           const off = Math.round(cols * 0.19);
           if (punchLeft) drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - gt + 2, gt, CM_ARM);
           else drawViewArt(VM_FIST_L, (cols >> 1) - off - gw, rows - gt + 2, gt, CM_ARM);
         }
-        // four beats on the swing, timed per weapon: coil, smear, impact, spend
+        // eight beats to a swing: every pose gets a half-step of travel
         const mw = meleeStats();
         const sc = punchDur / mw.cool;
         const e = punchDur - punchT;
-        const ph = e < mw.beats[0] * sc ? 0
-                 : e < mw.beats[1] * sc ? 1
-                 : e < mw.beats[2] * sc ? 2 : 3;
+        const b0 = mw.beats[0] * sc, b1 = mw.beats[1] * sc, b2 = mw.beats[2] * sc;
+        const ph = e < b0 * 0.5 ? 0 : e < b0 ? 1
+                 : e < b0 + (b1 - b0) * 0.5 ? 2 : e < b1 ? 3
+                 : e < b1 + (b2 - b1) * 0.4 ? 4 : e < b2 ? 5
+                 : e < b2 + (punchDur - b2) * 0.5 ? 6 : 7;
         let art, cmA = CM_ARM;
-        if (mw.id === 'bat'){
-          cmA = CM_MELEE;
-          art = [VM_BAT_WIND, VM_BAT_SMEAR, VM_BAT_HIT, VM_BAT_REC][ph];
-        } else if (mw.id === 'pipe'){
-          cmA = CM_MELEE;
-          art = [VM_PIPE_WIND, VM_PIPE_SMEAR, VM_PIPE_HIT, VM_PIPE_REC][ph];
-        } else art = punchLeft
-          ? [VM_PUNCH_WIND_L, VM_PUNCH_SMEAR_L, VM_PUNCH_HIT_L, VM_PUNCH_REC_L][ph]
-          : [VM_PUNCH_WIND, VM_PUNCH_SMEAR, VM_PUNCH_HIT, VM_PUNCH_REC][ph];
-        const tr = Math.min(art.length, Math.round(rows * 0.5));
+        if (mw.id === 'bat'){ cmA = CM_MELEE; art = BAT_SET[ph]; }
+        else if (mw.id === 'pipe'){ cmA = CM_MELEE; art = PIPE_SET[ph]; }
+        else art = punchLeft ? PUNCH_SET_L[ph] : PUNCH_SET[ph];
+        const tr = Math.round(rows * 0.56);            // the swing owns the screen
         const tw = Math.round(tr * viewW(art) / art.length);
         let ax;
         if (ph === 2)                       // fist lands beside the reticle
@@ -8370,10 +8539,11 @@ function hudPass(){
           ax = punchLeft ? 3 + ins : cols - tw - 3 - ins;
         }
         drawViewArt(art, ax, rows - tr, tr, cmA);
-      } else if (invCount('pistol')){
-        const tr = Math.min(VM_GUN.length, Math.round(rows * 0.44));
+      } else if (weaponId() === 'pistol'){
+        const tr = Math.round(rows * 0.60);
         const tw = Math.round(tr * viewW(VM_GUN) / VM_GUN.length);
-        const kick = muzzleT > 0 ? 2 : 0;         // recoil: the whole gun bucks
+        // recoil in stages: the buck, the settle, the return
+        const kick = muzzleT > 0.06 ? 3 : muzzleT > 0.03 ? 2 : muzzleT > 0 ? 1 : 0;
         const gx = ((cols - tw) >> 1) + 3, gy = rows - tr + bob + kick;
         drawViewArt(VM_GUN, gx, gy, tr, CM_GUN);
         if (muzzleT > 0)
@@ -8382,8 +8552,8 @@ function hudPass(){
       } else {
         const mw = meleeStats();
         const hold = mw.id === 'bat' ? VM_BAT_HOLD : mw.id === 'pipe' ? VM_PIPE_HOLD : VM_FIST_R;
-        const tr = Math.min(VM_FIST_R.length, Math.round(rows * 0.28));
-        const tr2 = Math.min(hold.length, Math.round(rows * (mw.id === 'fist' ? 0.28 : 0.44)));
+        const tr = Math.round(rows * 0.34);
+        const tr2 = Math.round(rows * (mw.id === 'fist' ? 0.34 : 0.58));
         const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
         const tw2 = Math.round(tr2 * viewW(hold) / hold.length);
         const off = Math.round(cols * 0.19);      // a boxer guard, framing the reticle
