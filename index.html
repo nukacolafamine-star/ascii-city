@@ -8903,6 +8903,15 @@ function chargeLabel(id){
   const c = charge(id);
   return c > 0 ? '  ' + c + '/' + per : (invCount('battery') ? '  FLAT' : '  NO CELL');
 }
+/* The things you USE on the city rather than on yourself: burner, jammer,
+   cam-jack, sniffer, firecrackers. Read off the table rather than listed by
+   hand, so a tool added later behaves like the rest without being told to.
+   The saw, the shim and the deck are not here because they are not used
+   from the card at all - they answer to E and V out in the street. */
+function isTool(id){
+  const def = ITEMS[id];
+  return !!def && def.cat === 'misc' && typeof def.use === 'function';
+}
 function useItem(id){
   const st = player.inv.find(s => s.id === id);
   if (!st) return;
@@ -8988,10 +8997,18 @@ function openInventory(){
                      : isGear ? def.hint + '   (select to equip)'
                      : wearable ? def.hint + '   (select to layer it on)' : def.hint,
                  act(){
+                   // A tool acts on the world in front of you - the burner
+                   // wants the wall you were facing, the jammer starts a
+                   // clock you need to watch - so put the card away first
+                   // and let it happen where you can see it. Doing it before
+                   // the use, rather than after, is also what keeps the
+                   // cam-jack from opening on top of an inventory card you
+                   // would only fall back into when you climbed out of it.
+                   if (isTool(st.id)){ closeMenus(); useItem(st.id); return; }
                    const m0 = topMode();
                    useItem(st.id);
-                   // an item may open its own mode (cam-jack): never stack a
-                   // fresh inventory card on top of it
+                   // an item may open its own mode: never stack a fresh
+                   // inventory card on top of it
                    if (topMode() === m0) refreshInventory();
                  } });
   }
