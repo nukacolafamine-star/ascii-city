@@ -7880,30 +7880,138 @@ function visibleProps(){
     }
   return _vis;
 }
+
+/*------------------------- solid props, not billboards ---------------------
+  A billboard turns to face you, which is why street furniture used to
+  swivel as you walked past it. These are drawn the way the signs are: as
+  fixed vertical planes standing in the world, intersected per column,
+  depth-tested against the walls. Two crossed planes per object give it
+  substance from every angle - look along one and the other is square on -
+  so nothing rotates, nothing has to be squashed, and the perspective is
+  the same one the buildings get.
+============================================================================*/
+function drawPlane(axis, plane, a0, a1, zb, hm, art, sb, sd, dyn, flip){
+  const cols = R.cols, rows = R.rows;
+  const camA = axis === 0 ? cam.x : cam.y;
+  const far = camA < plane;                    // which face is toward you
+  const aw = art.w, ah = art.h, data = art.data;
+  const lit = art.lit;
+  const span = a1 - a0;
+  if (span <= 0) return;
+  const invLen = 1 / span;
+  // only walk the columns the plane can actually cover
+  let x0 = 0, x1 = cols - 1;
+  {
+    const ex = [], ey = [];
+    if (axis === 0){ ex.push(plane, plane); ey.push(a0, a1); }
+    else { ex.push(a0, a1); ey.push(plane, plane); }
+    let lo = 1e9, hi = -1e9, ok = 1;
+    for (let i = 0; i < 2; i++){
+      const rx = ex[i] - cam.x, ry = ey[i] - cam.y;
+      const tY = rx * dirX + ry * dirY;
+      if (tY < 0.25){ ok = 0; break; }
+      const tX = (dirY * rx - dirX * ry) / planeLen;
+      const cc = cols * 0.5 * (1 + tX / tY);
+      if (cc < lo) lo = cc;
+      if (cc > hi) hi = cc;
+    }
+    if (ok){
+      x0 = Math.max(0, Math.floor(lo) - 1);
+      x1 = Math.min(cols - 1, Math.ceil(hi) + 1);
+      if (x1 < x0) return;
+    }
+  }
+  for (let x = x0; x <= x1; x++){
+    const rp = axis === 0 ? rayX[x] : rayY[x];
+    if (rp === 0) continue;
+    const t = (plane - camA) / rp;
+    if (t < 0.25 || t > viewD) continue;
+    const hitB = axis === 0 ? cam.y + rayY[x] * t : cam.x + rayX[x] * t;
+    let u = (hitB - a0) * invLen;
+    if (u < 0 || u >= 1) continue;
+    if (far !== !!flip) u = 0.9999 - u;         // the back face reads mirrored
+    const ur = projRows / t;
+    const rowB = horizon + (cam.z - zb) * ur;
+    const rowT = rowB - hm * ur;
+    let r0 = Math.round(rowT), r1 = Math.round(rowB) - 1;
+    if (r1 < r0) r1 = r0;
+    const tn = t / viewD, lvl = levelOf(tn), dm = densMul(tn);
+    const axp = Math.min(aw - 1, (u * aw) | 0);
+    const invH = 1 / Math.max(0.0001, rowB - rowT);
+    // the reflection of anything that leaves the top of the frame
+    {
+      const mb = 2 * horizon + 2 * cam.z * ur;
+      let s0 = r0, s1 = Math.min(r1, -1);
+      const lo2 = Math.ceil(mb - rows + 1), hi2 = Math.floor(mb - hzRow - 1);
+      if (s0 < lo2) s0 = lo2;
+      if (s1 > hi2) s1 = hi2;
+      if (s0 <= s1){
+        const wobx = refWob[x];
+        for (let r = s0; r <= s1; r++){
+          const rr = Math.round(mb - r + wobx);
+          if (rr <= hzRow || rr >= rows) continue;
+          const j = rr * cols + x;
+          if (!reflects(j)) continue;
+          const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
+          const ai = ((v * ah) | 0) * aw + axp;
+          const role = data[ai];
+          if (!role) continue;
+          let base, g0;
+          if (lit){ base = art.cm[ai]; g0 = Math.round(clamp(art.dn[ai] * dm, 0, 1) * RMAX); }
+          else {
+            base = sb[role]; if (base < 0) base = dyn;
+            g0 = Math.round(clamp(sd[role] * dm, 0, 1) * RMAX);
+          }
+          const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+          if (ng < 1) continue;
+          gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0;
+          statCells++;
+        }
+      }
+    }
+    if (r1 < 0 || r0 >= rows) continue;
+    if (r0 < 0) r0 = 0;
+    if (r1 > rows - 1) r1 = rows - 1;
+    for (let r = r0; r <= r1; r++){
+      const idx = r * cols + x;
+      if (dBuf[idx] < t - 0.02) continue;       // a wall in front wins
+      const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
+      const ai = ((v * ah) | 0) * aw + axp;
+      const role = data[ai];
+      if (!role) continue;
+      let base, g;
+      if (lit){ base = art.cm[ai]; g = Math.round(clamp(art.dn[ai] * dm, 0, 1) * RMAX); }
+      else {
+        base = sb[role]; if (base < 0) base = dyn;
+        g = Math.round(clamp(sd[role] * dm, 0, 1) * RMAX);
+      }
+      if (!g) continue;
+      gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
+      refBuf[idx] = 0;
+      srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
+      statCells++;
+    }
+  }
+}
+/* two crossed planes: substance from any angle, fixed in the world */
+function drawCross(cx, cy, zb, wW, wH, art, sb, sd, dyn, flip){
+  const hw = wW * 0.5;
+  drawPlane(0, cx, cy - hw, cy + hw, zb, wH, art, sb, sd, dyn, flip);
+  drawPlane(1, cy, cx - hw, cx + hw, zb, wH, art, sb, sd, dyn, flip);
+}
+/* a box with a different face along each axis - what a car actually is */
+function drawBox(cx, cy, zb, lenA, lenB, hW, artSide, artEnd, sb, sd, dyn, axis, flip){
+  const ha = lenA * 0.5, hb = lenB * 0.5;
+  if (axis === 0){                              // travelling along x
+    drawPlane(1, cy, cx - ha, cx + ha, zb, hW, artSide, sb, sd, dyn, flip);
+    drawPlane(0, cx, cy - hb, cy + hb, zb, hW, artEnd, sb, sd, dyn, flip);
+  } else {
+    drawPlane(0, cx, cy - ha, cy + ha, zb, hW, artSide, sb, sd, dyn, flip);
+    drawPlane(1, cy, cx - hb, cx + hb, zb, hW, artEnd, sb, sd, dyn, flip);
+  }
+}
+
 const drawList = [];
-/* Round things - poles, trees, bins, hydrants - look the same from every
-   side, so facing the camera is honest for them. Flat things do not: a
-   stall, a bench, a rail or a rack has a front, and it should turn away
-   from you as you walk around it instead of pivoting to follow. Each one
-   takes a fixed facing off the street grid and foreshortens against it. */
-const FLAT_PROP = [];
-FLAT_PROP[PK_TLIGHT] = FLAT_PROP[PK_RAIL] = FLAT_PROP[PK_STALL] =
-FLAT_PROP[PK_BENCH] = FLAT_PROP[PK_CAM] = FLAT_PROP[PK_PLAY] =
-FLAT_PROP[PK_METRO] = FLAT_PROP[PK_RACK] = 1;
-function propYaw(o){                          // square to the nearer roadway
-  const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
-  const dx = rx < RW ? 0 : Math.min(rx - RW, P - rx);
-  const dy = ry < RW ? 0 : Math.min(ry - RW, P - ry);
-  return dx <= dy ? 0 : Math.PI / 2;
-}
-function propFace(o){                         // 1 head-on, a sliver edge-on
-  if (!FLAT_PROP[o.k]) return 1;
-  if (o.yaw === undefined) o.yaw = propYaw(o);
-  const vx = cam.x - o.x, vy = cam.y - o.y;
-  const l = Math.hypot(vx, vy) || 1;
-  const f = Math.abs((vx / l) * Math.cos(o.yaw) + (vy / l) * Math.sin(o.yaw));
-  return 0.18 + 0.82 * f;
-}
 const HIT_SB = new Int16Array(NROLE).fill(C.nWhite);   // struck: white silhouette
 const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
 function spritePass(){
@@ -7955,25 +8063,21 @@ function spritePass(){
     const it = drawList[i], o = it.o;
     if (it.k === 0){
       if (cam.riding === o) continue;
-      const fx = o.dx, fy = o.dy;
-      const rx = o.x - cam.x, ry = o.y - cam.y;
-      const L = Math.hypot(rx, ry) || 1;
-      const dot = (rx * fx + ry * fy) / L;
-      if (dot > 0.62)       drawSprite(o.x, o.y, o.z, o.wid, 1.55, ART.carRear,  o.sb, o.sd, false, 0);
-      else if (dot < -0.62) drawSprite(o.x, o.y, o.z, o.wid, 1.55, ART.carFront, o.sb, o.sd, false, 0);
-      else {
-        const mir = (fx * planeX + fy * planeY) > 0;
-        drawSprite(o.x, o.y, o.z, o.len, 1.55, ART.carSide, o.sb, o.sd, mir, 0);
-      }
+      // a real box: the long side along its heading, the nose across it
+      const along = Math.abs(o.dx) >= Math.abs(o.dy) ? 0 : 1;
+      const ahead = along === 0 ? o.dx : o.dy;
+      const nose = ahead >= 0 ? ART.carFront : ART.carRear;
+      drawBox(o.x, o.y, o.z, o.len, o.wid, 1.55, ART.carSide, nose,
+              o.sb, o.sd, 0, along, ahead < 0);
     } else if (it.k === 1){
-      const mir = (o.dx * planeX + o.dy * planeY) > 0;
       // a struck body flashes white; a body winding up to hit you glows red
       const sbUse = o.hitT > 0 ? HIT_SB : (o.windup > 0 ? WIND_SB : o.sb);
+      const flip = (o.dx * planeX + o.dy * planeY) > 0;
       if (o.sit){
-        drawSprite(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, mir, 0);
+        drawCross(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, 0, flip);
       } else {
         const fr = o.moving && ((o.phase | 0) & 1) ? 1 : 0;
-        drawSprite(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, mir, 0);
+        drawCross(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, 0, flip);
       }
     } else if (it.k === 3){
       drawSprite(o.x, o.y, o.z, 0.36, 0.32, ART.spark,
@@ -8004,8 +8108,8 @@ function spritePass(){
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      drawSprite(o.x, o.y, pz, def.w * propFace(o), def.h,
-                 def.art, def.sl.base, def.sl.dens, false, dyn);
+      drawCross(o.x, o.y, pz, def.w, def.h,
+                def.art, def.sl.base, def.sl.dens, dyn, false);
     }
   }
 }
