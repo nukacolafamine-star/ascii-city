@@ -174,7 +174,7 @@ const DISTRICT = [
     hBase: [13, 22], hScale: [24, 60], lit: 1.15, wpm: [2, 2, 3, 3],
     split: 2, park: 0.05, alley: 0.30, tier: 0.80, crown: 0.55, stripe: 0.45,
     lamp: 0.098, tree: 0.004, bin: 0.018, hydr: 0.020, sign: 0.55, signV: 0.45,
-    stall: 0.012, stree: 0.55, cam: 0.022,
+    stall: 0.020, stree: 0.55, cam: 0.022,
     fog: [16, 14, 36],
     words: ['ZAIBATSU', 'OMNICORP', 'HOLDINGS', 'SYNTEK', 'AXIOM', 'VERTEX',
             'NEXUS', 'GLOBAL', 'FINANCE', 'DATACORP', 'HELIX', 'MERIDIAN'] },
@@ -184,7 +184,7 @@ const DISTRICT = [
     hBase: [8, 13], hScale: [7, 24], lit: 1.35, wpm: [2, 3, 3, 3],
     split: 3, park: 0.04, alley: 0.45, tier: 0.25, crown: 0.80, stripe: 0.70,
     lamp: 0.150, tree: 0.003, bin: 0.035, hydr: 0.012, sign: 0.95, signV: 0.60,
-    stall: 0.045, stree: 0.30, cam: 0.030,
+    stall: 0.077, stree: 0.30, cam: 0.030,
     fog: [36, 12, 42],
     words: ['NOODLES', 'RAMEN', 'CLUB', 'ARCADE', 'PACHINKO', 'SUSHI', 'BAR',
             'KARAOKE', 'TATTOO', '24 HRS', 'HOTEL', 'VR DEN', 'CHROME', 'LOANS',
@@ -195,7 +195,7 @@ const DISTRICT = [
     hBase: [7, 11], hScale: [5, 18], lit: 0.85, wpm: [1.5, 2, 2, 2],
     split: 2, park: 0.26, alley: 0.28, tier: 0.35, crown: 0.18, stripe: 0.10,
     lamp: 0.078, tree: 0.016, bin: 0.022, hydr: 0.018, sign: 0.22, signV: 0.15,
-    stall: 0.016, stree: 0.70, cam: 0.014,
+    stall: 0.027, stree: 0.70, cam: 0.014,
     fog: [18, 16, 34],
     words: ['LAUNDRY', 'GROCER', 'PHARMACY', 'CAFE', 'CLINIC', 'MARKET',
             'BAKERY', 'APARTMENTS', 'DELI', 'HARDWARE'] },
@@ -205,7 +205,7 @@ const DISTRICT = [
     hBase: [6, 9], hScale: [3, 11], lit: 0.45, wpm: [1.5, 1.5, 2],
     split: 1, park: 0.06, alley: 0.20, tier: 0.15, crown: 0.10, stripe: 0.15,
     lamp: 0.065, tree: 0.002, bin: 0.050, hydr: 0.030, sign: 0.30, signV: 0.10,
-    stall: 0.005, stree: 0.15, cam: 0.024,
+    stall: 0.009, stree: 0.15, cam: 0.024,
     fog: [24, 22, 28],
     words: ['LOADING', 'DOCK 7', 'SCRAP', 'FUEL', 'WAREHOUSE', 'CARGO',
             'RECYCLING', 'HAZMAT', 'UNIT 12', 'FREIGHT'] },
@@ -215,7 +215,7 @@ const DISTRICT = [
     hBase: [4, 7], hScale: [0, 4], lit: 0.75, wpm: [1.5, 1.5, 2],
     split: 2, park: 0.30, alley: 0.10, tier: 0.05, crown: 0.04, stripe: 0.02,
     lamp: 0.040, tree: 0.045, bin: 0.010, hydr: 0.012, sign: 0.10, signV: 0.02,
-    stall: 0.004, inset: 1, fill: 0.72, stree: 0.60, cam: 0.006,
+    stall: 0.007, inset: 1, fill: 0.72, stree: 0.60, cam: 0.006,
     fog: [20, 22, 32],
     words: ['HOME', 'GARAGE', 'CORNER', 'DELI', 'SCHOOL', 'CHURCH'] },
   { name: 'FARMLAND',
@@ -224,7 +224,7 @@ const DISTRICT = [
     hBase: [3, 6], hScale: [0, 2], lit: 0.45, wpm: [1.5, 1.5],
     split: 1, park: 0.62, alley: 0.05, tier: 0, crown: 0.02, stripe: 0,
     lamp: 0.008, tree: 0.030, bin: 0.002, hydr: 0.002, sign: 0.06, signV: 0,
-    stall: 0.001, inset: 2, fill: 0.34, stree: 0.10, cam: 0.001,
+    stall: 0.002, inset: 2, fill: 0.34, stree: 0.10, cam: 0.001,
     fog: [26, 30, 34],
     words: ['BARN', 'FEED', 'GRAIN', 'FARM', 'EGGS'] },
   { name: 'RED LIGHT',
@@ -233,7 +233,7 @@ const DISTRICT = [
     hBase: [8, 14], hScale: [6, 20], lit: 1.5, wpm: [2, 3, 3, 3],
     split: 3, park: 0.03, alley: 0.50, tier: 0.20, crown: 0.90, stripe: 0.85,
     lamp: 0.160, tree: 0.002, bin: 0.030, hydr: 0.010, sign: 0.98, signV: 0.70,
-    stall: 0.030, stree: 0.25, cam: 0.045,
+    stall: 0.051, stree: 0.25, cam: 0.045,
     fog: [40, 10, 44],
     words: ['LOVE HOTEL', 'CABARET', 'GIRLS GIRLS', 'PEEP SHOW', 'VELVET ROOM',
             'MASSAGE', 'NEON DOLLS', 'PRIVATE', 'AFTER DARK', 'XXX ARCADE',
@@ -1327,6 +1327,13 @@ function placeProps(){
       }
     return true;
   };
+  const doorFree = (cx, cy, w, d) => {
+    const [x0, x1] = span(cx, w), [y0, y1] = span(cy, d);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++)
+        if (inMap(x, y) && occ[y * MAP + x] === OCC_DOOR) return false;
+    return true;
+  };
   const claim = (cx, cy, w, d) => {
     const [x0, x1] = span(cx, w), [y0, y1] = span(cy, d);
     for (let y = y0; y <= y1; y++)
@@ -1380,26 +1387,53 @@ function placeProps(){
     cand.sort((a, b) => a[0] - b[0]);
     let got = null;
     for (let i = 0; i < cand.length; i++){
-      const cx = cand[i][1] + 0.5, cy = cand[i][2] + 0.5;
+      let cx = cand[i][1] + 0.5, cy = cand[i][2] + 0.5;
       _p.k = q.k; _p.x = cx; _p.y = cy;
-      if (q.k === PK_STALL && stallSpot(_p) < 0) continue;   // needs its pitch
-      const yaw = propFacing(_p);
-      const fb = footBox(q.k, yaw);
-      if (!cellsFree(cx, cy, fb[0], fb[1])) continue;
+      let yaw, fw, fd, kx = cx, ky = cy, kw, kd;
+      if (q.k === PK_STALL){
+        const d = stallSpot(_p);
+        if (d < 0) continue;                    // no pitch here
+        yaw = Math.atan2(DIRV[d][0], -DIRV[d][1]);
+        const fb = footBox(q.k, yaw);
+        fw = fb[0]; fd = fb[1];
+        // Back it onto the frontage. A pitch sits hard against the wall, which
+        // is what keeps the middle of the footway open - and leaves no slot
+        // behind the cart for anything else to end up wedged into.
+        const fx = DIRV[d][0], fy = DIRV[d][1];
+        const wall = _stallBack - 0.5;          // near face of the building
+        const off = Math.max(0, Math.min(3, wall - STALL_D * 0.5));
+        cx -= fx * off; cy -= fy * off;
+        // Claim back to the wall so the leftover sliver is spoken for, and a
+        // stride in FRONT of the counter as well - that is where a customer
+        // stands, and without it the later passes park a bench in it.
+        const slack = Math.max(0, wall - off - STALL_D * 0.5), apron = 1.6;
+        kw = fw + (fx ? slack + apron : 0); kd = fd + (fy ? slack + apron : 0);
+        kx = cx + fx * (apron - slack) * 0.5; ky = cy + fy * (apron - slack) * 0.5;
+        // What stops the player is this box plus their own width, so a cart
+        // that merely TOUCHES a doorway apron still walls it off. Test that
+        // wider box against doorways only - it may touch other props freely,
+        // and reserving the whole of it would cost carts for nothing.
+        if (!doorFree(cx, cy, fw + cam.rad * 2, fd + cam.rad * 2)) continue;
+      } else {
+        yaw = propFacing(_p);
+        const fb = footBox(q.k, yaw);
+        fw = fb[0]; fd = fb[1]; kw = fw; kd = fd;
+      }
+      if (!cellsFree(kx, ky, kw, kd)) continue;
       if (twinTooClose(q.k, cx, cy)) continue;
-      got = { cx, cy, yaw, fw: fb[0], fd: fb[1] };
+      got = { cx, cy, yaw, kx, ky, kw, kd };
       break;
     }
     if (!got && pin){                          // these hold their ground regardless
       const cx = hx + 0.5, cy = hy + 0.5;
       _p.k = q.k; _p.x = cx; _p.y = cy;
       const yaw = propFacing(_p), fb = footBox(q.k, yaw);
-      got = { cx, cy, yaw, fw: fb[0], fd: fb[1] };
+      got = { cx, cy, yaw, kx: cx, ky: cy, kw: fb[0], kd: fb[1] };
     }
     if (!got){ dropped++; continue; }
     if (got.cx !== q.x || got.cy !== q.y) moved++;
     q.x = got.cx; q.y = got.cy; q.yaw = got.yaw;
-    claim(got.cx, got.cy, got.fw, got.fd);
+    claim(got.kx, got.ky, got.kw, got.kd);
     const kk = ((q.y / SP) | 0) * SPS + ((q.x / SP) | 0);
     let a = sbuck.get(kk);
     if (!a) sbuck.set(kk, a = []);
@@ -1545,6 +1579,10 @@ function nearBuilding(x, y, r){
       if (tileAt(x + dx, y + dy) === T_BLD) return true;
   return false;
 }
+// Cart rates run higher than the count you end up with: a pitch has to have
+// a wall at its back, a frontage opposite, room to sit flush against that
+// wall and a clear stride in front of its counter, and most candidate
+// tiles fail one of those. These are tuned to what SURVIVES the placer.
 function buildProps(){
   // street furniture scattered along the sidewalk ring
   for (let y = 1; y < MAP - 1; y++){
@@ -8670,6 +8708,7 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
    real building over the road wins; a cart with no such alignment does not
    get planted at all. */
 const STALL_BACK = 5, STALL_FRONT = 30;
+let _stallBack = 0;      // out-param of stallSpot: tiles to the wall behind
 function stallSpot(o){
   const gx = o.x | 0, gy = o.y | 0;
   const wallAt = (x, y) => inMap(x, y) && tH[y * MAP + x] > 0;
@@ -8677,8 +8716,8 @@ function stallSpot(o){
     for (let s = 1; s <= lim; s++) if (wallAt(gx + dx * s, gy + dy * s)) return s;
     return -1;
   };
-  if (wallAt(gx, gy)) return -1;                // standing in a wall: no pitch
-  let best = -1, bestScore = -1e9;
+  if (wallAt(gx, gy)){ _stallBack = 0; return -1; }   // in a wall: no pitch
+  let best = -1, bestScore = -1e9, bestBack = 0;
   for (let d = 0; d < 4; d++){
     const fx = DIRV[d][0], fy = DIRV[d][1];
     // Close, but not inside it: the cart is STALL_D deep about its centre, so
@@ -8690,8 +8729,9 @@ function stallSpot(o){
     if (front < 6 || front <= back + 2) continue;
     // hard preference for a tight back; the far side just has to be there
     const score = front - back * 8;
-    if (score > bestScore){ bestScore = score; best = d; }
+    if (score > bestScore){ bestScore = score; best = d; bestBack = back; }
   }
+  _stallBack = bestBack;                        // tiles to the wall it backs onto
   return best;
 }
 function stallYaw(o){
