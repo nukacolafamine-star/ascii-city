@@ -515,11 +515,12 @@ function lmFill(x0, y0, x1, y1, type, h, bid){
     }
 }
 function lmSign(x, y, z, nx, ny, txt, col, vert){
-  const art = signArt(txt, !!vert);
-  const pix = Math.min(0.22, 6.0 / art.w);
+  // a landmark says one thing and means it - no tenants, no patter
+  const pan = signPanel([{ col, ch: null, ph: [{ txt }] }], !!vert);
+  const pix = Math.min(0.22, 6.0 / pan.pw);
   const axis = nx !== 0 ? 0 : 1, n = nx !== 0 ? nx : ny;
   pushSign(axis, n, axis === 0 ? x : y, axis === 0 ? y : x,
-           art.w * pix, art.h * pix, z, nx, ny, art, col, 0);
+           pan.pw * pix, pan.ph * pix, z, nx, ny, pan, !!vert, 0);
 }
 
 // The river meanders east-west and cuts the map in two.
@@ -678,8 +679,41 @@ const MINIFONT = {
   '9': '.#.|#.#|.##|..#|##.',
   '-': '...|...|###|...|...',
   '!': '.#.|.#.|.#.|...|.#.',
+  '&': '.#.|#.#|.#.|#.#|.##',
+  '+': '...|.#.|###|.#.|...',
+  '$': '###|#..|###|..#|###',
+  '%': '#.#|..#|.#.|#..|#.#',
+  '/': '..#|..#|.#.|#..|#..',
+  '?': '##.|..#|.#.|...|.#.',
+  ':': '...|.#.|...|.#.|...',
+  '.': '...|...|...|...|.#.',
+  ',': '...|...|...|.#.|#..',
+  "'": '.#.|.#.|...|...|...',
+  '"': '#.#|#.#|...|...|...',
+  // The sign painters keep a case of marks as well as letters. They read at
+  // three pixels wide the way the alphabet does, so a slogan can carry one
+  // without breaking the rhythm of the panel.
+  '\u2605': '.#.|###|###|#.#|...',    // star
+  '\u25CF': '.#.|###|###|###|.#.',    // orb
+  '\u25C6': '...|.#.|###|.#.|...',    // diamond
+  '\u2665': '#.#|###|###|.#.|...',    // heart
+  '\u25B2': '...|.#.|###|###|...',    // up
+  '\u25BC': '...|###|###|.#.|...',    // down
+  '\u25B6': '#..|##.|###|##.|#..',    // play
+  '\u25C0': '..#|.##|###|.##|..#',    // back
+  '\u2726': '#.#|.#.|###|.#.|#.#',    // spark
+  '\u26A1': '..#|.#.|###|.#.|#..',    // bolt
+  '\u271A': '.#.|.#.|###|.#.|.#.',    // cross
+  '\u00A5': '#.#|.#.|###|.#.|###',    // yen
+  '\u25A0': '...|###|###|###|...',    // block
+  '\u2318': '#.#|###|.#.|###|#.#',    // knot
+  '\u2699': '.#.|###|#.#|###|.#.',    // gear
+  '\u2591': '#.#|.#.|#.#|.#.|#.#',    // weave
   ' ': '...|...|...|...|...'
 };
+const SIGN_SYM = ['\u2605','\u25CF','\u25C6','\u2665','\u25B2','\u25BC','\u25B6',
+                  '\u25C0','\u2726','\u26A1','\u271A','\u00A5','\u25A0','\u2318',
+                  '\u2699','\u2591'];
 function textFrame(lines, c1, c2){
   const W = 32, H = 16;
   const grid = [];
@@ -1508,33 +1542,68 @@ function placeProps(){
   one character per cell, so the text stays legible at any range - a
   holographic panel rather than a painted texture.
 ============================================================================*/
-// A sign is a lit panel: border, dark backing, and block-font lettering, all
-// baked into one small bitmap that is then drawn as an ordinary billboard.
-// Roles: 1 backing, 2 border, 3 lettering.
-function signArt(txt, vert){
-  const n = txt.length;
-  const tw = vert ? 3 : n * 4 - 1;
-  const th = vert ? n * 6 - 1 : 5;
-  const W = tw + 4, H = th + 4;
-  const data = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++)
-      data[y * W + x] = (x === 0 || y === 0 || x === W - 1 || y === H - 1) ? 2 : 1;
-  for (let i = 0; i < n; i++){
+/* A sign used to be one word baked into one bitmap that blinked on and off
+   whole, frame and all - a light switch, not an advertisement.
+
+   Now the panel is structure and the words are cargo. The frame and its
+   running lights are computed from a cell's position in the border ring, and
+   the lettering is a separate ink strip swapped underneath it: the name, then
+   the pitch, then the name again, then something long enough that it has to
+   crawl. A facade is rented, so a panel can carry two or three tenants taking
+   turns, and when the turn changes so does the colour, the lights and the
+   patter - competition, rendered.
+
+   Roles: 1 backing, 2 frame, 3 lettering. */
+const SIGN_WIN   = 9;      // glyphs of window a crawling message runs through
+const SIGN_SPEED = 16;     // and how many art columns per second it travels
+// A phrase baked to ink. Height is always the panel's inner height so a strip
+// drops straight into the frame; width is the inner width for a phrase that
+// sits still, or the whole message plus a clear gap for one that crawls.
+function bakeText(txt, iw, ih, vert, scroll){
+  const gw = vert ? 3 : txt.length * 4 - 1;
+  const gh = vert ? txt.length * 6 - 1 : 5;
+  const w = scroll ? Math.max(iw + 4, gw + iw) : iw, h = ih;
+  const data = new Uint8Array(w * h);
+  const ox = scroll ? 0 : Math.max(0, (w - gw) >> 1);
+  const oy = Math.max(0, (h - gh) >> 1);
+  for (let i = 0; i < txt.length; i++){
     const g = (MINIFONT[txt[i]] || MINIFONT[' ']).split('|');
-    const ox = vert ? 2 : 2 + i * 4, oy = vert ? 2 + i * 6 : 2;
+    const cx = vert ? ox : ox + i * 4, cy = vert ? oy + i * 6 : oy;
     for (let r = 0; r < 5; r++)
       for (let c = 0; c < 3; c++)
-        if (g[r][c] === '#') data[(oy + r) * W + (ox + c)] = 3;
+        if (g[r][c] === '#' && cy + r < h && cx + c < w)
+          data[(cy + r) * w + (cx + c)] = 1;
   }
-  return { w: W, h: H, data };
+  return { w, h, data };
 }
-function signSlots(col){
+const SIGN_SL = new Map();
+function signSlotsFor(col){
+  let sl = SIGN_SL.get(col);
+  if (sl) return sl;
   const sb = new Int16Array(NROLE), sd = new Float32Array(NROLE);
   sb[1] = C.signBack; sd[1] = 0.82;
   sb[2] = col;        sd[2] = 0.95;
   sb[3] = col;        sd[3] = 1.0;
-  return { sb, sd };
+  SIGN_SL.set(col, sl = { sb, sd });
+  return sl;
+}
+/* Lamps set around the border, read off a cell's distance along the ring and
+   shifted a lamp at a time, so the colours appear to travel round the frame.
+   A dark entry in the pattern is what makes the movement legible. */
+function chaseFor(col, D){
+  if (rnd() < 0.38) return null;                  // plenty of frames are plain
+  const alt = D.neon[(rnd() * D.neon.length) | 0];
+  const pats = [
+    [[col, 1.0], [C.signBack, 0.26]],                                 // on, off
+    [[col, 1.0], [alt, 1.0], [C.signBack, 0.24]],                     // two, chasing
+    [[C.nWhite, 1.0], [col, 0.95], [C.nWhite, 0.45], [col, 0.30]],    // a soft spin
+    [[col, 1.0], [col, 0.62], [C.signBack, 0.22], [alt, 0.95], [C.signBack, 0.22]],
+    [[col, 1.0], [C.signBack, 0.22], [alt, 1.0], [C.signBack, 0.22]]  // alternating
+  ];
+  const pat = pats[(rnd() * pats.length) | 0];
+  const cc = new Int16Array(pat.length), cd = new Float32Array(pat.length);
+  for (let i = 0; i < pat.length; i++){ cc[i] = pat[i][0]; cd[i] = pat[i][1]; }
+  return { c: cc, d: cd, n: pat.length };
 }
 // How far the same building keeps this face exposed, in tiles. A sign is
 // centred in that run and never allowed wider than it.
@@ -1549,32 +1618,74 @@ function faceRun(b, tx, ty, nx, ny){
   else         { lo = tx; while (open(lo - 1, ty)) lo--; hi = tx; while (open(hi + 1, ty)) hi++; }
   return [lo, hi + 1];
 }
-function pushSign(axis, n, plane, mid, wm, hm, z, nx, ny, art, col, blink){
-  const sl = signSlots(col);
+/* Lay the tenants out into one running order and cut a panel that holds it.
+   The wall gets the casting vote: a narrow facade does not lose its sign, it
+   loses the luxury of a phrase standing still. Anything too long for the
+   space is handed to the crawl, and the crawl's window shrinks to whatever
+   the brickwork can actually carry. */
+function signPanel(brands, vert, budget){
+  const cap = Math.max(3, (budget || 999) - 4);       // art cells of interior
+  let iw = 3, ih = 5, anyScroll = false;
+  for (const br of brands) for (const ph of br.ph){
+    const gw = vert ? 3 : ph.txt.length * 4 - 1;
+    const gh = vert ? ph.txt.length * 6 - 1 : 5;
+    if (!ph.scroll && !vert && gw > cap) ph.scroll = true;   // too long to sit still
+    if (ph.scroll){ anyScroll = true; continue; }
+    if (vert) ih = Math.max(ih, gh);
+    else      iw = Math.max(iw, gw);
+  }
+  if (anyScroll && !vert) iw = Math.max(iw, Math.min(SIGN_WIN * 4 - 1, cap));
+  if (!vert){
+    iw = Math.min(iw, cap);
+    if (iw < 11) return null;                          // not even three glyphs
+  }
+  const seq = [];
+  for (const br of brands){
+    const sl = signSlotsFor(br.col);
+    for (const ph of br.ph){
+      const gw = ph.txt.length * 4 - 1;
+      const sw = ph.scroll ? Math.max(iw + 4, gw + iw) : iw;
+      seq.push({ txt: ph.txt, scroll: !!ph.scroll, sb: sl.sb, sd: sl.sd,
+                 ch: br.ch, tx: null,
+                 dur: ph.scroll ? sw / SIGN_SPEED : 1.5 + rnd() * 1.7 });
+    }
+  }
+  let cyc = 0;
+  for (const e of seq) cyc += e.dur;
+  return { iw, ih, pw: iw + 4, ph: ih + 4, seq, cyc };
+}
+function pushSign(axis, n, plane, mid, wm, hm, z, nx, ny, pan, vert, blink){
   signs.push({
     axis, n, plane: plane + n * 0.06,          // sit just proud of the wall
     a0: mid - wm * 0.5, a1: mid + wm * 0.5,
     x: axis === 0 ? plane : mid, y: axis === 0 ? mid : plane,
-    nx, ny, z, hm, wm, art, sb: sl.sb, sd: sl.sd, col, blink: blink || 0
+    nx, ny, z, hm, wm, vert: !!vert,
+    pw: pan.pw, ph: pan.ph, iw: pan.iw, ih: pan.ih,
+    seq: pan.seq, cyc: pan.cyc, phase: rnd() * pan.cyc,
+    blink: blink || 0, spin: 2.5 + rnd() * 7.5,
+    sb: pan.seq[0].sb, sd: pan.seq[0].sd
   });
 }
-function makeSign(b, tx, ty, nx, ny, txt, col, vert, blink){
+function makeSign(b, tx, ty, nx, ny, brands, vert, blink){
+  if (!brands || !brands.length) return;
   const axis = nx !== 0 ? 0 : 1, n = nx !== 0 ? nx : ny;
   const run = faceRun(b, tx, ty, nx, ny);
   const runLen = run[1] - run[0];
-  const art = signArt(txt, vert);
   const maxW = runLen - 0.5;                    // leave the corners clear
   if (maxW < 0.8) return;
-  let pix = Math.min(0.26, maxW / art.w);
-  if (vert) pix = Math.min(pix, 9.0 / art.h);
+  const pan = signPanel(brands, vert, Math.floor(maxW / 0.07));
+  if (!pan) return;
+  let pix = Math.min(0.26, maxW / pan.pw);
+  if (vert) pix = Math.min(pix, 9.0 / pan.ph);
   if (pix < 0.07) return;                       // wall too narrow to carry it
-  const wm = art.w * pix, hm = art.h * pix;
+  const wm = pan.pw * pix, hm = pan.ph * pix;
   const hostH = tH[ty * MAP + tx];
   let z = vert ? 5 + rnd() * 5 : 2.4 + rnd() * 1.5;
   z = clamp(z, 1.2, hostH - hm - 0.3);
   if (z < 1.1 || z + hm > hostH - 0.1) return;  // does not fit on this wall
   const face = axis === 0 ? (nx > 0 ? tx + 1 : tx) : (ny > 0 ? ty + 1 : ty);
-  pushSign(axis, n, face, (run[0] + run[1]) * 0.5, wm, hm, z, nx, ny, art, col, blink);
+  pushSign(axis, n, face, (run[0] + run[1]) * 0.5, wm, hm, z, nx, ny,
+           pan, vert, blink);
 }
 /*=========================== WHAT A BUILDING IS =============================
   There used to be two unrelated rolls: the door borrowed whatever word the
@@ -1663,20 +1774,90 @@ function specialWordFor(b){
     return ['VELVET ROOM', 'NEON GARDEN', 'SIGNAL HOUSE', 'STEAM SILK'][(hash3(b.id, 66, 13) * 4) | 0];
   return null;
 }
+/*---------------------------- what a sign says -----------------------------
+  Signage stopped being a nameplate when the door started telling the truth,
+  so it is free to do what signage actually does: shout a name, make a claim,
+  and shout the name again in case you missed it.
+============================================================================*/
+const BRAND_HEAD = ['NOVA','ORBIT','KOI','ZEN','IRON','LOTUS','ATLAS','VIPER',
+  'MOTH','AMBER','ONYX','SABLE','HALO','TIGER','CRANE','EMBER','PEARL','RUST',
+  'JADE','COBALT','SIREN','MAGPIE','FOX','WOLF','GHOST','ROOK','SALT','SUGAR',
+  'BRASS','KESTREL','MARROW','TALLOW','QUARTZ','HOLLOW','THISTLE'];
+const BRAND_TAIL = ['CO','WORKS','HOUSE','MART','LTD','GROUP','BROS','LABS',
+  'TRADE','SUPPLY','ROOM','CLUB','& SON'];
+const SLOGANS = ['OPEN 24 HRS','BEST IN TOWN','NO REFUNDS','WE NEVER CLOSE',
+  'HALF OFF','CASH ONLY','ASK INSIDE','NEW STOCK','TWO FOR ONE','SINCE 2049',
+  'GET SOME','WHY NOT','LOWEST PRICE','TODAY ONLY','THE REAL THING','DONT WAIT',
+  'STEP INSIDE','ALWAYS ON','YES WE HAVE IT','STILL CHEAP','TRY IT WET',
+  'NO QUESTIONS','TASTE IT','WARM INSIDE','LATE HOURS','WALK IN','ALL NIGHT',
+  'YOU EARNED IT','FEELS RIGHT','LAST ONE','BUY TWO','FRESH TODAY'];
+const CRAWLS = [
+  'NOTHING DOWN AND NOTHING TO PAY UNTIL THE RAIN STOPS',
+  'IF YOU CAN CARRY IT OUT YOU CAN BUY IT TONIGHT',
+  'WE WERE HERE BEFORE THE TOWER AND WE WILL BE HERE AFTER',
+  'ASK ABOUT OUR TERMS THEY ARE WORSE THAN YOU THINK',
+  'EVERY ITEM GUARANTEED FOR AS LONG AS YOU ARE HOLDING IT',
+  'THE ONLY HONEST PRICE ON THIS ENTIRE BLOCK NO REALLY',
+  'BRING A FRIEND BRING TWO BRING EVERYONE YOU STILL TRUST',
+  'CLOSED FOR NOTHING SHORT OF THE END OF THE WORLD',
+  'YOUR OLD ONE IS WORTH SOMETHING TO US BRING IT IN',
+  'DO NOT READ THIS SIGN READ THE PRICES INSIDE INSTEAD'];
+function adorn(txt){
+  const s = SIGN_SYM[(rnd() * SIGN_SYM.length) | 0];
+  const r = rnd();
+  if (r < 0.24) return s + ' ' + txt + ' ' + s;
+  if (r < 0.38) return s + ' ' + txt;
+  if (r < 0.46) return txt + ' ' + s;
+  if (r < 0.52) return txt + '!';
+  return txt;
+}
+function brandName(D, words, vert){
+  const cap = vert ? 9 : 12;
+  const r = rnd();
+  let nm;
+  if (r < 0.40) nm = words[(rnd() * words.length) | 0];
+  else if (r < 0.76) nm = BRAND_HEAD[(rnd() * BRAND_HEAD.length) | 0];
+  else {
+    const h = BRAND_HEAD[(rnd() * BRAND_HEAD.length) | 0];
+    const t = BRAND_TAIL[(rnd() * BRAND_TAIL.length) | 0];
+    nm = (h + ' ' + t).length <= cap ? h + ' ' + t : h;
+  }
+  if (nm.length > cap) nm = BRAND_HEAD[(rnd() * BRAND_HEAD.length) | 0];
+  return nm.length <= cap ? nm : nm.slice(0, cap);
+}
+/* One panel, one to three tenants. Each brings its own colour, its own
+   border lights and its own run of copy, and the panel hands itself round. */
+function signBrands(D, words, vert){
+  const out = [];
+  const n = vert ? 1 : rnd() < 0.30 ? 2 : rnd() < 0.09 ? 3 : 1;
+  for (let i = 0; i < n; i++){
+    const col = D.neon[(rnd() * D.neon.length) | 0];
+    const name = brandName(D, words, vert);
+    const ph = [{ txt: name }];
+    if (!vert){
+      const pitches = 1 + ((rnd() * 2) | 0);
+      for (let k = 0; k < pitches; k++){
+        const line = adorn(SLOGANS[(rnd() * SLOGANS.length) | 0]);
+        ph.push(line.length > 13 ? { txt: line, scroll: true } : { txt: line });
+        if (rnd() < 0.45) ph.push({ txt: name });   // and the name comes back
+      }
+      if (n === 1 && rnd() < 0.22)
+        ph.push({ txt: CRAWLS[(rnd() * CRAWLS.length) | 0], scroll: true });
+    }
+    out.push({ col, ph, ch: chaseFor(col, D) });
+  }
+  return out;
+}
 function buildSigns(){
   signs = [];
   const mkSign = (b, D, f, vert, words) => {
-    const list = words || D.words;
-    makeSign(b, f.tx, f.ty, f.nx, f.ny, list[(rnd() * list.length) | 0],
-             D.neon[(rnd() * D.neon.length) | 0], vert,
-             rnd() < 0.13 ? 0.5 + rnd() * 1.7 : 0);
+    makeSign(b, f.tx, f.ty, f.nx, f.ny, signBrands(D, words, vert), vert,
+             rnd() < 0.30 ? 0.45 + rnd() * 1.5 : 0);
   };
   for (const b of buildings){
     if (b.landmark) continue;
     const D = DISTRICT[b.dist];
     const words = b.redlight ? RED_WORDS : D.words;
-    // a sign is an advertisement, not a nameplate: it may say anything
-    let forced = null;
     // one bucket per outward direction, so a shop faces every street it fronts
     const faces = [[], [], [], []];
     for (let y = b.y0; y <= b.y1; y++)
@@ -1696,9 +1877,7 @@ function buildSigns(){
       if (!bucket.length) continue;
       anyFace = bucket;
       if (rnd() > (b.redlight ? 0.98 : D.sign)) continue;
-      mkSign(b, D, bucket[(rnd() * bucket.length) | 0], false,
-             forced ? [forced] : words);
-      forced = null;                            // only the first sign is the trade
+      mkSign(b, D, bucket[(rnd() * bucket.length) | 0], false, words);
     }
     if (anyFace && rnd() < D.signV){
       const tall = anyFace.filter(f => f.h > 13);
@@ -13070,11 +13249,38 @@ function spritePass(){
 // A sign is a flat panel fixed in a wall plane, so it is drawn the way a wall
 // is: intersect each column's ray with the plane and read across the artwork.
 // Perspective then foreshortens it for free, and it can never turn to face you.
+/* Which entry the panel is showing this instant, how far a crawl has run,
+   and where the border lights have got to. Called once per visible sign. */
+function signNow(sg){
+  const seq = sg.seq;
+  let u = (worldTime + sg.phase) % sg.cyc;
+  if (u < 0) u += sg.cyc;
+  let i = 0;
+  for (; i < seq.length - 1; i++){
+    if (u < seq[i].dur) break;
+    u -= seq[i].dur;
+  }
+  const e = seq[i];
+  if (!e.tx) e.tx = bakeText(e.txt, sg.iw, sg.ih, sg.vert, e.scroll);
+  sg._tx = e.tx; sg._sc = e.scroll;
+  sg._off = e.scroll ? ((u * SIGN_SPEED) | 0) % e.tx.w : 0;
+  sg.sb = e.sb; sg.sd = e.sd;
+  // the flash takes the lettering only - the frame and its lights stay lit
+  sg._ink = !(sg.blink && ((worldTime / sg.blink) % 1) < 0.22);
+  const ch = e.ch;
+  sg._chC = ch ? ch.c : null;
+  sg._chD = ch ? ch.d : null;
+  sg._chN = ch ? ch.n : 0;
+  sg._chOff = ch ? (worldTime * sg.spin) | 0 : 0;
+}
 function drawSignPlane(sg){
   const cols = R.cols, rows = R.rows;
   const camA = sg.axis === 0 ? cam.x : cam.y;
   if ((camA - sg.plane) * sg.n <= 0.05) return;          // behind it, or edge on
-  const art = sg.art, aw = art.w, ah = art.h, data = art.data;
+  const aw = sg.pw, ah = sg.ph;
+  const txt = sg._tx, tw = txt.w, th = txt.h, tdat = txt.data;
+  const chC = sg._chC, chD = sg._chD, chN = sg._chN, chO = sg._chOff;
+  const per2 = 2 * (aw - 1) + (ah - 1);        // start of the left-hand run
   const invLen = 1 / (sg.a1 - sg.a0);
   for (let x = 0; x < cols; x++){
     const rp = sg.axis === 0 ? rayX[x] : rayY[x];
@@ -13097,6 +13303,14 @@ function drawSignPlane(sg){
     const tn = t / viewD, lvl = levelOf(tn), dm = densMul(tn);
     const axp = Math.min(aw - 1, (u * aw) | 0);
     const invH = 1 / Math.max(0.0001, rowB - rowT);
+    // both of these are fixed for the whole of this screen column, so the
+    // per-cell work below is a couple of compares and an array read
+    const edge = (axp === 0 || axp === aw - 1);
+    let sx = -1;
+    if (!edge && sg._ink){
+      const ix = axp - 2;
+      if (ix >= 0) sx = sg._sc ? (ix + sg._off) % tw : (ix < tw ? ix : -1);
+    }
 
     // A sign mounted high leaves the top of the frame as soon as you tilt
     // down, but its reflection does not. Mirror the rows above the frame
@@ -13115,10 +13329,21 @@ function drawSignPlane(sg){
           const j = rr * cols + x;
           if (!reflects(j)) continue;
           const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
-          const role = data[((v * ah) | 0) * aw + axp];
-          if (!role) continue;
-          const base = sg.sb[role];
-          const g0 = Math.round(clamp(sg.sd[role] * dm, 0, 1) * RMAX);
+          const ay = (v * ah) | 0;
+          let base, dens;
+          if (edge || ay === 0 || ay === ah - 1){
+            if (chC){
+              const pi = ay === 0 ? axp
+                       : ay === ah - 1 ? (aw - 1) + (ah - 1) + (aw - 1 - axp)
+                       : axp === aw - 1 ? (aw - 1) + ay
+                       : per2 + (ah - 1 - ay);
+              let k = (pi - chO) % chN; if (k < 0) k += chN;
+              base = chC[k]; dens = chD[k];
+            } else { base = sg.sb[2]; dens = sg.sd[2]; }
+          } else if (sx >= 0 && ay >= 2 && ay - 2 < th && tdat[(ay - 2) * tw + sx]){
+            base = sg.sb[3]; dens = sg.sd[3];
+          } else { base = sg.sb[1]; dens = sg.sd[1]; }
+          const g0 = Math.round(clamp(dens * dm, 0, 1) * RMAX);
           const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
           if (ng < 1) continue;
           gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0;
@@ -13134,13 +13359,27 @@ function drawSignPlane(sg){
       const idx = r * cols + x;
       if (dBuf[idx] < t - 0.02) continue;
       const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
-      const role = data[((v * ah) | 0) * aw + axp];
-      if (!role) continue;
-      const g = Math.round(clamp(sg.sd[role] * dm, 0, 1) * RMAX);
+      const ay = (v * ah) | 0;
+      let base, dens;
+      if (edge || ay === 0 || ay === ah - 1){
+        // where this cell sits along the border ring, shifted a lamp at a
+        // time, is the whole of the spinning-lights trick
+        if (chC){
+          const pi = ay === 0 ? axp
+                   : ay === ah - 1 ? (aw - 1) + (ah - 1) + (aw - 1 - axp)
+                   : axp === aw - 1 ? (aw - 1) + ay
+                   : per2 + (ah - 1 - ay);
+          let k = (pi - chO) % chN; if (k < 0) k += chN;
+          base = chC[k]; dens = chD[k];
+        } else { base = sg.sb[2]; dens = sg.sd[2]; }
+      } else if (sx >= 0 && ay >= 2 && ay - 2 < th && tdat[(ay - 2) * tw + sx]){
+        base = sg.sb[3]; dens = sg.sd[3];
+      } else { base = sg.sb[1]; dens = sg.sd[1]; }
+      const g = Math.round(clamp(dens * dm, 0, 1) * RMAX);
       if (!g) continue;
-      gBuf[idx] = g; bBuf[idx] = sg.sb[role]; lBuf[idx] = lvl; dBuf[idx] = t;
+      gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
       refBuf[idx] = 0;
-      srcBuf[idx] = EMISSIVE[sg.sb[role]] ? 2 : 1;
+      srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
       statCells++;
     }
   }
@@ -13154,7 +13393,7 @@ function signPass(){
     if (d < 0.3 || d > viewD || d > 130) continue;       // unreadable past 130
     if (rx * sg.nx + ry * sg.ny > 0) continue;           // facing away
     if (Math.abs(dirY * rx - dirX * ry) > d * planeLen + sg.wm + 2) continue;
-    if (sg.blink && ((worldTime / sg.blink) % 1) < 0.26) continue;
+    signNow(sg);
     drawSignPlane(sg);
   }
 }
