@@ -2809,8 +2809,8 @@ function spawnActors(){
       a: 'apple', b: 'onigiri' },
     { name: 'FIXPOINT VENDOR', greet: 'Batteries, bangers, whatever fell off the truck this week.',
       a: 'battery', b: 'firecracker' },
-    { name: 'NIGHT CART', greet: 'The mile never eats at home. Warm sake, sweet fish.',
-      a: 'sake', b: 'taiyaki' },
+    { name: 'NIGHT CART', greet: 'The mile never eats at home. Warm sake, smoke after.',
+      a: 'sake', b: 'cigarette' },
     { name: 'BELT CANTEEN', greet: 'Shift food. It works or you do not.',
       a: 'coffee', b: 'kebab' },
     { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
@@ -2927,7 +2927,7 @@ function onPress(code, key){
                  KeyA: ['bigspin', 14], KeyD: ['impossible', 16] };
     if (TK[code]){
       const nm = TK[code][0], pts = TK[code][1];
-      if (!skTrick) skTrick = { name: nm, pts, t: 0, dur: 0.3 };
+      if (!skTrick) skTrick = { name: nm, base: nm, pts, t: 0, dur: 0.3 };
       else if (!skTrick.late && skTrick.name.indexOf(nm) < 0){
         skTrick.name += ' late ' + nm;          // one late add, clock untouched
         skTrick.pts = (skTrick.pts + pts) * 2;
@@ -4083,6 +4083,9 @@ const ITEMS = {
   // ---- misc ----
   scrap:   { name: 'SCRAP ELECTRONICS', pcol: C.nGreen, stack: 9, cat: 'misc', price: 12,
              hint: 'shops pay a little; the watcher pays well' },
+  cigarette:{ name: 'CIGARETTE', pcol: C.nAmber, stack: 12, cat: 'consumable', price: 4,
+             hint: 'a slow drag - it loops until your hands are busy',
+             use(){ return lightUp(); } },
   battery: { name: 'BATTERY', pcol: C.nCyan, stack: 8, cat: 'misc', price: 6,
              hint: 'everything here runs on these' },
   deck:    { name: 'KICKDECK', pcol: C.nMag, stack: 1, cat: 'misc', price: 280,
@@ -4406,6 +4409,7 @@ function useItem(id){
     return;
   }
   if (!def.use){ toast('no use for it yet'); return; }
+  if (id !== 'cigarette') handsBusy();        // one ritual at a time
   if (!def.use(player)){ toast('no effect right now'); sfx('ui_back', { vol: 0.3 }); return; }
   if (def.keep){ sfx('ui_select', { vol: 0.5, rate: 0.9 }); return; }   // a tool, not a snack
   st.qty--;
@@ -4804,11 +4808,11 @@ function sellScrap(){
 /* every shop has a trade: the stock behind the counter follows it */
 const SHOP_TYPES = {
   general:    { name: 'GENERAL STORE',
-                stock: ['noodles', 'soda', 'coffee', 'medkit', 'battery', 'firecracker'] },
+                stock: ['noodles', 'soda', 'coffee', 'cigarette', 'medkit', 'battery', 'firecracker'] },
   grocery:    { name: 'GROCERY',
                 stock: ['apple', 'onigiri', 'gyoza', 'bao', 'ramen', 'noodles', 'soda', 'boba'] },
   bodega:     { name: 'BODEGA',
-                stock: ['noodles', 'soda', 'coffee', 'taiyaki', 'sake', 'tee', 'battery'] },
+                stock: ['noodles', 'soda', 'coffee', 'cigarette', 'taiyaki', 'sake', 'tee', 'battery'] },
   clothier:   { name: 'CLOTHIER',
                 stock: ['tee', 'hoodie', 'sneakers', 'tracksuit', 'workjacket', 'runners', 'puffer', 'vest'] },
   jeweler:    { name: 'JEWELER',
@@ -5225,6 +5229,7 @@ let punchDur = 0.45, strikeAt = 0, strikeArmed = false, hitStopT = 0, whiffT = 0
 function punch(){
   // locked only until contact; the follow-through is cancelable into the next
   if (punchT > 0 && strikeArmed) return;
+  handsBusy();
   const m = meleeStats();
   punchT = punchDur = m.cool * drugFx('atkSpd', 1);   // rush swings faster
   strikeAt = m.beats[1] * (punchDur / m.cool);        // contact lands mid-swing
@@ -5275,6 +5280,7 @@ function fireWeapon(){
   if (cam.riding){ toast('not from up here'); return; }
   if (sitting){ toast('not from the bench'); return; }
   if (shotCool > 0) return;                   // the zip pistol is not a minigun
+  handsBusy();
   const armed = weaponId() === 'pistol' && invCount('pistol') > 0;
   if (!armed || invCount('ammo') === 0){
     if (!armed && worldTime > unarmedT && meleeStats().id === 'fist'){
@@ -5710,52 +5716,410 @@ const PUNCH_SET_L = [VM_PUNCH_WIND_L, shiftArt(VM_PUNCH_WIND_L, -2, -1),
 /* bludgeons ride in the right hand: a rest pose and a full swing each */
 const CM_MELEE = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT,
                    '%': H_GRY, '#': H_DRK, w: H_YEL, '-': H_GRY, '*': H_YEL };
-/* the kickdeck, seen past your feet - one frame per thing your body does */
-const CM_DECK = { '=': H_DRK, '%': H_PUR, o: H_GRY, x: H_JKT, '<': H_GRY,
-                  '>': H_GRY, "'": H_GRY, '`': H_GRY, '*': H_YEL,
-                  '\\': H_GRY, '/': H_GRY, '-': H_GRY };
-const VM_DECK_FLAT = [
-  '      xxx          xxx      ',
-  '    _(%%%)========(%%%)_    ',
-  '   (====================)   ',
-  '    [o]              [o]    '
+/* the kickdeck, seen down its own length: the nose narrows away from
+   you, the tail flares near, and every trick has its own motion */
+const CM_DECK = { '=': H_DRK, '%': H_PUR, '#': H_DRK, o: H_GRY, x: H_JKT,
+                  '<': H_GRY, '>': H_GRY, "'": H_GRY, '`': H_GRY,
+                  '*': H_YEL, '\\': H_GRY, '/': H_GRY, '-': H_GRY,
+                  '|': H_GRY, '(': H_GRY, ')': H_GRY, '[': H_GRY, ']': H_GRY,
+                  '_': H_GRY };
+const VM_DECK_FLAT = [   // rolling: your shoes, the graphic, the trucks
+  '            __            ',
+  '          /=====\\         ',
+  '         /=======\\        ',
+  '         |=======|        ',
+  '        |=========|       ',
+  '        |==%%%%%==|       ',
+  '       xxx=======xxx      ',
+  '       xxx=======xxx      ',
+  '       |===%%%%%===|      ',
+  '      xxx=========xxx     ',
+  '      xxx=========xxx     ',
+  '      (=============)     ',
+  '     [o]===========[o]    ',
+  "      '`'         '`'     "
 ];
-const VM_DECK_PUSH = [
-  '      xxx                   ',
-  '    _(%%%)========(%%%)_    ',
-  '   (====================)   ',
-  '    [o]              [o]  x '
+const VM_DECK_PUSH = [   // back foot off, kicking
+  '            __            ',
+  '          /=====\\         ',
+  '         /=======\\        ',
+  '         |=======|        ',
+  '        |=========|       ',
+  '        |==%%%%%==|       ',
+  '       xxx=======xxx      ',
+  '       xxx=======xxx      ',
+  '       |===%%%%%===|      ',
+  '       |===========|      ',
+  '       |===========|      ',
+  '       (===========)      ',
+  '      [o]=========[o]   x ',
+  "       '`'       '`'  xxx "
 ];
-const VM_DECK_CROUCH = [
-  '     xxxx          xxxx     ',
-  '   _(%%%%)========(%%%%)_   ',
-  '  (=====================\\  ',
-  '    [o]              [o]>   '
+const VM_DECK_CROUCH = [   // weight down, tail loaded
+  '           ______         ',
+  '         /========\\       ',
+  '        /==========\\      ',
+  '        |==========|      ',
+  '       |============|     ',
+  '       |===%%%%%%===|     ',
+  '      xxxx========xxxx    ',
+  '      xxxx========xxxx    ',
+  '      |====%%%%%%====|    ',
+  '     xxxx==========xxxx   ',
+  '     xxxx==========xxxx   ',
+  '     (===============)    ',
+  '    [o]=============[o]   ',
+  "     '`'           '`'    "
 ];
-const VM_DECK_AIR = [
-  '       xxx        xxx       ',
-  '     _(%%%)======(%%%)_     ',
-  '    (==================)    ',
-  '     <o>============<o>     '
+const VM_DECK_AIR = [   // off the ground, trucks showing
+  '             __           ',
+  '           /====\\         ',
+  '          /======\\        ',
+  '          |======|        ',
+  '         /========\\       ',
+  '        /==%%%%%==\\       ',
+  '       xxx=======xxx      ',
+  '       xxx=======xxx      ',
+  '       \\===%%%%%===/      ',
+  '        \\=========/       ',
+  '         <o>=====<o>      ',
+  '          `-`   `-`       '
 ];
-const VM_DECK_FLIP_A = [
-  '       xxx        xxx       ',
-  '      \\  \\        /  /    ',
-  '   -==================-     ',
-  '      /  /        \\  \\    '
+const VM_DECK_LAND = [   // compression, dust off the wheels
+  '           ______         ',
+  '         /========\\       ',
+  '        |==========|      ',
+  '       |============|     ',
+  '       |===%%%%%%===|     ',
+  '      xxxx========xxxx    ',
+  '      xxxx========xxxx    ',
+  '      |====%%%%%%====|    ',
+  '      (===============)   ',
+  '     [o]=============[o]  ',
+  "   '-' '`'         '`' '-'"
 ];
-const VM_DECK_FLIP_B = [
-  '       xxx        xxx       ',
-  '     _(====)====(====)_     ',
-  '    (o================o)    ',
-  '                            '
+/* every trick reads as its own motion, not a generic blur */
+const DT_KICKFLIP = [
+  [
+    '             /|           ',
+    '            /||           ',
+    '            |%|           ',
+    '            |=|           ',
+    '            |%|           ',
+    '            |=|           ',
+    '           xx|%|          ',
+    '            |=|           ',
+    '            |%|           ',
+    '            (=)           ',
+    '           [o|o]          '
+  ],
+  [
+    '            ____          ',
+    '          /######\\        ',
+    '         /########\\       ',
+    '         |########|       ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        (##########)      ',
+    '       [o]========[o]     '
+  ],
+  [
+    '           |\\             ',
+    '           ||\\            ',
+    '           |%|            ',
+    '           |=|            ',
+    '           |%|            ',
+    '           |=|            ',
+    '           |%|xx          ',
+    '           |=|            ',
+    '           |%|            ',
+    '           (=)            ',
+    '          [o|o]           '
+  ],
+  [
+    '            __            ',
+    '          /=====\\         ',
+    '         /=======\\        ',
+    '         |=======|        ',
+    '        |=========|       ',
+    '        |==%%%%%==|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '      xxx=========xxx     ',
+    '      xxx=========xxx     ',
+    '      (=============)     ',
+    '     [o]===========[o]    ',
+    "      '`'         '`'     "
+  ],
 ];
-const VM_DECK_LAND = [
-  '      xxx          xxx      ',
-  '    _(%%%)========(%%%)_    ',
-  '   (====================)   ',
-  "   `[o]'            `[o]'   "
+const DT_HEELFLIP = [
+  [
+    '           |\\             ',
+    '           ||\\            ',
+    '           |%|            ',
+    '           |=|            ',
+    '           |%|            ',
+    '           |=|            ',
+    '           |%|xx          ',
+    '           |=|            ',
+    '           |%|            ',
+    '           (=)            ',
+    '          [o|o]           '
+  ],
+  [
+    '            ____          ',
+    '          /######\\        ',
+    '         /########\\       ',
+    '         |########|       ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        |##########|      ',
+    '        (##########)      ',
+    '       [o]========[o]     '
+  ],
+  [
+    '             /|           ',
+    '            /||           ',
+    '            |%|           ',
+    '            |=|           ',
+    '            |%|           ',
+    '            |=|           ',
+    '           xx|%|          ',
+    '            |=|           ',
+    '            |%|           ',
+    '            (=)           ',
+    '           [o|o]          '
+  ],
+  [
+    '            __            ',
+    '          /=====\\         ',
+    '         /=======\\        ',
+    '         |=======|        ',
+    '        |=========|       ',
+    '        |==%%%%%==|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '      xxx=========xxx     ',
+    '      xxx=========xxx     ',
+    '      (=============)     ',
+    '     [o]===========[o]    ',
+    "      '`'         '`'     "
+  ],
 ];
+const DT_SHOVEIT = [
+  [
+    '        ____              ',
+    '      /=====\\__           ',
+    '     /=========\\_         ',
+    '     |===%%%%===\\         ',
+    '    xxx==========\\        ',
+    '    xxx===%%%%====|       ',
+    '     |=============|      ',
+    '      (============)      ',
+    '      [o]========[o]      '
+  ],
+  [
+    '                          ',
+    '     ________________     ',
+    '    (================)    ',
+    '    |==%%%%%%%%%%%%==|    ',
+    '   xxx==============xxx   ',
+    '   xxx==============xxx   ',
+    '    (================)    ',
+    '    [o]            [o]    ',
+    "     '`'            '`'   "
+  ],
+  [
+    '              ____         ',
+    '           __/=====\\       ',
+    '         _/=========\\      ',
+    '         /===%%%%===|      ',
+    '        /==========xxx     ',
+    '       |====%%%%===xxx     ',
+    '      |=============|      ',
+    '      (============)       ',
+    '      [o]========[o]       '
+  ],
+  [
+    '            __            ',
+    '          /=====\\         ',
+    '         /=======\\        ',
+    '         |=======|        ',
+    '        |=========|       ',
+    '        |==%%%%%==|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '      xxx=========xxx     ',
+    '      xxx=========xxx     ',
+    '      (=============)     ',
+    '     [o]===========[o]    ',
+    "      '`'         '`'     "
+  ],
+];
+const DT_NOLLIE = [
+  [
+    '          |=====|         ',
+    '          |==%==|         ',
+    '          |=====|         ',
+    '         /=======\\        ',
+    '        |=========|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '       (===========)      ',
+    '      [o]=========[o]     '
+  ],
+  [
+    '        ___________       ',
+    '       |###########|      ',
+    '       |###########|      ',
+    '       |###########|      ',
+    '        \\=========/       ',
+    '        xx=======xx       ',
+    '        |==%%%%%==|       ',
+    '        (=========)       ',
+    '       <o>=======<o>      '
+  ],
+  [
+    '             __           ',
+    '           /====\\         ',
+    '          /======\\        ',
+    '          |======|        ',
+    '         /========\\       ',
+    '        /==%%%%%==\\       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       \\===%%%%%===/      ',
+    '        \\=========/       ',
+    '         <o>=====<o>      ',
+    '          `-`   `-`       '
+  ],
+  [
+    '            __            ',
+    '          /=====\\         ',
+    '         /=======\\        ',
+    '         |=======|        ',
+    '        |=========|       ',
+    '        |==%%%%%==|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '      xxx=========xxx     ',
+    '      xxx=========xxx     ',
+    '      (=============)     ',
+    '     [o]===========[o]    ',
+    "      '`'         '`'     "
+  ],
+];
+const DT_BIGSPIN = [
+  [
+    '   -                      ',
+    '    --  ____              ',
+    '      /=====\\__     -     ',
+    '     /=========\\_  --     ',
+    '     |===%%%%===\\ -       ',
+    '    xxx==========\\        ',
+    '    xxx===%%%%====|       ',
+    '     |=============|      ',
+    '      (============)      ',
+    '      [o]========[o]      '
+  ],
+  [
+    '  --                 --   ',
+    ' -   ________________   - ',
+    '    (================)    ',
+    '    |==%%%%%%%%%%%%==|    ',
+    '   xxx==============xxx   ',
+    '    (================)    ',
+    ' -  [o]            [o]  - ',
+    '  --                 --   '
+  ],
+  [
+    '                      -   ',
+    '     -            ____ -- ',
+    '     --        __/=====\\  ',
+    '      -      _/=========\\ ',
+    '            /===%%%%===|  ',
+    '           /==========xxx ',
+    '          |====%%%%===xxx ',
+    '         |=============|  ',
+    '         (============)   ',
+    '         [o]========[o]   '
+  ],
+  [
+    '            __            ',
+    '          /=====\\         ',
+    '         /=======\\        ',
+    '         |=======|        ',
+    '        |=========|       ',
+    '        |==%%%%%==|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '      xxx=========xxx     ',
+    '      xxx=========xxx     ',
+    '      (=============)     ',
+    '     [o]===========[o]    ',
+    "      '`'         '`'     "
+  ],
+];
+const DT_IMPOSSIBLE = [
+  [
+    '        ___________       ',
+    '       (===========)      ',
+    '       |==%%%%%%%==|      ',
+    '       (===========)      ',
+    '        [o]     [o]       ',
+    '                          ',
+    '       xxx       xxx      ',
+    '       xxx       xxx      '
+  ],
+  [
+    '                          ',
+    '      _______________     ',
+    '     (===============)    ',
+    '      ---------------     ',
+    '                          ',
+    '       xxx       xxx      ',
+    '       xxx       xxx      '
+  ],
+  [
+    '        [o]     [o]       ',
+    '       (###########)      ',
+    '       |###########|      ',
+    '       (###########)      ',
+    '        -----------       ',
+    '       xxx       xxx      ',
+    '       xxx       xxx      '
+  ],
+  [
+    '            __            ',
+    '          /=====\\         ',
+    '         /=======\\        ',
+    '         |=======|        ',
+    '        |=========|       ',
+    '        |==%%%%%==|       ',
+    '       xxx=======xxx      ',
+    '       xxx=======xxx      ',
+    '       |===%%%%%===|      ',
+    '      xxx=========xxx     ',
+    '      xxx=========xxx     ',
+    '      (=============)     ',
+    '     [o]===========[o]    ',
+    "      '`'         '`'     "
+  ],
+];
+const DECK_TRICKS = { kickflip: DT_KICKFLIP, heelflip: DT_HEELFLIP,
+                      'shove-it': DT_SHOVEIT, nollie: DT_NOLLIE,
+                      bigspin: DT_BIGSPIN, impossible: DT_IMPOSSIBLE };
 const VM_PIPE_HOLD = [
   '                     __%%__   ',
   '                    (%%%##)   ',
@@ -6443,10 +6807,34 @@ VANIM.coffee = va(1.0,                          // squat can, steam not fizz
     '      /CCCC/                ',
     '      (____)                ' ]);
 
+VANIM.cigarette = { dur: 4.4, loop: 1,
+  cmap: { W: H_WHT, e: H_RED, E: H_YEL, '~': H_GRY, '*': H_GRY,
+          s: H_SKIN, j: H_JKT },
+  frames: [
+    ['                            ', '                            ', '              ~             ', '             ~              ', '              ~             ', '             ~              ', '            ~               ', '           ~                ', '                            ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '             ~              ', '              ~             ', '             ~              ', '            ~               ', '           ~                ', '                            ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '           ~ ~              ', '          ~   ~             ', '           ~ ~              ', '            ~               ', '                            ', '           |E|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '                            ', '          ~~ ~~             ', '         ~  ~  ~            ', '          ~~~~~             ', '           |E|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '                            ', '         ~~~ ~~~            ', '        ~  ~~~  ~           ', '         ~~~~~~~            ', '           |E|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '                            ', '      *  ~~~~~  *           ', '     * ~~~~~~~~~ *          ', '      *~~~~~~~~~*           ', '        ~~~~~~~             ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '                            ', '   *   ~~~~~~~~~   *        ', '  *  ~~~~~~~~~~~~~  *       ', '   * ~~~~~~~~~~~~~ *        ', '      *~~~~~~~~~*           ', '         ~~~~~              ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
+    ['                            ', '                            ', '  ~   ~~~~~~~~~~~   ~       ', '    ~  ~~~~~~~~~  ~         ', '      ~ ~~~~~~~ ~           ', '         ~~~~~              ', '          ~ ~               ', '           ~                ', '                            ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ']
+  ] };
 for (const k in VANIM)                        // every ritual, twice the frames
   if (VANIM[k] && VANIM[k].frames) VANIM[k].frames = tweenFrames(VANIM[k].frames);
-let vAnim = null;
-function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0 }; }
+let vAnim = null, smokeGlow = 0;
+function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0, loop: d.loop }; }
+/* the cigarette is the one ritual that does not end: it rides along with
+   anything your hands are not doing, and the city blooms while it burns */
+function smoking(){ return !!(vAnim && vAnim.loop); }
+function lightUp(){
+  if (smoking()){ vAnim = null; toast('flicked away'); return false; }
+  sfx('ui_select', { vol: 0.4, rate: 0.55 });
+  return true;                                // useItem plays and loops it
+}
+function handsBusy(){                         // anything that needs the hands
+  if (smoking()){ vAnim = null; toast('you drop the cigarette'); }
+}
 
 /*=========================== 13i2. THE CITY MAP ============================
   A full-screen chart of all 4 km2: pan with WASD or a drag, zoom with Q/E,
@@ -7738,7 +8126,7 @@ function bloomPass(){
     bc.drawImage(t.a, 0, 0);
     bc.drawImage(t.a, 0, 0);
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = t.al;
+    ctx.globalAlpha = t.al * (1 + smokeGlow * 1.1);
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(t.b, 0, 0, t.w, t.h, 0, 0, R.W, R.H);
   }
@@ -8101,6 +8489,10 @@ function glPresent(){
       gl.uniform1f(GL.uP.uBright, 0);
       gl.bindTexture(gl.TEXTURE_2D, tp.t);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (smokeGlow > 0.02){                  // the haze doubles the halo
+        for (let k = smokeGlow; k > 0.02; k -= 0.5)
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.disable(gl.BLEND);
     }
@@ -8496,15 +8888,19 @@ function hudPass(){
       const bob = Math.round(cam.walkPhase) & 1;
       if (skating){                             // the deck under your feet
         let dart = VM_DECK_FLAT;
-        if (skTrick && airT > 0) dart = ((worldTime * 16) | 0) & 1 ? VM_DECK_FLIP_A : VM_DECK_FLIP_B;
+        if (skTrick && airT > 0){
+          const set = DECK_TRICKS[skTrick.base] || DT_KICKFLIP;
+          const prog = clamp(skTrick.t / skTrick.dur, 0, 0.999);
+          dart = set[(prog * set.length) | 0];
+        }
         else if (airT > 0) dart = VM_DECK_AIR;
-        else if (crouchT > 0) dart = VM_DECK_CROUCH;
+        else if (crouchT > 0 || ollieHold >= 0) dart = VM_DECK_CROUCH;
         else if (landT > 0) dart = VM_DECK_LAND;
         else if (pushArtT > 0) dart = VM_DECK_PUSH;
-        const dh = Math.max(4, Math.round(rows * 0.16));   // a deck you can see
+        const dh = Math.max(6, Math.round(rows * 0.30));   // a deck you can see
         const dw = Math.round(dh * viewW(dart) / dart.length);
         const rise = airT > 0
-          ? Math.round(Math.sin(Math.min(1, 1 - Math.max(0, airT) / airDur) * Math.PI) * 3) : 0;
+          ? Math.round(Math.sin(Math.min(1, 1 - Math.max(0, airT) / airDur) * Math.PI) * dh * 0.35) : 0;
         const shift = Math.round(-skLean * 2);  // the board tracks out under a carve
         drawViewArt(dart, (cols >> 1) - (dw >> 1) + shift, rows - dh - rise, dh, CM_DECK);
         for (const p2 of skParts) hudCell(p2.c, p2.r, p2.ch, p2.col);
@@ -8761,6 +9157,7 @@ function frame(now){
   const w0 = performance.now();
   if (!worldFrozen()){
     drugTick(dt);
+    smokeGlow += ((smoking() ? 1 : 0) - smokeGlow) * Math.min(1, dt * 1.6);
     if (jamT > 0) jamT -= dt;
     if (snifferT > 0){
       snifferT -= dt;
@@ -8801,7 +9198,10 @@ function frame(now){
   hurtT = Math.max(0, hurtT - dt * 2.2 * drugFx('hurtFast', 1));
   if (!topMode() && vAnim){
     vAnim.t += dt;
-    if (vAnim.t > vAnim.d.dur) vAnim = null;
+    if (vAnim.t > vAnim.d.dur){
+      if (vAnim.loop) vAnim.t -= vAnim.d.dur;  // draw, exhale, draw again
+      else vAnim = null;
+    }
   }
   // out in the fields the eye carries much further - and in the wilderness
   // further still, far enough to take in the whole skyline. Fog remains a
