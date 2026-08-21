@@ -9840,6 +9840,10 @@ function payOwed(who){
   player.credits += sum;
   toast(who + ' settles up: ' + sum + ' cr for ' + jobs + (jobs > 1 ? ' jobs' : ' job'));
   sfx('ui_select', { vol: 0.7, rate: 1.35 });
+  // paid, and the walk back is over: pick up whatever job is still open so
+  // the line has somewhere to go next instead of going out
+  if (!player.track)
+    player.track = Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
 }
 function owedTo(who){
   const owed = player.qvar.owed, giver = player.qvar.giver || {};
@@ -9868,8 +9872,13 @@ function advanceQuest(id){
       startQuest('sp1'); player.track = 'sp1';
       setTimeout(() => toast('an unknown number: "MERIDIAN. Downtown. Ask for the manager."'), 4000);
     }
+    // The job is finished, but if it finished away from whoever handed it
+    // out then the next step is the walk back to be paid - not some other
+    // job picked out of the list by key order. Drop the track so the owed
+    // pointer wins; payOwed puts you back on a live job afterwards.
     if (player.track === id)
-      player.track = Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
+      player.track = (player.qvar.owed && player.qvar.owed[id]) ? null
+        : Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
   } else {
     player.quests[id] = s;
     sfx('ui_select', { vol: 0.5 });
@@ -10361,22 +10370,36 @@ let waypoint = null, wayG = null, waySet = [], wayOn = false, wayT = 0;
    line is redrawn when the job changes, not when the man you are walking
    toward takes a step. */
 let autoPath = true, autoPathKey = '';
+/* Every leg of a job that the line should redraw for, as one string: the
+   stage you are on, and - when there is no live stage left - who is holding
+   your money. The walk back to be paid is a step like any other, and keying
+   only off the tracked stage meant it returned '' and the tick bailed before
+   it ever asked questTarget() where to go. */
 function questKey(){
   const id = player.track;
-  if (!id || typeof player.quests[id] !== 'number') return '';
-  return id + '#' + player.quests[id];
+  if (id && typeof player.quests[id] === 'number') return id + '#' + player.quests[id];
+  const owed = player.qvar.owed;
+  if (owed){
+    const ids = Object.keys(owed);
+    if (ids.length) return 'owed#' + ids.sort().join(',');
+  }
+  return '';
 }
 function autoPathTick(){
   const key = questKey();
-  if (key === autoPathKey) return;             // same job, leave the line alone
-  if (!autoPath || !key){ autoPathKey = key; return; }
+  if (key === autoPathKey) return;             // same leg, leave the line alone
+  if (!autoPath){ autoPathKey = key; return; }
   // Most jobs are handed over indoors, where there is no street to draw on.
   // Do NOT count the objective as dealt with - hold it until you are back
   // out, or the walk you were given the line for happens without one.
   if (inside) return;
-  autoPathKey = key;
+  // Same reasoning for a target that cannot answer yet: an actor who has not
+  // spawned, a giver behind a door. Consuming the key here spent the only
+  // chance this leg ever had - hold, and draw it the moment it resolves.
   const t = questTarget();
-  if (t) setWaypoint(t.x, t.y, t.name);
+  if (!t) return;
+  autoPathKey = key;
+  setWaypoint(t.x, t.y, t.name);
 }
 function setWaypoint(wx, wy, autoName){
   // snap to the nearest walkable tile so the line has somewhere to end
