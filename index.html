@@ -7880,6 +7880,29 @@ function visibleProps(){
   return _vis;
 }
 const drawList = [];
+/* Round things - poles, trees, bins, hydrants - look the same from every
+   side, so facing the camera is honest for them. Flat things do not: a
+   stall, a bench, a rail or a rack has a front, and it should turn away
+   from you as you walk around it instead of pivoting to follow. Each one
+   takes a fixed facing off the street grid and foreshortens against it. */
+const FLAT_PROP = [];
+FLAT_PROP[PK_TLIGHT] = FLAT_PROP[PK_RAIL] = FLAT_PROP[PK_STALL] =
+FLAT_PROP[PK_BENCH] = FLAT_PROP[PK_CAM] = FLAT_PROP[PK_PLAY] =
+FLAT_PROP[PK_METRO] = FLAT_PROP[PK_RACK] = 1;
+function propYaw(o){                          // square to the nearer roadway
+  const rx = ((o.x % P) + P) % P, ry = ((o.y % P) + P) % P;
+  const dx = rx < RW ? 0 : Math.min(rx - RW, P - rx);
+  const dy = ry < RW ? 0 : Math.min(ry - RW, P - ry);
+  return dx <= dy ? 0 : Math.PI / 2;
+}
+function propFace(o){                         // 1 head-on, a sliver edge-on
+  if (!FLAT_PROP[o.k]) return 1;
+  if (o.yaw === undefined) o.yaw = propYaw(o);
+  const vx = cam.x - o.x, vy = cam.y - o.y;
+  const l = Math.hypot(vx, vy) || 1;
+  const f = Math.abs((vx / l) * Math.cos(o.yaw) + (vy / l) * Math.sin(o.yaw));
+  return 0.18 + 0.82 * f;
+}
 const HIT_SB = new Int16Array(NROLE).fill(C.nWhite);   // struck: white silhouette
 const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
 function spritePass(){
@@ -7980,7 +8003,8 @@ function spritePass(){
       }
       const pz = (o.z || 0) +                          // pickups hover and bob
                  (o.k === PK_ITEM ? 0.14 + Math.sin(worldTime * 2.2 + o.x * 3) * 0.06 : 0);
-      drawSprite(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens, false, dyn);
+      drawSprite(o.x, o.y, pz, def.w * propFace(o), def.h,
+                 def.art, def.sl.base, def.sl.dens, false, dyn);
     }
   }
 }
