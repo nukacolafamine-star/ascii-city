@@ -58,30 +58,30 @@ Content infrastructure that the venues and the main quest consume.
 ## Phase C — venues and systems
 Each one independent; order here is by dependency weight.
 
-- [ ] **C1. Gambling interiors + minigames.** Casino/arcade interiors get
+- [x] **C1. Gambling interiors + minigames.** Casino/arcade interiors get
   themed variants; each spawns a playable minigame mode: blackjack, slots,
   plinko, high-low dice, wheel. Minigames are HUD modes on the mode stack
   (like the map), bet from credits, house edge tuned.
-- [ ] **C2. Brothel / xxx interiors.** Themed variants for D_RED interiors;
+- [x] **C2. Brothel / xxx interiors.** Themed variants for D_RED interiors;
   paid encounters that fade to black with corny smutty dialogue beats
   (text only, "WHOA WHOA" tier, nothing explicit on screen).
-- [ ] **C3. Multi-floor dungeons.** Reuse `bldFloors`/`gotoFloor`: flagged
+- [x] **C3. Multi-floor dungeons.** Reuse `bldFloors`/`gotoFloor`: flagged
   buildings become dungeons — hostile floors, tool puzzles (saw cuts a
   grate, camjack opens a door, jammer kills a camera lock), locked
   progression, unique enemies, loot caches with special weapons. Some
   story-critical, some optional gear tests.
-- [ ] **C4. Corruption / enforcement escalation.** Crimes accrue; corrupt
+- [x] **C4. Corruption / enforcement escalation.** Crimes accrue; corrupt
   quests stack. Tier 2: occasional lone enforcers. Tier 4: swat visits the
   player home every few days, spotlight helicopter sometimes overhead.
   Tier 6: constant heli pressure, swat drops, coordinated parties, harder
   escapes. C key = hide: stand still 6s, unhit and unseen by cameras →
   trail lost. Heli is a moving light cone + audio + minimap ping.
-- [ ] **C5. Player homes.** Basic industrial apartment (buyable, grind-
+- [x] **C5. Player homes.** Basic industrial apartment (buyable, grind-
   affordable), mid-tier suburb house (granted ~60% through main quest),
   downtown penthouse (post-game reward, betray-ending only, after the
   5-quest corpo-friend line). Homes: bed (sleep/save), stash, wardrobe;
   furnished from the B1 home set. Swat-visit hook for C4.
-- [ ] **C6. Car dealership + flying car questline.** New landmarks: the
+- [x] **C6. Car dealership + flying car questline.** New landmarks: the
   dealership and the legal parking lot. 5 quests: earn the shady dealer's
   trust → errands → steal back the gang-stolen luxury car (1.5× speed,
   quest-only) → registration → keys. Reward car: flyable (V near it),

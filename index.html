@@ -1225,6 +1225,8 @@ function buildCity(seed){
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
   placeWeaponCaches();
   initHomes();
+  initDealership();
+  myCar = null;                                 // respawned lazily from the save
   bakeSolidProps();
 }
 
@@ -2665,6 +2667,7 @@ function spawnCars(){
   }
 }
 function updateCar(f, dt){
+  if (f.mine){ myCarFrame(f, dt); return; }
   f.ttl -= dt;
   let dxT = f.tx - f.x, dyT = f.ty - f.y;
   const dist = Math.hypot(dxT, dyT);
@@ -4332,6 +4335,38 @@ function spawnActors(){
     { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
       a: 'tee', b: 'boba' }
   ];
+  if (DEALER){
+    const v = spawnActor('citizen', DEALER.lot.x, DEALER.lot.y, {
+      name: 'VANCE', brain: 'still', shirt: C.tlAmb, tree: vanceTree() });
+    v.range = 2;
+    spawnActor('citizen', DEALER.park.x, DEALER.park.y, {
+      name: 'SKYPARK ATTENDANT', brain: 'still', shirt: C.nCyan,
+      tree: { entry(){
+          if (player.quests.wheels2 === 0) return 'take';
+          return 'idle';
+        },
+        idle: { text: 'Legal parking, hourly or forever. Mostly forever.' },
+        take: { text: 'From Vance? Give it here. ...heavier than usual. You did not open it?',
+          opts: [{ t: 'Never crossed my mind',
+                   do(){ advanceQuest('wheels2'); player.credits += 30; toast('+30 cr'); },
+                   next: 'took' },
+                 { t: 'Not yet' }] },
+        took: { text: 'Smart. The last courier looked. He parks elsewhere now.' } } });
+    spawnActor('citizen', DEALER.park.x + 2, DEALER.park.y, {
+      name: 'REGISTRAR', brain: 'still', shirt: C.nWhite,
+      tree: { entry(){
+          if (player.quests.wheels4 === 0) return 'form';
+          return 'idle';
+        },
+        idle: { text: 'Registrations, transfers, disputes. Take a number. There are no numbers.' },
+        form: { text: 'A runner, registered to... you. One hundred credits, and I stamp ' +
+                      'whatever Vance gave you into something that survives a checkpoint.',
+          opts: [{ t: 'Pay the 100', if: () => player.credits >= 100,
+                   do(){ player.credits -= 100; advanceQuest('wheels4');
+                         toast('stamped, sealed, yours'); }, next: 'stamped' },
+                 { t: 'I will find the credits' }] },
+        stamped: { text: 'Congratulations. You now legally exist. Condolences.' } } });
+  }
   let stallN = 0;
   const vstalls = props.filter(p => p.k === PK_STALL &&
                                     districtAt(p.x | 0, p.y | 0) !== D_RURAL &&
@@ -4528,16 +4563,29 @@ function useMetro(){
 function toggleRide(){
   if (cam.riding){ // step out onto the nearest walkable tile
     const c = cam.riding;
+    if (c.mine && c.z > heightAt(c.x | 0, c.y | 0) + 5){
+      toast('bring it low first - F descends'); return;
+    }
     for (let r = 2; r < 14; r++){
       for (let a = 0; a < 12; a++){
         const th = a / 12 * Math.PI * 2;
         const x = c.x + Math.cos(th) * r, y = c.y + Math.sin(th) * r;
         if (inMap(x | 0, y | 0) && walkG[(y | 0) * MAP + (x | 0)] && !blockedAt(x, y, 0.34)){
-          cam.x = x; cam.y = y; cam.riding = null; cam.z = 1.62; return;
+          cam.x = x; cam.y = y; cam.riding = null; cam.z = 1.62;
+          if (c.mine){ c.v = 0; player.carX = c.x; player.carY = c.y; toast('parked'); }
+          return;
         }
       }
     }
     cam.riding = null; cam.z = 1.62; return;
+  }
+  // your own machine answers V from the kerb
+  if (!inside && myCar && Math.hypot(myCar.x - cam.x, myCar.y - cam.y) < 5 &&
+      myCar.z < heightAt(myCar.x | 0, myCar.y | 0) + 5){
+    cam.riding = myCar;
+    toast(myCar.lux ? 'the seized runner hums awake' : 'your runner hums awake');
+    sfx('ui_select', { vol: 0.6, rate: 0.6 });
+    return;
   }
   // the air traffic is scenery now - the only ride that answers V is the deck
   if (!inside && invCount('deck')){
@@ -4803,6 +4851,12 @@ function updateCam(dt){
   if (cam.riding){
     const c = cam.riding;
     cam.x = c.x - c.dx * 0.5; cam.y = c.y - c.dy * 0.5;
+    if (c.mine){                                // you steer; the car obeys
+      if (keys.KeyA || keys.ArrowLeft)  cam.ang += 1.9 * dt;
+      if (keys.KeyD || keys.ArrowRight) cam.ang -= 1.9 * dt;
+      cam.z = c.z + 0.7 + Math.sin(c.blink * 0.7) * 0.05;
+      return;
+    }
     let target = Math.atan2(c.dy, c.dx);
     let d = target - cam.ang;
     while (d > Math.PI) d -= Math.PI * 2;
@@ -5874,6 +5928,70 @@ function openStash(){
   items.push({ sep: true });
   items.push({ label: 'CLOSE', act(){ popMode(); } });
   pushMode(makeListMenu({ name: 'stash', title: 'THE STASH', items }));
+}
+/*=========================== 13k4. YOUR OWN WINGS ===========================
+  The air cars were scenery. One of them can be yours now, at the end of a
+  five-errand handshake with a man called VANCE whose lot has no paperwork
+  it cannot lose. A personal flyer is player-driven - W thrusts along your
+  view, S brakes, R and F climb and descend, V mounts a parked car and
+  parks a flying one (bring it low first). It parks wherever you leave it
+  and rides the save.
+============================================================================*/
+let myCar = null, DEALER = null;
+function initDealership(){
+  DEALER = null;
+  // the lot: a stretch of strip pavement; skypark: downtown paving; the
+  // impound: a corner of the red mile where the crew sits on the prize
+  const spot = (dist, salt) => {
+    for (let t = 0; t < 400; t++){
+      const x = (hash3(worldSeed, salt, t) * MAP) | 0;
+      const y = (hash3(worldSeed, salt + 1, t) * MAP) | 0;
+      if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
+      if (districtAt(x, y) !== dist) continue;
+      return [x + 0.5, y + 0.5];
+    }
+    return [cam.x + 10, cam.y + 10];
+  };
+  const lot = spot(D_STRIP, 501), park = spot(D_DOWN, 511), imp = spot(D_RED, 521);
+  DEALER = { lot: { x: lot[0], y: lot[1] }, park: { x: park[0], y: park[1] },
+             impound: { x: imp[0], y: imp[1] } };
+  landmarks.push({ name: 'THE LOT', x: lot[0], y: lot[1] });
+  landmarks.push({ name: 'SKYPARK', x: park[0], y: park[1] });
+}
+function spawnMyCar(kind, x, y){
+  if (myCar){ const i = cars.indexOf(myCar); if (i >= 0) cars.splice(i, 1); }
+  const col = kind === 'lux' ? C.nViolet : C.tlAmb;
+  const sl = slots({ B: [col, 0.92], W: [C.glass, 0.52], T: [C.tire, 0.90],
+                     L: [C.head, 1.0], R: [C.tail, 1.0] });
+  myCar = { x, y, z: 2.2, dx: 1, dy: 0, tx: x, ty: y, ttl: 1e9, band: 12,
+            spd: kind === 'lux' ? 16.5 : 11, v: 0, col, len: 4.6, wid: 2.2,
+            blink: 0, sb: sl.base, sd: sl.dens, mine: 1, lux: kind === 'lux' };
+  cars.push(myCar);
+  return myCar;
+}
+function myCarFrame(f, dt){
+  f.blink += dt;
+  if (cam.riding === f){
+    const th = cam.ang;
+    const wantV = (keys.KeyW || keys.ArrowUp) ? f.spd : 0;
+    f.v = (f.v || 0) + (wantV - (f.v || 0)) * Math.min(1, dt * 1.3);
+    if (keys.KeyS || keys.ArrowDown) f.v *= Math.max(0, 1 - dt * 2.4);
+    f.dx = Math.cos(th); f.dy = Math.sin(th);
+    f.x = clamp(f.x + f.dx * f.v * dt, 3, MAP - 4);
+    f.y = clamp(f.y + f.dy * f.v * dt, 3, MAP - 4);
+    if (keys.KeyR) f.z += 15 * dt;
+    if (keys.KeyF) f.z -= 15 * dt;
+    // never into a facade: the floor under and just ahead sets the minimum
+    let fl = 0;
+    for (let k = 0; k <= 3; k++){
+      const px = (f.x + f.dx * k * 2.4) | 0, py = (f.y + f.dy * k * 2.4) | 0;
+      fl = Math.max(fl, heightAt(px, py));
+    }
+    f.z = clamp(Math.max(f.z, fl + 1.8), 1.8, 48);
+  } else {
+    f.v = 0;
+    f.z += (2.2 + Math.max(0, heightAt(f.x | 0, f.y | 0)) - f.z) * Math.min(1, dt * 2);
+  }
 }
 /* The pause menu is a hallway of doors now, not a wall of dials: each group
    of controls lives behind its own button, one green rule between each. */
@@ -7012,6 +7130,137 @@ const QUESTS = {
     ]
   }
 };
+/* five errands to a set of keys. VANCE at THE LOT runs the whole thing. */
+const WHEELS_QUESTS = {
+  wheels1: {
+    name: 'TRUST EXERCISE',
+    stages: [
+      { log: 'bring VANCE 3 SCRAP ELECTRONICS - he needs "parts"',
+        target(){ return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' }; } }
+    ]
+  },
+  wheels2: {
+    name: 'THE ERRAND',
+    stages: [
+      { log: 'carry the package to the SKYPARK attendant - do not open it',
+        target(){ return DEALER && { x: DEALER.park.x, y: DEALER.park.y, name: 'SKYPARK' }; } }
+    ]
+  },
+  wheels3: {
+    name: 'REPO MAN',
+    stages: [
+      { log: 'the KESSLER CREW sits on a seized luxury runner - go take it back',
+        target(){ return DEALER && { x: DEALER.impound.x, y: DEALER.impound.y, name: 'THE IMPOUND' }; },
+        auto(){
+          if (!DEALER) return false;
+          const d = Math.hypot(DEALER.impound.x - cam.x, DEALER.impound.y - cam.y);
+          if (d < 14 && !player.qvar.repoSpawned){
+            player.qvar.repoSpawned = 1;
+            for (let i = 0; i < 2; i++){
+              const a = spawnActor('razor', DEALER.impound.x + 1 + i, DEALER.impound.y + 1,
+                { name: 'KESSLER CREW', brain: 'hostile', hp: 45 });
+              a.atk = 8; a.aggro = 1;
+            }
+            toast('the crew stands up - this is THEIR car');
+          }
+          return player.qvar.repoSpawned === 1 &&
+                 !actors.some(a => a.name === 'KESSLER CREW' && a.hp > 0) && d < 10;
+        } },
+      { log: 'take the runner (V beside it) and fly it back to THE LOT',
+        target(){ return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' }; },
+        auto(){
+          if (!myCar || !myCar.lux){             // the prize appears once
+            if (player.qvar.repoSpawned === 1){
+              player.qvar.repoSpawned = 2;
+              spawnMyCar('lux', DEALER.impound.x, DEALER.impound.y);
+              toast('the luxury runner is yours. for now. it is FAST');
+            }
+            return false;
+          }
+          if (Math.hypot(myCar.x - DEALER.lot.x, myCar.y - DEALER.lot.y) < 8 &&
+              cam.riding !== myCar){
+            // Vance takes her back - collateral, sentiment, tax reasons
+            const ci = cars.indexOf(myCar);
+            if (ci >= 0) cars.splice(ci, 1);
+            myCar = null; player.car = undefined;
+            toast('Vance runs a hand along the hull. the lux is his again');
+            return true;
+          }
+          return false;
+        } }
+    ]
+  },
+  wheels4: {
+    name: 'PAPERWORK',
+    stages: [
+      { log: 'register a runner in your name - the REGISTRAR at SKYPARK (100 cr)',
+        target(){ return DEALER && { x: DEALER.park.x, y: DEALER.park.y, name: 'SKYPARK' }; } }
+    ]
+  },
+  wheels5: {
+    name: 'THE KEYS',
+    stages: [
+      { log: 'collect your runner from VANCE at THE LOT',
+        target(){ return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' }; } }
+    ]
+  }
+};
+Object.assign(QUESTS, WHEELS_QUESTS);
+function vanceTree(){
+  return {
+    entry(){
+      const q = player.quests;
+      if (q.wheels5 === 'done') return 'after';
+      if (q.wheels5 === 0) return 'keys';
+      if (q.wheels4 === 'done') return 'toKeys';
+      if (q.wheels4 === 0) return 'sentPapers';
+      if (q.wheels3 === 'done') return 'toPapers';
+      if (typeof q.wheels3 === 'number') return 'repoWait';
+      if (q.wheels2 === 'done') return 'toRepo';
+      if (q.wheels2 === 0) return 'sentErrand';
+      if (q.wheels1 === 'done') return 'toErrand';
+      if (q.wheels1 === 0) return 'scrapWait';
+      return 'start';
+    },
+    start: { text: 'VANCE. Pre-owned flyers, flexible provenance. You look like a man ' +
+                   'who walks everywhere, and frankly it is painful. Bring me three ' +
+                   'units of scrap - PARTS, officially - and we can begin a beautiful friendship.',
+      opts: [{ t: 'Deal', do(){ startQuest('wheels1'); player.track = 'wheels1'; }, next: 'scrapWait' },
+             { t: 'I like walking' }] },
+    scrapWait: { text: 'Three scrap. Shops sell it, floors grow it, pockets carry it.',
+      opts: [{ t: 'Here - three units', if: () => invCount('scrap') >= 3,
+               do(){ invTake('scrap', 3); player.credits += 40; advanceQuest('wheels1');
+                     toast('+40 cr'); }, next: 'toErrand' },
+             { t: 'Working on it' }] },
+    toErrand: { text: 'Parts received, questions withheld. Now: this PACKAGE goes to the ' +
+                      'attendant at SKYPARK. Sealed. It stays sealed. You were never here.',
+      opts: [{ t: 'On it', do(){ startQuest('wheels2'); player.track = 'wheels2'; }, next: 'sentErrand' },
+             { t: 'Later' }] },
+    sentErrand: { text: 'SKYPARK. Sealed package. Absent memory. Go.' },
+    toRepo: { text: 'Good delivery. Now the real favour: the KESSLER CREW is sitting on ' +
+                    'a luxury runner that is MINE. Legally. Mostly. It is at their ' +
+                    'impound on the red mile. Take it back and fly it home.',
+      opts: [{ t: 'Consider it repossessed',
+               do(){ startQuest('wheels3'); player.track = 'wheels3'; }, next: 'repoWait' },
+             { t: 'Sounds dangerous' }] },
+    repoWait: { text: 'The impound. Red mile. My runner. Their problem.' },
+    toPapers: { text: 'THAT is how you fly. The lux stays with me - collateral, sentiment, ' +
+                      'tax reasons. But you have earned wings of your own. First: paperwork. ' +
+                      'The REGISTRAR at skypark. A runner registered to your name, all legal.',
+      opts: [{ t: 'Fine, paperwork', do(){ startQuest('wheels4'); player.track = 'wheels4'; }, next: 'sentPapers' },
+             { t: 'Paperwork. Really.' }] },
+    sentPapers: { text: 'SKYPARK. The registrar. One hundred credits and your real name. Or A real name.' },
+    toKeys: { text: 'Registered and roadworthy - skyworthy - lawful-ish. One last formality:',
+      opts: [{ t: 'The keys, Vance', do(){ startQuest('wheels5'); player.track = 'wheels5';
+               player.car = 'runner';
+               player.carX = DEALER.lot.x + 3; player.carY = DEALER.lot.y + 1;
+               spawnMyCar('runner', player.carX, player.carY);
+               advanceQuest('wheels5');
+               toast('the runner is YOURS - V beside it to fly'); }, next: 'after' }] },
+    keys: { text: 'The keys are in it. Go.' },
+    after: { text: 'How is she flying? Do not answer - I would only miss her.' }
+  };
+}
 function questStage(id){ return player.quests[id]; }
 function startQuest(id){
   if (player.quests[id] !== undefined) return;
@@ -12555,6 +12804,9 @@ function simulate(dt){
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
   if (!inside){ heliFrame(dt); hideFrame(dt); }
+  if (player.car && !myCar && DEALER)           // the save remembers the keys
+    spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
+               player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
 }
 function render(){
   statRays = 0; statCells = 0;
