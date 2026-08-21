@@ -4077,7 +4077,7 @@ function probeInteract(){
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
     if ((!a.dialog && !a.tree) || !!a.interior !== !!inside) continue;
-    probeConsider(a.x, a.y, { kind: 'actor', a, prompt: '[SPACE]  TALK - ' + a.name });
+    probeConsider(a.x, a.y, { kind: 'actor', a, prompt: '[E]  TALK - ' + a.name });
   }
   if (!inside){                                 // the walking public will talk
     const nearPed = gridQuery(pedGrid, cam.x, cam.y, 3, _q2);
@@ -4085,7 +4085,7 @@ function probeInteract(){
       const p = nearPed[i];
       if (p.off || p.flee > worldTime) continue;
       probeConsider(p.x, p.y, { kind: 'ped', p,
-        prompt: '[SPACE]  TALK - ' + p.ident.name });
+        prompt: '[E]  TALK - ' + p.ident.name });
     }
   }
   const nearP = gridQuery(propGrid, cam.x, cam.y, 4, _q2);
@@ -4094,50 +4094,50 @@ function probeInteract(){
     if (p.k === PK_ITEM){
       if (p.item === 'credchip'){
         probeConsider(p.x, p.y, { kind: 'item', p,
-          prompt: '[SPACE]  TAKE - ' + (p.cval || 10) + ' CR' });
+          prompt: '[E]  TAKE - ' + (p.cval || 10) + ' CR' });
         continue;
       }
       const cost = p.price ? (player.corruption >= 3 ? Math.ceil(p.price * 1.25) : p.price) : 0;
       probeConsider(p.x, p.y, { kind: 'item', p,
-        prompt: !p.price ? '[SPACE]  TAKE - ' + ITEMS[p.item].name
+        prompt: !p.price ? '[E]  TAKE - ' + ITEMS[p.item].name
               : player.credits >= cost
-                ? '[SPACE]  BUY - ' + ITEMS[p.item].name + ' (' + cost + ' cr)'
-                : '[SPACE]  STEAL - ' + ITEMS[p.item].name + ' (+' +
+                ? '[E]  BUY - ' + ITEMS[p.item].name + ' (' + cost + ' cr)'
+                : '[E]  STEAL - ' + ITEMS[p.item].name + ' (+' +
                   Math.max(1, Math.ceil(cost / 100)) + ' corruption)' });
     }
     else if (p.k === PK_BIN)
-      probeConsider(p.x, p.y, { kind: 'bin', prompt: '[SPACE]  TRASH - STREET BIN' });
+      probeConsider(p.x, p.y, { kind: 'bin', prompt: '[E]  TRASH - STREET BIN' });
     else if (p.k === PK_FURN && inside && homeAt(inside.bld) &&
              player.homes && player.homes[homeAt(inside.bld).id]){
       if (p.fid === 'bed')
-        probeConsider(p.x, p.y, { kind: 'sleep', prompt: '[SPACE]  SLEEP TO MORNING' });
+        probeConsider(p.x, p.y, { kind: 'sleep', prompt: '[E]  SLEEP TO MORNING' });
       else if (p.fid === 'cabinet')
-        probeConsider(p.x, p.y, { kind: 'stash', prompt: '[SPACE]  THE STASH' });
+        probeConsider(p.x, p.y, { kind: 'stash', prompt: '[E]  THE STASH' });
     }
     else if (p.k === PK_FURN && inside && p.fid === 'terminal')
       probeConsider(p.x, p.y, { kind: 'shift', desk: 1,
-        prompt: '[SPACE]  WORK A DESK SHIFT - 6h, +60 cr, it takes something' });
+        prompt: '[E]  WORK A DESK SHIFT - 6h, +60 cr, it takes something' });
     else if (p.k === PK_FURN && inside && p.fid === 'cratepile')
       probeConsider(p.x, p.y, { kind: 'shift', desk: 0,
-        prompt: '[SPACE]  HAUL FREIGHT - 6h, +90 cr, it takes more' });
+        prompt: '[E]  HAUL FREIGHT - 6h, +90 cr, it takes more' });
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
-      probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[SPACE]  SIT - BENCH' });
+      probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[E]  SIT - BENCH' });
     else if ((p.k === PK_CAM || p.k === PK_LAMP) && !p.dead && invCount('saw'))
       probeConsider(p.x, p.y, { kind: 'cut', p,
-        prompt: '[SPACE]  CUT DOWN - ' + (p.k === PK_CAM ? 'FLOCK CAM' : 'STREET LIGHT') });
+        prompt: '[E]  CUT DOWN - ' + (p.k === PK_CAM ? 'FLOCK CAM' : 'STREET LIGHT') });
   }
   if (!inside)
     for (let i = 0; i < metroStops.length; i++)
       if (Math.hypot(metroStops[i].x - cam.x, metroStops[i].y - cam.y) < 3.4)
         probeConsider(metroStops[i].x, metroStops[i].y,
-          { kind: 'metro', prompt: '[SPACE]  METRO - ' + metroStops[i].name });
+          { kind: 'metro', prompt: '[E]  METRO - ' + metroStops[i].name });
   if (inside){
     if (inside.exit)
       probeConsider(inside.exit.x, inside.exit.y,
-        { kind: 'door', exit: true, prompt: '[SPACE]  LEAVE - BACK TO THE STREET' });
+        { kind: 'door', exit: true, prompt: '[E]  LEAVE - BACK TO THE STREET' });
     if (inside.stairs)
       probeConsider(inside.stairs.x, inside.stairs.y,
-        { kind: 'stairs', prompt: '[SPACE]  STAIRWELL - FLOOR ' + inside.floor });
+        { kind: 'stairs', prompt: '[E]  STAIRWELL - FLOOR ' + inside.floor });
   } else {
     for (let i = 0; i < doors.length; i++){
       const dr = doors[i];
@@ -4145,12 +4145,12 @@ function probeInteract(){
       const hm = homeAt(dr.b);
       if (hm && !(player.homes && player.homes[hm.id]) && hm.def.price > 0)
         probeConsider(dr.x, dr.y, { kind: 'buyhome', hm,
-          prompt: '[SPACE]  FOR SALE - ' + hm.def.name + ' (' + hm.def.price + ' cr)' });
+          prompt: '[E]  FOR SALE - ' + hm.def.name + ' (' + hm.def.price + ' cr)' });
       else if (hm && player.homes && player.homes[hm.id])
         probeConsider(dr.x, dr.y, { kind: 'door', door: dr,
-          prompt: '[SPACE]  HOME - ' + hm.def.name });
+          prompt: '[E]  HOME - ' + hm.def.name });
       else
-        probeConsider(dr.x, dr.y, { kind: 'door', door: dr, prompt: '[SPACE]  ENTER - ' + dr.name });
+        probeConsider(dr.x, dr.y, { kind: 'door', door: dr, prompt: '[E]  ENTER - ' + dr.name });
     }
   }
 }
@@ -4576,7 +4576,10 @@ function onPress(code, key){
     case 'Escape': openPauseMenu(); break;
     case 'Space':
       if (sitting){ standUp(); break; }
-      if (skating && (skV > 1 || grind || !lookTarget)){ ollie(); break; }
+      if (skating){ ollie(); break; }
+      jump(); break;
+    case 'KeyE':
+      if (sitting) break;
       tryInteract(); break;
     case 'KeyW': if (sitting) waitOnBench(); break;
     case 'Digit1': case 'Digit2': case 'Digit3': {
@@ -4946,15 +4949,9 @@ function updateCam(dt){
     while (d < -Math.PI) d += Math.PI * 2;
     cam.ang += d * Math.min(1, dt * 2.2);
     cam.z = c.z + 0.7 + Math.sin(c.blink * 0.7) * 0.05;
-    if (keys.ArrowLeft || keys.KeyA) cam.ang += 1.7 * dt;
-    if (keys.ArrowRight || keys.KeyD) cam.ang -= 1.7 * dt;
     return;
   }
-  if (sitting){                                 // on the bench: look, don't walk
-    if (keys.ArrowLeft || keys.KeyQ) cam.ang += 1.9 * dt;
-    if (keys.ArrowRight || keys.KeyE) cam.ang -= 1.9 * dt;
-    if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
-    if (keys.KeyF) cam.pitch = clamp(cam.pitch - 26 * dt, -R.rows * 0.62, R.rows * 0.62);
+  if (sitting){                                 // on the bench: the mouse looks
     cam.z = 1.12;
     return;
   }
@@ -4998,11 +4995,9 @@ function updateCam(dt){
   if (keys.KeyS || keys.ArrowDown) fwd -= 1;
   if (keys.KeyD) str += 1;
   if (keys.KeyA) str -= 1;
+  if (keys.ArrowRight) str += 1;              // arrows strafe; the mouse looks
+  if (keys.ArrowLeft) str -= 1;
   fwd += TOUCH.f; str += TOUCH.s;             // the virtual stick is analog
-  if (keys.ArrowLeft || keys.KeyQ) cam.ang += 1.9 * dt;
-  if (keys.ArrowRight || keys.KeyE) cam.ang -= 1.9 * dt;
-  if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
-  if (keys.KeyF) cam.pitch = clamp(cam.pitch - 26 * dt, -R.rows * 0.62, R.rows * 0.62);
   const ca = Math.cos(cam.ang), sa = Math.sin(cam.ang);
   let mx = (ca * fwd + sa * str), my = (sa * fwd - ca * str);
   const ml = Math.hypot(mx, my);
@@ -5020,14 +5015,27 @@ function updateCam(dt){
                               : { vol: 0.5, rate: 0.92 + Math.random() * 0.16 });
     }
   }
-  cam.z = 1.62 + Math.sin(cam.walkPhase) * (run > 1 ? 0.06 : 0.035) * (ml > 0.001 ? 1 : 0);
+  if (jumpT > 0){
+    jumpT -= dt;
+    if (jumpT <= 0) sfx('footstep', { vol: 0.6, rate: 0.7 });   // the landing
+  }
+  const hop = jumpT > 0 ? Math.sin((1 - jumpT / JUMP_DUR) * Math.PI) * 0.62 : 0;
+  cam.z = 1.62 + hop +
+          Math.sin(cam.walkPhase) * (run > 1 ? 0.06 : 0.035) * (ml > 0.001 ? 1 : 0);
+}
+const JUMP_DUR = 0.5;
+let jumpT = 0;
+function jump(){
+  if (inside === undefined) return;
+  if (sitting || cam.riding || skating) return;
+  if (jumpT > 0) return;                        // one hop at a time
+  jumpT = JUMP_DUR;
+  sfx('footstep', { vol: 0.45, rate: 1.6 });
 }
 /* the deck is a physics object: pushes surge, friction coasts, carves cost
    speed, and the pavement seams are the speedometer */
 const SK_MAX = 14.3;              // twice a sprint, flat out
 function skateFrame(dt){
-  if (keys.KeyR) cam.pitch = clamp(cam.pitch + 26 * dt, -R.rows * 0.62, R.rows * 0.62);
-  if (keys.KeyF) cam.pitch = clamp(cam.pitch - 26 * dt, -R.rows * 0.62, R.rows * 0.62);
   if (comboT > 0){ comboT -= dt; if (comboT <= 0) skCombo = 1; }
   if (pushArtT > 0) pushArtT -= dt;
   for (let i = skParts.length - 1; i >= 0; i--)
@@ -5051,8 +5059,8 @@ function skateFrame(dt){
       if (skV > 3) skidBurst();
     }
     let turn = 0;
-    if (keys.KeyA || keys.ArrowLeft || keys.KeyQ) turn += 1;
-    if (keys.KeyD || keys.ArrowRight || keys.KeyE) turn -= 1;
+    if (keys.KeyA || keys.ArrowLeft) turn += 1;
+    if (keys.KeyD || keys.ArrowRight) turn -= 1;
     turn = clamp(turn - TOUCH.s, -1, 1);
     if (turn && stumbleT <= 0){
       cam.ang += turn * (2.6 / (1 + skV / 6)) * dt;     // heavy at speed
@@ -5898,7 +5906,7 @@ function openScene(title, beats, after){
       hudStr((cols - this.title.length) >> 1, 2, this.title, H_RED);
       if (this.pageDone())
         hudStr((cols - 16) >> 1, rows - 3,
-               this.idx < beats.length - 1 ? '[SPACE]' : '[SPACE]  leave', H_DIM);
+               this.idx < beats.length - 1 ? '[SPACE]' : '[E]  leave', H_DIM);
     }
   });
 }
@@ -6153,16 +6161,16 @@ function openControlsMenu(){
   pushMode(makeListMenu({
     name: 'controls', title: 'CONTROLS',
     items: [
-      { info: 'WASD / arrows   move' },
+      { info: 'WASD            move (arrows: fwd/back + strafe)' },
       { info: 'mouse           look (click the canvas first)' },
-      { info: 'SHIFT           run        Q, E     turn' },
-      { info: 'R, F            look up / down' },
-      { info: 'SPACE           interact / ollie' },
+      { info: 'SHIFT           run' },
+      { info: 'SPACE           jump / ollie   E   interact' },
       { info: 'CTRL or LMB     swing / fire' },
       { info: '1-3             hotbar     TAB      inventory' },
-      { info: 'V               skateboard' },
-      { info: 'G               metro      M        city map' },
-      { info: 'B               bloom      P        pause' },
+      { info: 'V               skateboard / your car' },
+      { info: 'C               hide       G        metro' },
+      { info: 'M               city map   B        bloom' },
+      { info: 'Q / E mid-air   flip tricks on the deck' },
       { sep: true },
       { label: 'BACK', act(){ popMode(); } }
     ]
@@ -6590,7 +6598,7 @@ const ITEMS = {
   shim:    { name: 'MAG-SHIM', pcol: C.rail, stack: 3, cat: 'misc', price: 60,
              hint: 'slips one door that refuses you' },
   saw:     { name: 'HACKSAW', pcol: C.rail, stack: 1, cat: 'misc', price: 45,
-             hint: 'face a flock cam or street light and SPACE cuts it down' },
+             hint: 'face a flock cam or street light and E cuts it down' },
   camjack: { name: 'CAM-JACK', pcol: C.nGreen, stack: 1, cat: 'misc', price: 150, keep: 1,
              hint: 'ride the flock: view any camera in range',
              use(){ return openCamJack(); } },
@@ -7206,7 +7214,7 @@ const QUESTS = {
           return best && { x: best.x, y: best.y, name: 'TOOLS & TRINKETS' };
         },
         auto(){ return invCount('saw') > 0; } },
-      { log: 'cut 3 flock cams (face one and press SPACE)',
+      { log: 'cut 3 flock cams (face one and press E)',
         auto(){ return (player.qvar.camCut || 0) - (player.qvar.quietBase || 0) >= 3; } },
       { log: 'collect from the fixer',
         target(){
@@ -10377,12 +10385,16 @@ function openMap(){
     name: 'map', pausesWorld: true,
     cx: cam.x, cy: cam.y, z: 2, dlbl,
     onKey(code){
-      const step = this.z * 5;
+      // a tap nudges one tile; only a HELD key builds up speed
+      const now = performance.now();
+      if (now - (this.panT || 0) > 260) this.panN = 0;
+      const step = this.panN < 3 ? 1 : this.panN < 9 ? this.z * 2 : this.z * 6;
+      const pan = () => { this.panT = now; this.panN = (this.panN || 0) + 1; };
       switch (code){
-        case 'KeyW': case 'ArrowUp':    this.cy -= step; break;
-        case 'KeyS': case 'ArrowDown':  this.cy += step; break;
-        case 'KeyA': case 'ArrowLeft':  this.cx += step; break;   // east is left now
-        case 'KeyD': case 'ArrowRight': this.cx -= step; break;
+        case 'KeyW': case 'ArrowUp':    this.cy -= step; pan(); break;
+        case 'KeyS': case 'ArrowDown':  this.cy += step; pan(); break;
+        case 'KeyA': case 'ArrowLeft':  this.cx += step; pan(); break;   // east is left now
+        case 'KeyD': case 'ArrowRight': this.cx -= step; pan(); break;
         case 'KeyQ': case 'BracketLeft':  this.z = Math.min(8, this.z * 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'KeyE': case 'BracketRight': this.z = Math.max(1, this.z / 2); sfx('ui_move', { vol: 0.4 }); break;
         case 'Enter':                          // drop the line at the crosshair
