@@ -5633,7 +5633,24 @@ cv.addEventListener('click', onCanvasClick);
 glv.addEventListener('click', onCanvasClick);
 addEventListener('mousedown', e => {
   if (TOUCH.on) return;                      // touch drives its own fire button
-  if (e.button === 0 && document.pointerLockElement === view && !topMode()) fireWeapon();
+  if (e.button === 0 && document.pointerLockElement === view && !topMode()){
+    fireHeld = true;
+    fireWeapon();
+  }
+  if (e.button === 2 && document.pointerLockElement === view && !topMode()){
+    scopeHeld = true;
+    if (scopeGun()) sfx('ui_move', { vol: 0.35, rate: 0.7 });
+  }
+});
+addEventListener('mouseup', e => {
+  if (e.button === 0) fireHeld = false;
+  if (e.button === 2) scopeHeld = false;
+});
+// a trigger you are no longer holding, because the window stopped listening
+addEventListener('blur', () => { fireHeld = false; scopeHeld = false; });
+// the right button is the glass, so the browser cannot have it for its menu
+addEventListener('contextmenu', e => {
+  if (document.pointerLockElement === view || TOUCH.on) e.preventDefault();
 });
 addEventListener('mousemove', e => {
   if (document.pointerLockElement === view && !topMode()){
@@ -9600,7 +9617,7 @@ function saveGame(n){
     ? { x: EXT.camX, y: EXT.camY, ang: EXT.camAng, pitch: EXT.camPitch }
     : { x: cam.x, y: cam.y, ang: cam.ang, pitch: cam.pitch };
   const s = { v: 1, at: Date.now(), seed: worldSeed, timeMode: CFG.timeMode, weather,
-              clock, dayCount, fogLevel,
+              clock, dayCount, fogLevel, wetLevel,
               cam: pos, player, delta: worldDelta, tags };
   try {
     localStorage.setItem(saveKey(n), JSON.stringify(s));
@@ -9617,6 +9634,7 @@ function loadGame(n){
   dayCount = s.dayCount | 0;
   weather = s.weather | 0; flash = 0;
   if (s.fogLevel) fogLevel = s.fogLevel;
+  wetLevel = s.wetLevel || 0;
   newWorld(s.seed);                          // deterministic rebuild, fresh delta
   worldDelta = s.delta || { taken: {} };
   applyDeltaToProps();
@@ -10387,6 +10405,39 @@ function advanceQuest(id){
     sfx('ui_select', { vol: 0.5 });
     toast(questLog(q.stages[s]));
   }
+}
+/* The tube, drawn over the seam between the two magnifications. The ring is
+   the edge of the glass and has to land on exactly the cells render() used
+   to divide the frame, or the picture and its border disagree by a cell and
+   the whole thing reads as a mistake - so both ask scopeGeom(). Inside there
+   are stadia lines rather than a full crosshair: a scope you cannot see
+   through is not a scope. */
+function drawScope(){
+  const g = scopeGeom();
+  const cx = Math.round(g.cx), cy = Math.round(g.cy);
+  ringCells(g.cx, g.cy, g.rad, (x, y) => hudCell(x, y, '#', H_DIM));
+  ringCells(g.cx, g.cy, g.rad - 1, (x, y) => hudCell(x, y, ':', H_DRK));
+  // Stadia: short ticks in from the rim. They ran most of the way to the
+  // middle at first, which turns the glass into a crosshair you have to look
+  // past - the point of a scope is the picture, so they stop well short.
+  const ry = g.rad * (R.cellW / R.cellH);
+  for (let i = Math.round(g.rad * 0.80); i <= Math.round(g.rad) - 2; i++){
+    hudCell(cx - i, cy, '-', H_DRK);
+    hudCell(cx + i, cy, '-', H_DRK);
+  }
+  for (let i = Math.round(ry * 0.80); i <= Math.round(ry) - 2; i++){
+    hudCell(cx, cy - i, '|', H_DRK);
+    hudCell(cx, cy + i, '|', H_DRK);
+  }
+  const aim = hostileInSights(90);
+  hudCell(cx, cy, aim ? 'x' : '+', aim ? H_RED : H_GRN);
+  if (aim){
+    const tag = aim.a.name + ' ' + aim.a.hp + '/' + aim.a.maxHp;
+    hudStr(Math.max(0, (R.cols - tag.length) >> 1), Math.max(1, cy - Math.round(ry) - 2),
+           tag, H_RED);
+  }
+  const lbl = scopeGun().scope + 'x';
+  hudStr(Math.max(0, cx - Math.round(g.rad) + 1), cy + Math.round(ry), lbl, H_DIM);
 }
 /*--------------------------- what happened so far --------------------------
   One line per job, past tense, written the way you would tell it afterwards.
@@ -11389,7 +11440,43 @@ function strikeLand(){
     killActor(a);
   }
 }
-let unarmedT = 0, shotCool = 0;
+let unarmedT = 0, shotCool = 0, fireHeld = false, scopeHeld = false;
+/* The glass. scopeZoom is 1 when you are not looking through anything, and
+   the gun's own magnification when you are - render() reads it to decide
+   whether the world is worth drawing twice. */
+function scopeGun(){
+  const G = GUNS[weaponId()];
+  return G && G.scope && invCount(weaponId()) > 0 ? G : null;
+}
+function scopeUp(){
+  return scopeHeld && !!scopeGun() && !topMode() && !cam.riding && !sitting && !skating;
+}
+function scopeZoom(){ const G = scopeUp() ? scopeGun() : null; return G ? G.scope : 1; }
+/* Where the tube sits. Centred on the aim point rather than on the screen,
+   so the dot is dead centre of the glass at any pitch - which is the whole
+   point of putting a ring round it. Cells are taller than they are wide, so
+   the vertical radius is squashed by the cell aspect or the circle comes out
+   an egg. */
+function scopeGeom(){
+  return { cx: (R.cols - 1) / 2,
+           cy: R.rows / 2 + cam.pitch,
+           rad: Math.min(R.cols * 0.21, R.rows * 0.42 * (R.cellH / R.cellW)) };
+}
+/* One ring of glyphs, deduped, so a circle drawn on a character grid does
+   not double up cells where the angular step is finer than the cells are. */
+function ringCells(cx, cy, rad, fn){
+  const ry = rad * (R.cellW / R.cellH);
+  const n = Math.max(32, Math.round(rad * 10));
+  let px = -1, py = -1;
+  for (let i = 0; i <= n; i++){
+    const th = i / n * Math.PI * 2;
+    const x = Math.round(cx + Math.cos(th) * rad);
+    const y = Math.round(cy + Math.sin(th) * ry);
+    if (x === px && y === py) continue;
+    px = x; py = y;
+    fn(x, y, th);
+  }
+}
 /* Every gun in the city, one table. dmg is [base, spread]; pellets fan out;
    rail pierces the whole line; chain arcs to bystanders; pin stakes the
    target in place. All of them feed on the same ammo. */
@@ -11397,10 +11484,16 @@ const GUNS = {
   pistol:  { dmg: 9,  rng: 6, cool: 0.35, range: 34, kick: 1.3, rate: 0.95, snd: 0.8 },
   holdout: { dmg: 6,  rng: 4, cool: 0.22, range: 22, kick: 0.7, rate: 1.45, snd: 0.55 },
   revolver:{ dmg: 18, rng: 8, cool: 0.75, range: 40, kick: 2.6, rate: 0.66, snd: 0.95 },
-  smg:     { dmg: 5,  rng: 4, cool: 0.10, range: 26, kick: 0.45, rate: 1.2, snd: 0.6 },
+  // auto: it keeps firing while the trigger is held. The cooldown is what
+  // sets the rate, so it needed no other change - only somebody to pull the
+  // trigger again, which is what fireHeld does.
+  smg:     { dmg: 5,  rng: 4, cool: 0.10, range: 26, kick: 0.45, rate: 1.2, snd: 0.6,
+             auto: 1 },
   shotgun: { dmg: 7,  rng: 4, cool: 0.95, range: 15, kick: 3.2, rate: 0.5, snd: 1.0,
              pellets: 5, spreadW: 1.6 },
-  rifle:   { dmg: 26, rng: 8, cool: 1.15, range: 72, kick: 2.4, rate: 0.45, snd: 0.9 },
+  // scope: it has glass, so it answers the right mouse button
+  rifle:   { dmg: 26, rng: 8, cool: 1.15, range: 72, kick: 2.4, rate: 0.45, snd: 0.9,
+             scope: 2 },
   railgun: { dmg: 60, rng: 10, cool: 1.6, range: 90, kick: 4.0, rate: 0.3, snd: 1.0,
              rail: 1 },
   arcgun:  { dmg: 14, rng: 6, cool: 0.8, range: 24, kick: 1.0, rate: 1.9, snd: 0.7,
@@ -11646,8 +11739,34 @@ function curTime(){
   return { fog: m3(A.fog, B.fog), sky: m3(A.sky, B.sky), glow: m3(A.glow, B.glow),
            lit: mv(A.lit, B.lit), amb: mv(A.amb, B.amb) };
 }
+/*------------------------- how wet the ground is ---------------------------
+  Rain used to be a switch: the first drop turned every road in the city into
+  a mirror, and the last one turned it off again. Water does not do that. It
+  collects - in the low places first, where a road has settled or a kerb has
+  sunk, and only after hours of it does the whole surface hold enough to
+  reflect anything.
+
+  So wetLevel is a reservoir, filled by the weather and drained by its
+  absence, and puddleAt decides which tiles are under water at the level it
+  has reached. Fog fills it far more slowly than rain - it is condensation
+  rather than downpour, and the difference between a damp night and a wet one
+  should be legible in the road.
+============================================================================*/
+let wetLevel = 0;                              // 0 dry .. 1 the whole road
+const WET_RATE = [-0.55, 0.34, 0.55, 0.11];    // per game hour: clear/rain/storm/fog
+function puddleAt(ix, iy){
+  if (wetLevel >= 0.999) return 1;
+  if (wetLevel <= 0.001) return 0;
+  // Blobs, not static: a per-tile hash alone gives salt and pepper. The
+  // coarse term pools three tiles at a time, the fine one keeps the edges
+  // from being square. Deterministic, so a puddle stays where it formed.
+  const blob = hash3((ix / 3) | 0, (iy / 3) | 0, 313);
+  const fine = hash3(ix, iy, 77);
+  return (blob * 0.72 + fine * 0.28) < wetLevel ? 1 : 0;
+}
 function updateClock(dt){
   clock += dt / 60;
+  wetLevel = clamp(wetLevel + (WET_RATE[weather] || 0) * (dt / 60), 0, 1);
   if (clock >= 24){ clock -= 24; dayTick(); }
   const t = timeBlend();
   const dom = t.u < 0.5 ? t.a : t.b;
@@ -14130,7 +14249,9 @@ function waterShade(wx, wy){
 }
 function floorSample(wx, wy, ix, iy){
   const t = tType[iy * MAP + ix];
-  _wwet = (t === T_ROAD || t === T_CROSS) ? 1 : 0;   // 1 wet-when-raining, 2 always
+  // 1 = under water right now, 2 = always a mirror. Tarmac holds water in
+  // the low spots long before it holds it everywhere.
+  _wwet = (t === T_ROAD || t === T_CROSS) ? puddleAt(ix, iy) : 0;
   if (t === T_INF){                                  // interior floor: dry slabs
     _wwet = 0;
     const ck = (ix + iy) & 1;
@@ -14143,7 +14264,9 @@ function floorSample(wx, wy, ix, iy){
   const fx = wx - ix, fy = wy - iy;
   if (wayOn && wayG[iy * MAP + ix]){            // the red line home, on ANY ground
     const cfx = fx - 0.5, cfy = fy - 0.5;
-    if (cfx * cfx + cfy * cfy < 0.10){ _wb = C.camRed; _wd = 0.95; _wwet = 1; return; }
+    if (cfx * cfx + cfy * cfy < 0.10){
+      _wb = C.camRed; _wd = 0.95; _wwet = puddleAt(ix, iy); return;
+    }
   }
   if (t === T_ROAD || t === T_CROSS){
     const pc = signFloor[iy * MAP + ix];        // the crossing's own number
@@ -14152,7 +14275,7 @@ function floorSample(wx, wy, ix, iy){
       if (gl && fx >= 0.14 && fy >= 0.10){
         const gc = ((fx - 0.14) * 4.17) | 0, gr = ((fy - 0.10) * 6.25) | 0;
         if (gc >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
-          _wb = C.nAmber; _wd = 0.95; _wwet = 1;
+          _wb = C.nAmber; _wd = 0.95; _wwet = puddleAt(ix, iy);
           return;
         }
       }
@@ -14168,14 +14291,15 @@ function floorSample(wx, wy, ix, iy){
       if (off < 0.6){ _wb = C.curb; _wd = 0.38; }
       else if (Math.abs(off - 2.1) < 0.12){ _wb = C.curb; _wd = 0.30; }
     }
-    _wwet = 1;
+    _wwet = puddleAt(ix, iy);
     return;
   }
   if (t === T_WALK){
     _wb = C.walk; _wd = 0.27 + hash3(ix, iy, 5) * 0.09;
     const jx = (wx * 0.5) % 1, jy = (wy * 0.5) % 1;
     if (jx < 0.05 || jy < 0.05) _wd = 0.44;
-    _wwet = 1;
+    // paving drains better than tarmac: it needs the reservoir fuller
+    _wwet = wetLevel > 0.45 ? puddleAt(ix, iy) : 0;
     return;
   }
   if (t === T_WATER){ waterShade(wx, wy); return; }
@@ -14183,7 +14307,7 @@ function floorSample(wx, wy, ix, iy){
     _wb = hash3(ix, iy, 23) > 0.5 ? C.deck : C.deckOld;
     _wd = 0.32 + hash3(ix, iy, 13) * 0.10;
     if (fx < 0.09 || fy < 0.09) _wd = 0.54;               // plate seams
-    _wwet = 1;
+    _wwet = puddleAt(ix, iy);
     return;
   }
   if (t === T_PATH){
@@ -15523,7 +15647,10 @@ function signPass(){
 ============================================================================*/
 function reflects(j){                          // is this cell a mirror right now?
   const rf = refBuf[j];
-  return rf === 2 || (rf === 1 && weather !== 0);
+  // No weather test any more. Whether a cell holds water was decided when it
+  // was sampled, and water does not vanish the moment the rain stops - the
+  // reservoir drains over the next hour or two and the puddles go with it.
+  return rf === 2 || rf === 1;
 }
 function reflectPass(){
   const cols = R.cols, rows = R.rows;
@@ -16434,6 +16561,10 @@ function hudPass(){
           ax = punchLeft ? 3 + ins : cols - tw - 3 - ins;
         }
         drawViewArt(art, ax, rows - tr, tr, cmA);
+      } else if (scopeUp()){
+        // Up at the eye. The rifle itself is behind your cheek and out of
+        // shot; what you see is the tube, so that is all that is drawn.
+        drawScope();
       } else if (GUNS[weaponId()]){
         const gid = weaponId();
         const gart = VM_GUNS[gid] || VM_GUN;
@@ -16480,6 +16611,12 @@ function hudPass(){
     }
     const aim = cam.riding ? null : hostileInSights(30);
     const rr0 = (rows >> 1) + Math.round(cam.pitch);
+    // A rifle carries its glass with it: even down at the hip there is a
+    // ring round the aim point, and the dot sits dead centre of it. Up at
+    // the eye that ring becomes the tube itself.
+    if (!scopeUp() && scopeGun() && !cam.riding && !sitting && !skating)
+      ringCells((cols - 1) / 2, rr0, 4.2,
+                (x, y) => hudCell(x, y, 'o', H_DIM));
     hudStr(cols >> 1, rr0, aim ? 'x' : '+',
            aim ? H_RED : player.bling === 'shades' ? H_PUR : H_GRN);
     if (aim){
@@ -16670,14 +16807,18 @@ function simulate(dt){
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
                player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
 }
-function render(){
-  statRays = 0; statCells = 0;
+/*========================= drawing the world twice =========================
+  A scope shows you two magnifications at once: through the glass it is 2x,
+  around the outside of the tube it is the naked eye. A raycaster marches one
+  ray per column at one field of view, so there is no per-cell zoom to be had
+  - the honest way is to render the world twice and keep the half of each
+  frame that belongs. It costs a second world pass, but only while the glass
+  is up, which is the one moment nobody is sprinting.
+============================================================================*/
+function setView(zoom){
   const cols = R.cols;
-  // clear days keep the far skyline solid; haze and darkness dissolve it
-  densK = (CFG.timeMode === 2 && weather !== 3) ? 0.4 : 0.74;
-  gBuf.fill(0); dBuf.fill(1e30);
   dirX = Math.cos(cam.ang); dirY = Math.sin(cam.ang);
-  planeLen = Math.tan(CFG.FOV * 0.5);
+  planeLen = Math.tan(CFG.FOV * 0.5) / zoom;
   // The camera plane used to point the wrong way round, so the whole world
   // rendered as its own mirror image: facing north put world-EAST on the
   // left of the screen. Everything downstream had been bent to match - the
@@ -16694,6 +16835,9 @@ function render(){
     rayY[x] = dirY + planeY * cxn;
     refWob[x] = Math.sin(worldTime * 2.1 + x * 0.42) * amp;
   }
+}
+function worldPasses(){
+  gBuf.fill(0); dBuf.fill(1e30);
   refBuf.fill(0);
   srcBuf.fill(0);
   if (inside) ceilingPass(); else skyPass();
@@ -16704,6 +16848,39 @@ function render(){
     signPass();
     reflectPass();
     rainPass();
+  }
+}
+let _scG = null, _scB = null, _scL = null, _scD = null;
+function render(){
+  statRays = 0; statCells = 0;
+  // clear days keep the far skyline solid; haze and darkness dissolve it
+  densK = (CFG.timeMode === 2 && weather !== 3) ? 0.4 : 0.74;
+  const zoom = scopeZoom();
+  setView(1);
+  worldPasses();
+  if (zoom !== 1){
+    // keep the naked-eye frame, draw the magnified one over it, then put the
+    // first one back everywhere the tube is not
+    const n = gBuf.length;
+    if (!_scG || _scG.length !== n){
+      _scG = new Uint16Array(n); _scB = new Uint16Array(n);
+      _scL = new Uint8Array(n);  _scD = new Float32Array(n);
+    }
+    _scG.set(gBuf); _scB.set(bBuf); _scL.set(lBuf); _scD.set(dBuf);
+    setView(zoom);
+    worldPasses();
+    const g = scopeGeom(), cols = R.cols, rows = R.rows;
+    const ry = g.rad * (R.cellW / R.cellH);
+    for (let r = 0; r < rows; r++){
+      const dy = (r - g.cy) / ry, dy2 = dy * dy;
+      for (let c = 0; c < cols; c++){
+        const dx = (c - g.cx) / g.rad;
+        if (dx * dx + dy2 <= 1) continue;         // inside the glass: magnified
+        const i = r * cols + c;
+        gBuf[i] = _scG[i]; bBuf[i] = _scB[i]; lBuf[i] = _scL[i]; dBuf[i] = _scD[i];
+      }
+    }
+    setView(1);       // the HUD and everything after it think in naked eye
   }
   if (GL){
     hudPass();                       // fills the HUD layer; GPU draws it
@@ -16755,6 +16932,11 @@ function frame(now){
   fade *= Math.pow(0.02, dt);
   muzzleT = Math.max(0, muzzleT - dt);
   shotCool = Math.max(0, shotCool - dt);
+  // full auto: the trigger is still down and the gun is ready again
+  if (fireHeld && shotCool <= 0 && !topMode() && !worldFrozen()){
+    const G = GUNS[weaponId()];
+    if (G && G.auto && document.pointerLockElement === view) fireWeapon();
+  }
   if (punchT > 0){
     const eOld = punchDur - punchT;
     punchT = Math.max(0, punchT - dt);
