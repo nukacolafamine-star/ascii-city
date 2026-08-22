@@ -1492,6 +1492,16 @@ function propsOn(x, y, out){
   }
 }
 function openSealedDoors(){
+  // Every obstruction query below goes through propGrid, and nothing had
+  // refreshed it since the city before this one - so the first pass hunted
+  // for what was blocking a doorstep using the PREVIOUS map's props, found
+  // ghosts that are not in this city's prop list, and removed nothing. The
+  // pass after it then worked from a fresh index and removed 31. Which of
+  // the two ran first depended on where the player happened to be standing,
+  // so one seed built two different cities, alternating - and a save
+  // reloaded into a city that was not quite the one it was saved in.
+  // Index first, then ask.
+  indexProps(); indexSpriteProps();
   // a terrain-only reference, so we can tell "a wall is here" from
   // "somebody parked a market stall here"
   buildWalkGrid();
@@ -17386,9 +17396,17 @@ function newWorld(seed){
   bakeKey = -1;                // force the palette to settle on the clock
   indexProps();
   indexSpriteProps();
+  // Where the player stands has to be settled BEFORE anything is scattered
+  // around it. randWalkNear rejects-and-retries against walkG, so the number
+  // of rnd() draws it burns depends on where its centre is - and scattering
+  // the crowd around a camera still parked at the previous city's spot (or,
+  // on a cold boot, the map corner) left the RNG at a different offset by the
+  // time the cast was placed. Same seed, different actors. It also means the
+  // crowd is spawned where you actually are, instead of being teleported in
+  // from the corner of the map on the first frame.
+  placePlayer();
   spawnCars();
   spawnPeds();
-  placePlayer();
   spawnActors();
   worldTime = 0;
   gridClear(carGrid); for (const c of cars) gridAdd(carGrid, c.x, c.y, c);
