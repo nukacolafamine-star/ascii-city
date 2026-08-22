@@ -9711,13 +9711,54 @@ const COAT_COL = { puffer: C.dataDk, vest: C.nAmber, workjacket: C.tlAmb,
 const BODY_W = 0.62, BODY_H = 1.76, BODY_DEP = 0.55;
 const BODY_GW = 14, BODY_GD = 8, BODY_GH = 26;
 /* roles: S skin, P trousers, T shoes, B shirt, K coat, X ice, W trim */
-function playerBodyVol(worn){
+/*-------------------------- POSES -----------------------------------------
+  The body was one static volume, which is all the camjack ever needed: a
+  security feed catches you standing still. Somebody else's body walks, and
+  a walk that does not move reads as a mannequin being slid down the street.
+
+  A pose is a handful of offsets rather than a second authored volume, so
+  every garment keeps working in every pose for free - the coat, its sleeves,
+  the puffer's baffles and the watch on the correct wrist all follow the limb
+  they were hung on. Legs and arms shift along Y, which is depth, because a
+  stride seen from the side is exactly that. `crouch` drops the hips and
+  everything stacked on them; `lean` pushes the torso and head forward.
+
+  Two frames per gait, matching the pedestrians - ART.ped is a two-frame walk
+  and it reads perfectly at this glyph size. More would be invisible.
+--------------------------------------------------------------------------*/
+const BODY_POSE = {
+  idle:   {},
+  /* Two frames, and they are NOT mirror images of each other. ART.ped is
+     stride-then-passing - legs apart, then legs together underneath - and
+     that is what reads at six characters wide; two mirrored strides just
+     slide the same silhouette sideways. Same shape, in voxels. */
+  walk0:  { legL: 3.2, legR:-3.2, armL:-2.2, armR: 2.2, thigh: 0.7 },
+  walk1:  { legL: 0.4, legR:-0.4, armL: 0.6, armR:-0.6, thigh: 0.7 },
+  run0:   { legL: 3.5, legR:-3.5, armL:-3.0, armR: 3.0, lean: 1.0, crouch: 0.05, thigh: 0.85 },
+  run1:   { legL: 0.6, legR:-0.6, armL: 0.8, armR:-0.8, lean: 1.2, crouch: 0.10, thigh: 0.85 },
+  // a stance across the board, knees in, both arms out for balance
+  skate0: { legL: 1.6, legR:-1.4, armL:-2.4, armR: 2.2, crouch: 0.20, board: 1 },
+  skate1: { legL: 2.4, legR:-1.0, armL:-1.4, armR: 2.8, crouch: 0.30, board: 1 },
+  sit:    { sit: 1 },
+  // both hands out in front, holding something that matters
+  aim:    { armL: 3.0, armR: 3.0, armInL: 2.0, armInR: 2.0, armRaise: 0.10 },
+  punch:  { armL: 3.4, armR:-1.0, armInL: 3.0, armRaise: 0.06, lean: 0.8 },
+  hurt:   { lean: -1.2, crouch: 0.12, armL: 1.0, armR: 1.0, armRaise: -0.06 }
+};
+function playerBodyVol(worn, P){
+  P = P || BODY_POSE.idle;
   const has = id => worn.indexOf(id) >= 0;
   const outer = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
                   .find(id => has(id)) || null;
   const shirt = has('tee') ? 'tee' : null;
   const shoes = has('runners') ? 'runners' : has('sneakers') ? 'sneakers' : null;
   const R = ROLE;
+  const legL = P.legL || 0, legR = P.legR || 0;
+  const armL = P.armL || 0, armR = P.armR || 0;
+  const armInL = P.armInL || 0, armInR = P.armInR || 0;
+  const lean = P.lean || 0, crouch = P.crouch || 0, raise = P.armRaise || 0;
+  // the thigh pivots at the hip, so it trails the foot rather than matching it
+  const thigh = P.thigh === undefined ? 0.5 : P.thigh;
   return function(aw, vd, ah){
     const v = new Uint8Array(aw * vd * ah);
     const set = (x, y, z, role) => {
@@ -9727,77 +9768,131 @@ function playerBodyVol(worn){
     // z is measured DOWN from the top of the art, so build from the head
     const zOf = h => Math.round((1 - h / BODY_H) * (ah - 1));   // h in metres
     const cx = (aw - 1) / 2, cy = (vd - 1) / 2;
-    const slab = (h0, h1, halfW, halfD, role, xoff) => {
+    const slab = (h0, h1, halfW, halfD, role, xoff, yoff) => {
       const z0 = zOf(h1), z1 = zOf(h0);
       for (let z = Math.min(z0, z1); z <= Math.max(z0, z1); z++)
         for (let y = 0; y < vd; y++)
           for (let x = 0; x < aw; x++){
             if (Math.abs(x - cx - (xoff || 0)) > halfW) continue;
-            if (Math.abs(y - cy) > halfD) continue;
+            if (Math.abs(y - cy - (yoff || 0)) > halfD) continue;
             set(x, y, z, role);
           }
     };
-    // --- the person ---------------------------------------------------
-    slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T);          // feet
-    slab(0.10, 0.86, 1.6, 1.6, R.P, -2.4);                  // legs
-    slab(0.10, 0.86, 1.6, 1.6, R.P,  2.4);
-    slab(0.86, 1.42, 4.2, 2.4, shirt || outer ? R.B : R.S);  // torso
-    slab(0.92, 1.38, 1.2, 1.9, R.S, -5.2);                  // arms
-    slab(0.92, 1.38, 1.2, 1.9, R.S,  5.2);
-    slab(1.42, 1.52, 2.0, 2.0, R.S);                        // neck
-    slab(1.52, 1.76, 3.0, 2.6, R.S);                        // head
-    // --- what you put on ----------------------------------------------
-    if (outer){                                             // the coat wins
-      slab(0.84, 1.46, 4.6, 2.7, R.K);
-      slab(0.90, 1.40, 1.5, 2.1, R.K, -5.3);                // sleeves
-      slab(0.90, 1.40, 1.5, 2.1, R.K,  5.3);
-      if (outer === 'puffer'){                              // horizontal baffles
-        for (let h = 0.90; h < 1.46; h += 0.16) slab(h, h + 0.05, 4.8, 2.8, R.W);
-      } else if (outer === 'tracksuit'){                    // the four stripes
-        slab(0.86, 1.44, 4.7, 0.6, R.W, -3.4);
-        slab(0.86, 1.44, 4.7, 0.6, R.W,  3.4);
-      } else if (outer === 'hoodie'){                       // the hood, bunched
-        slab(1.44, 1.58, 3.4, 2.9, R.K);
-      } else if (outer === 'vest'){                         // open at the front
-        slab(0.88, 1.44, 4.7, 0.9, R.B, 0);
+    /* Everything above the hips is stacked ON the hips, so a crouch lowers
+       the whole upper body and keeps its proportions instead of squashing
+       it. The stock figure has its hip at 0.86 and its crown at 1.76. */
+    const hip = (P.sit ? 0.60 : 0.86) - crouch;
+    const tT = hip + 0.56, nT = tT + 0.10, hT = nT + 0.24;   // torso/neck/head tops
+    // --- the legs -----------------------------------------------------
+    if (P.sit){
+      // thighs forward off the hip, shins down from the knee
+      slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P, -2.4, 2.0);
+      slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P,  2.4, 2.0);
+      slab(0.10, hip - 0.04, 1.6, 1.5, R.P, -2.4, 3.2);
+      slab(0.10, hip - 0.04, 1.6, 1.5, R.P,  2.4, 3.2);
+      slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T, -2.4, 3.4);
+      slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T,  2.4, 3.4);
+    } else {
+      slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T, -2.4, legL);
+      slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T,  2.4, legR);
+      slab(0.10, hip, 1.6, 1.6, R.P, -2.4, legL * thigh);    // thigh trails the foot
+      slab(0.10, hip, 1.6, 1.6, R.P,  2.4, legR * thigh);
+      if (P.board){                                          // the deck underfoot
+        slab(0.00, 0.05, 3.0, 4.2, R.T, 0, (legL + legR) * 0.5);
+        slab(0.05, 0.09, 2.2, 4.4, R.W, 0, (legL + legR) * 0.5);
       }
     }
-    if (has('workjacket') && outer !== 'workjacket')        // worn under
-      slab(0.88, 1.30, 4.4, 2.6, R.K);
-    if (shoes) slab(0.00, 0.14, 2.8, 2.8, R.W);             // the good shoes
-    if (has('shades')) slab(1.62, 1.68, 3.1, 2.8, R.X);     // across the eyes
-    if (has('chain')) slab(1.34, 1.44, 2.6, 2.5, R.X);      // heavy on the chest
-    if (has('ring')) slab(1.00, 1.06, 1.4, 2.0, R.X, 5.4);  // one knuckle
-    if (has('watch')) slab(1.06, 1.12, 1.4, 2.0, R.X, -5.4);
+    // --- the trunk ----------------------------------------------------
+    slab(hip, tT, 4.2, 2.4, shirt || outer ? R.B : R.S, 0, lean);
+    slab(hip + 0.06 + raise, tT - 0.04 + raise, 1.2, 1.9, R.S, -5.2 + armInL, armL);
+    slab(hip + 0.06 + raise, tT - 0.04 + raise, 1.2, 1.9, R.S,  5.2 - armInR, armR);
+    slab(tT, nT, 2.0, 2.0, R.S, 0, lean);                    // neck
+    slab(nT, hT, 3.0, 2.6, R.S, 0, lean);                    // head
+    // --- what you put on ----------------------------------------------
+    if (outer){                                              // the coat wins
+      slab(hip - 0.02, tT + 0.04, 4.6, 2.7, R.K, 0, lean);
+      slab(hip + 0.04 + raise, tT - 0.02 + raise, 1.5, 2.1, R.K, -5.3 + armInL, armL);
+      slab(hip + 0.04 + raise, tT - 0.02 + raise, 1.5, 2.1, R.K,  5.3 - armInR, armR);
+      if (outer === 'puffer'){                               // horizontal baffles
+        for (let h = hip + 0.04; h < tT + 0.04; h += 0.16)
+          slab(h, h + 0.05, 4.8, 2.8, R.W, 0, lean);
+      } else if (outer === 'tracksuit'){                     // the four stripes
+        slab(hip, tT + 0.02, 4.7, 0.6, R.W, -3.4, lean);
+        slab(hip, tT + 0.02, 4.7, 0.6, R.W,  3.4, lean);
+      } else if (outer === 'hoodie'){                        // the hood, bunched
+        slab(tT + 0.02, tT + 0.16, 3.4, 2.9, R.K, 0, lean);
+      } else if (outer === 'vest'){                          // open at the front
+        slab(hip + 0.02, tT + 0.02, 4.7, 0.9, R.B, 0, lean);
+      }
+    }
+    if (has('workjacket') && outer !== 'workjacket')         // worn under
+      slab(hip + 0.02, hip + 0.44, 4.4, 2.6, R.K, 0, lean);
+    if (shoes && !P.sit){
+      slab(0.00, 0.14, 2.8, 2.8, R.W, -2.4, legL);           // the good shoes
+      slab(0.00, 0.14, 2.8, 2.8, R.W,  2.4, legR);
+    }
+    if (has('shades')) slab(nT + 0.10, nT + 0.16, 3.1, 2.8, R.X, 0, lean);
+    if (has('chain'))  slab(tT - 0.08, tT + 0.02, 2.6, 2.5, R.X, 0, lean);
+    if (has('ring'))   slab(hip + 0.14 + raise, hip + 0.20 + raise, 1.4, 2.0, R.X,  5.4 - armInR, armR);
+    if (has('watch'))  slab(hip + 0.20 + raise, hip + 0.26 + raise, 1.4, 2.0, R.X, -5.4 + armInL, armL);
     return v;
   };
 }
-let BODY_ART = null, BODY_SL = null, BODY_KEY = '';
-function playerBodyArt(){
-  const worn = (player.worn || []).slice().sort();
-  const key = worn.join(',');
-  if (BODY_ART && key === BODY_KEY) return BODY_ART;
-  BODY_KEY = key;
+/*---------------------- one body per person, per pose ---------------------
+  BODY_ART used to be a single cached volume with a single cached palette,
+  which is right when there is one person to draw and wrong the moment there
+  are eight of them in different coats. Key the cache by what is worn, the
+  pose, and the two colours that vary, and let voxelize do the rest - it
+  caches its own rasterisation on the art object, and a body's depth scale
+  never changes, so each combination is built exactly once.
+--------------------------------------------------------------------------*/
+const BODY_CACHE = new Map();
+const BODY_CACHE_MAX = 192;
+function bodyWorn(p){ return (p && p.local === false ? p.worn : player.worn) || []; }
+function bodySkin(p){ return (p && p.local === false ? p.skinC : player.skinC) || C.skinA || C.metal; }
+function bodyShirt(p){ return (p && p.local === false ? p.shirtC : player.shirtC) || C.nWhite; }
+function bodyArtFor(p, poseName){
+  const worn = bodyWorn(p).slice().sort();
+  const skin = bodySkin(p), shir = bodyShirt(p);
+  const key = worn.join(',') + '|' + poseName + '|' + skin + '|' + shir;
+  let e = BODY_CACHE.get(key);
+  if (e) return e;
   const outer = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
                   .find(id => worn.indexOf(id) >= 0);
   const coat = (outer && COAT_COL[outer]) || C.rail;
-  BODY_SL = slots({ S: [player.skinC || C.skinA || C.metal, 0.92],
-                    P: [C.pants, 0.84], T: [C.tire, 0.8],
-                    B: [player.shirtC || C.nWhite, 0.86],
-                    K: [coat, 0.9], X: [C.tlAmb, 1.0], W: [C.nWhite, 0.9] });
-  BODY_ART = { w: BODY_GW, h: BODY_GH, data: new Uint8Array(BODY_GW * BODY_GH),
-               vol: playerBodyVol(worn) };
-  return BODY_ART;
+  e = { sl: slots({ S: [skin, 0.92], P: [C.pants, 0.84], T: [C.tire, 0.8],
+                    B: [shir, 0.86], K: [coat, 0.9],
+                    X: [C.tlAmb, 1.0], W: [C.nWhite, 0.9] }),
+        art: { w: BODY_GW, h: BODY_GH, data: new Uint8Array(BODY_GW * BODY_GH),
+               vol: playerBodyVol(worn, BODY_POSE[poseName] || BODY_POSE.idle) } };
+  if (BODY_CACHE.size >= BODY_CACHE_MAX)          // oldest out; Map is insertion-ordered
+    BODY_CACHE.delete(BODY_CACHE.keys().next().value);
+  BODY_CACHE.set(key, e);
+  return e;
 }
-/* draw the player where they actually stand - used by the camjack, and by
-   anything else that ever looks at you from outside */
+/* What a body is doing, read off the same flags the first-person view uses. */
+function bodyPoseOf(p){
+  if (p.sit) return 'sit';
+  if (p.hitT > 0) return 'hurt';
+  if (p.skate) return (p.pushT > 0 || ((p.phase | 0) & 1)) ? 'skate1' : 'skate0';
+  if (p.punchT > 0) return 'punch';
+  if (p.aiming) return 'aim';
+  if (p.moving) return (p.running ? 'run' : 'walk') + ((p.phase | 0) & 1);
+  return 'idle';
+}
+/* Draw anybody's body where they are standing - the camjack looking back at
+   you, and everyone else in the room. */
+function drawBodyOf(p, x, y, yaw){
+  const e = bodyArtFor(p, bodyPoseOf(p));
+  drawModel(x, y, 0, BODY_W, BODY_H, e.art,
+            p.hitT > 0 ? HIT_SB : e.sl.base, e.sl.dens, 0, yaw + Math.PI / 2,
+            BODY_DEP / BODY_W, 0);
+}
+/* the camjack's view of you, left standing where you walked away from */
 function drawPlayerBody(){
   if (inside && !camjackInside) return;
-  const art = playerBodyArt();
   const yaw = cam.bodyAng !== undefined ? cam.bodyAng : cam.ang;
-  drawModel(player.bx, player.by, 0, BODY_W, BODY_H, art,
-            BODY_SL.base, BODY_SL.dens, 0, yaw + Math.PI / 2,
-            BODY_DEP / BODY_W, 0);
+  drawBodyOf(ME, player.bx, player.by, yaw);
 }
 let camjackInside = false;
 function openCamJack(){
@@ -16227,6 +16322,18 @@ function spritePass(){
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 2) continue;
     drawList.push({ d: f, k: 1, o: a });       // drawn exactly like a pedestrian
   }
+  /* Everybody else standing in this room. Their cam is a body to us exactly
+     as ours is a body to them - the same volume the camjack has always drawn
+     looking back at us, now with a gait on it. */
+  for (let i = 0; i < PLAYERS.length; i++){
+    const q = PLAYERS[i];
+    if (q.local || q.scene !== SCENE || q.dead) continue;
+    const rx = q.cam.x - cam.x, ry = q.cam.y - cam.y;
+    const f = rx * dirX + ry * dirY;
+    if (f < -0.9 || f > MD) continue;
+    if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 2) continue;
+    drawList.push({ d: f, k: 5, o: q });
+  }
   for (let i = 0; i < fxs.length; i++){
     const s = fxs[i];
     const rx = s.x - cam.x, ry = s.y - cam.y;
@@ -16293,6 +16400,8 @@ function spritePass(){
       }
     } else if (it.k === 4){
       drawPlayerBody();
+    } else if (it.k === 5){
+      drawBodyOf(o, o.cam.x, o.cam.y, o.cam.ang);
     } else if (it.k === 3){
       drawSprite(o.x, o.y, o.z, 0.36, 0.32, ART.spark,
                  SPARK_SL.base, SPARK_SL.dens, false, C.nAmber);
