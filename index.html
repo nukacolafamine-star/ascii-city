@@ -4165,6 +4165,24 @@ function pedLine(p){
 }
 function streamAgents(){
   const hour = clock | 0;
+  /* The crowd used to be kept within STREAM_R of THE camera, which is how a
+     pedestrian ends up with no world position at all - only a position
+     relative to whoever is looking. With more than one of us it is kept near
+     whoever is nearest, and a pedestrian nobody is near is brought in around
+     one of us. Picking that one costs a draw from the shared RNG, so with a
+     single player we take the only entry without drawing and the stream is
+     bit-for-bit what it always was. */
+  const crowd = crowdIn(CITY);
+  if (!crowd.length) return;                    // nobody out: the street waits
+  const pick = () => (crowd.length === 1 ? crowd[0]
+                                         : crowd[(rnd() * crowd.length) | 0]).cam;
+  const nearAnyone = (x, y) => {
+    for (let k = 0; k < crowd.length; k++){
+      const c = crowd[k].cam;
+      if (Math.abs(x - c.x) < STREAM_R && Math.abs(y - c.y) < STREAM_R) return true;
+    }
+    return false;
+  };
   for (let i = 0; i < peds.length; i++){
     const p = peds[i];
     const plan = pedPlan(p.ident, hour);
@@ -4178,12 +4196,14 @@ function streamAgents(){
     p.leg = plan.leg;
     if (p.off){                                 // stepping back into the day
       p.off = 0;
-      const t0 = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
+      const a0 = pick();
+      const t0 = randWalkNear(a0.x, a0.y, 40, STREAM_R * 0.8);
       if (t0){ p.x = t0[0] + 0.5; p.y = t0[1] + 0.5; }
       p.path = null; p.pi = 0; p.cool = rnd() * 2;
     }
-    if (Math.abs(p.x - cam.x) < STREAM_R && Math.abs(p.y - cam.y) < STREAM_R) continue;
-    const t = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
+    if (nearAnyone(p.x, p.y)) continue;
+    const a1 = pick();
+    const t = randWalkNear(a1.x, a1.y, 40, STREAM_R * 0.8);
     if (t && !inPanicZone(t[0], t[1])){
       if (p.sit){ p.sit.occ--; p.sit = null; }
       p.x = t[0] + 0.5; p.y = t[1] + 0.5; p.path = null; p.pi = 0; p.cool = rnd() * 2;
@@ -4192,10 +4212,16 @@ function streamAgents(){
   for (let i = 0; i < cars.length; i++){
     const c = cars[i];
     if (cam.riding === c) continue;
-    if (Math.abs(c.x - cam.x) < STREAM_R * 1.5 && Math.abs(c.y - cam.y) < STREAM_R * 1.5) continue;
+    let nearCar = false;
+    for (let k = 0; k < crowd.length; k++){
+      const q = crowd[k].cam;
+      if (Math.abs(c.x - q.x) < STREAM_R * 1.5 && Math.abs(c.y - q.y) < STREAM_R * 1.5){ nearCar = true; break; }
+    }
+    if (nearCar) continue;
+    const a2 = pick();
     const th = rnd() * Math.PI * 2, r = 60 + rnd() * 90;
-    c.x = clamp(cam.x + Math.cos(th) * r, 3, MAP - 4);
-    c.y = clamp(cam.y + Math.sin(th) * r, 3, MAP - 4);
+    c.x = clamp(a2.x + Math.cos(th) * r, 3, MAP - 4);
+    c.y = clamp(a2.y + Math.sin(th) * r, 3, MAP - 4);
     pickFlyTarget(c);
   }
 }
@@ -4288,7 +4314,8 @@ function updatePed(p, i, dt){
   }
   if (p.flee && p.flee <= worldTime && inPanicZone(p.x, p.y)){
     // still standing in the cleared block when the sprint ends: they left
-    const t2 = randWalkNear(cam.x, cam.y, 40, STREAM_R * 0.8);
+    const aP = nearestPlayer(p.x, p.y, CITY);
+    const t2 = randWalkNear(aP ? aP.cam.x : cam.x, aP ? aP.cam.y : cam.y, 40, STREAM_R * 0.8);
     if (t2 && !inPanicZone(t2[0], t2[1])){
       p.x = t2[0] + 0.5; p.y = t2[1] + 0.5; p.path = null; p.pi = 0;
     }
@@ -4435,9 +4462,11 @@ function updateActor(a, dt){
   a.moving = 0;
   if (a.hitT) a.hitT = Math.max(0, a.hitT - dt);
   if (a.brain === 'hostile'){ hostileBrain(a, dt); return; }
-  const prx = cam.x - a.x, pry = cam.y - a.y;
+  const who = nearestPlayer(a.x, a.y, SCENE);
+  if (!who) return;                            // nobody here to notice them
+  const prx = who.cam.x - a.x, pry = who.cam.y - a.y;
   const pr = Math.hypot(prx, pry);
-  const engaged = pr < 2.6;                    // player close: stop, meet their eye
+  const engaged = pr < 2.6;                    // somebody close: stop, meet their eye
   if (engaged && pr > 0.001){ a.dx = prx / pr; a.dy = pry / pr; }
   if (pr < 0.9 && pr > 0.001 && !a.pinned){    // and never stand inside them
     const bx = a.x - prx / pr * 1.4 * dt, by = a.y - pry / pr * 1.4 * dt;
@@ -4564,6 +4593,10 @@ function acquireScene(bld, floor){
 function releaseScene(s){
   if (!s || s === CITY) return;
   if (--s.refs > 0) return;                  // somebody else is still in there
+  // The cast belongs to the room, not to us. Clearing every interior actor on
+  // OUR way out emptied rooms other people were still standing in.
+  for (let i = actors.length - 1; i >= 0; i--)
+    if (actors[i].interior === s.id) actors.splice(i, 1);
   SCENES.delete(s.id);
   freeIntb(s.buf);
   s.buf = null; s.tType = s.tH = s.tB = s.walkG = null;
@@ -5328,7 +5361,6 @@ function gotoFloor(f){
   const bld2 = buildings[inside.bld];
   const stop = dgnBlocked(bld2, inside.floor, f);
   if (stop){ toast(stop); sfx('ui_back', { vol: 0.5, rate: 0.6 }); return; }
-  for (let i = actors.length - 1; i >= 0; i--) if (actors[i].interior) actors.splice(i, 1);
   // A floor is a scene of its own: leave this one, take that one.
   const bldR = buildings[inside.bld], door0 = inside.door, nm = inside.name;
   const from = SCENE, freshF = !SCENES.has(sceneKey(bldR.id, f));
@@ -5340,6 +5372,8 @@ function gotoFloor(f){
     sF.inside = { name: nm, district: bldR.dist, exit: sF.room.exit,
                   stairs: sF.room.stairs, shop: sF.room.shop,
                   bld: bldR.id, door: door0, floor: f };
+    // the cast that buildInterior just put down belongs to THIS room
+    for (const a of actors) if (a.interior === 1) a.interior = sF.id;
   }
   inside = sF.inside;
   ME.scene = sF;
@@ -5398,6 +5432,8 @@ function enterInterior(door){
     indexProps(); indexSpriteProps();
     s.inside = { name: door.name, district: bld.dist, exit: s.room.exit,
                  stairs: s.room.stairs, shop: s.room.shop, bld: door.b, door, floor: 1 };
+    // the cast that buildInterior just put down belongs to THIS room
+    for (const a of actors) if (a.interior === 1) a.interior = s.id;
   }
   const room = s.room;
   inside = s.inside;
@@ -5416,7 +5452,6 @@ function enterInterior(door){
   toast(door.name);
 }
 function exitInterior(){
-  for (let i = actors.length - 1; i >= 0; i--) if (actors[i].interior) actors.splice(i, 1);
   // The room keeps its own arrays and its own indexes, so stepping back out
   // is a rebind rather than a rebuild - no re-indexing eighteen thousand
   // props every time somebody opens a door.
@@ -5970,6 +6005,20 @@ function playersHere(s){
     if (PLAYERS[i].scene === sc && !PLAYERS[i].dead) _ph.push(PLAYERS[i]);
   return _ph;
 }
+/* Is there anybody in this scene at all? What decides whether a place has to
+   be simulated this frame: an empty room does not think. */
+function anyoneIn(s){
+  for (let i = 0; i < PLAYERS.length; i++)
+    if (PLAYERS[i].scene === s && !PLAYERS[i].dead) return true;
+  return false;
+}
+const _crowd = [];
+function crowdIn(s){
+  _crowd.length = 0;
+  for (let i = 0; i < PLAYERS.length; i++)
+    if (PLAYERS[i].scene === s && !PLAYERS[i].dead) _crowd.push(PLAYERS[i]);
+  return _crowd;
+}
 /* The nearest person to a point - what everything that used to mean `cam`
    means once there is more than one of us. Restricted to a scene, because a
    guard on the fourth floor should not start walking toward the street. */
@@ -6015,6 +6064,8 @@ function peerSetScene(p, sceneId){
         s.inside = { name: door ? door.name : 'INSIDE', district: bld.dist,
                      exit: s.room.exit, stairs: s.room.stairs, shop: s.room.shop,
                      bld: bld.id, door, floor: +m[2] };
+    // the cast that buildInterior just put down belongs to THIS room
+    for (const a of actors) if (a.interior === 1) a.interior = s.id;
       });
       p.scene = s;
     }
@@ -11977,12 +12028,21 @@ function hideFrame(dt){
   of them is stood in the open looking at you.
 ============================================================================*/
 const ENF_SEE = 15;                           // how far an officer knows a face
+/* Returns WHO he can see, or null. Every caller tested it for truth, so a
+   player object reads the same as the old true and tells the ones that care
+   which of us he has. */
 function enfSees(a, r){
-  const d = Math.hypot(a.x - cam.x, a.y - cam.y);
-  if (d > (r || ENF_SEE)) return false;
-  // the dark and the crowd both help, and so does not being lit up
-  if (heli && Math.hypot(cam.x - heli.sx, cam.y - heli.sy) < 2.2) return true;
-  return sightClear(a.x, a.y, cam.x, cam.y);
+  const rr = r || ENF_SEE;
+  for (let i = 0; i < PLAYERS.length; i++){
+    const q = PLAYERS[i];
+    if (q.scene !== SCENE || q.dead) continue;
+    const d = Math.hypot(a.x - q.cam.x, a.y - q.cam.y);
+    if (d > rr) continue;
+    // the dark and the crowd both help, and so does not being lit up
+    if (heli && Math.hypot(q.cam.x - heli.sx, q.cam.y - heli.sy) < 2.2) return q;
+    if (sightClear(a.x, a.y, q.cam.x, q.cam.y)) return q;
+  }
+  return null;
 }
 function enfRecognise(a, why){
   a.brain = 'hostile'; a.aggro = 1;
@@ -12618,10 +12678,12 @@ function hostileBrain(a, dt){
   const tm0 = topMode();
   if ((drug && drug.fx.ghost) || jamT > 0 ||
       (tm0 && tm0.name === 'camjack')) a.aggro = 0;   // ghosted, jammed, or absent
-  const rx = cam.x - a.x, ry = cam.y - a.y;
+  const tgt = nearestPlayer(a.x, a.y, SCENE);
+  if (!tgt){ a.aggro = 0; a.moving = 0; return; }
+  const rx = tgt.cam.x - a.x, ry = tgt.cam.y - a.y;
   const pr = Math.hypot(rx, ry) || 0.001;
   if (!a.aggro){
-    if (pr < 9 && sightClear(a.x, a.y, cam.x, cam.y)) a.aggro = 1;
+    if (pr < 9 && sightClear(a.x, a.y, tgt.cam.x, tgt.cam.y)) a.aggro = 1;
     return;
   }
   if (pr > 30){ a.aggro = 0; return; }
@@ -12634,11 +12696,14 @@ function hostileBrain(a, dt){
     a.moving = 1;
   } else if (a.windup > 0){                    // committed - the blow lands at 0
     a.windup -= dt;
-    if (a.windup <= 0 && player.hp > 0 && pr <= 1.6){
-      damagePlayer(a.pendAtk || 5);
+    if (a.windup <= 0 && pr <= 1.6){
+      // only the blow that lands on US goes through our own damage path;
+      // a peer's health is the host's to decide, not ours
+      if (tgt.local){ if (player.hp > 0) damagePlayer(a.pendAtk || 5); }
+      else tgt.hp = Math.max(0, tgt.hp - (a.pendAtk || 5));
       a.windup = 0;
     }
-  } else if (a.atkCool <= 0 && player.hp > 0){
+  } else if (a.atkCool <= 0 && (tgt.local ? player.hp > 0 : tgt.hp > 0)){
     a.atkCool = 1.1;                           // telegraph, then strike
     a.windup = 0.25;
     a.pendAtk = (a.atk || 5) + ((Math.random() * 6) | 0);
@@ -17782,24 +17847,49 @@ function newWorld(seed){
 
 /*============================== 17. MAIN LOOP ==============================*/
 function simulate(dt){
-  if (!inside){       // the street holds its breath while you are indoors
+  const home = SCENE;
+  /* The street held its breath while YOU were indoors. That is exactly right
+     when you are the only person in the city and wrong the moment somebody
+     else is still out on it - their crowd would stop mid-step because we shut
+     a door. It runs while anybody is out there; with netplay off that is the
+     same condition it has always been. */
+  if (anyoneIn(CITY)){
+    bindScene(CITY);
     gridClear(carGrid); for (let i = 0; i < cars.length; i++) gridAdd(carGrid, cars[i].x, cars[i].y, cars[i]);
     gridClear(pedGrid); for (let i = 0; i < peds.length; i++) gridAdd(pedGrid, peds[i].x, peds[i].y, peds[i]);
     streamAgents();
     serviceRepaths();
     for (let i = 0; i < cars.length; i++) updateCar(cars[i], dt);
     for (let i = 0; i < peds.length; i++) updatePed(peds[i], i, dt);
+    for (let i = 0; i < actors.length; i++){
+      const a = actors[i];
+      if (a.interior) continue;                 // his room is somewhere else
+      updateActor(a, dt);
+    }
+    /* These five still follow YOU rather than the nearest of us: the heli
+       hunts a person, the waypoint and the race are your own business, and
+       the ladder reads one corruption score. They run when you are the one
+       out on the street, exactly as before. Generalising them wants a wire
+       that can say whose heat is whose, so they wait for one. */
+    if (ME.scene === CITY){
+      heliFrame(dt); hideFrame(dt); wayTick(dt); runFrame(dt); enfBrainTick(dt);
+    }
   }
-  for (let i = 0; i < actors.length; i++){
-    const a = actors[i];
-    if (!!a.interior !== !!inside) continue;
-    updateActor(a, dt);
+  // every room with somebody standing in it thinks; the empty ones do not
+  for (const sc of SCENES.values()){
+    if (!anyoneIn(sc)) continue;
+    bindScene(sc);
+    for (let i = 0; i < actors.length; i++){
+      const a = actors[i];
+      if (a.interior !== sc.id) continue;
+      updateActor(a, dt);
+    }
   }
+  bindScene(home);
   for (let i = fxs.length - 1; i >= 0; i--){
     fxs[i].t -= dt;
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
-  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); runFrame(dt); enfBrainTick(dt); }
   if (player.car && !myCar && DEALER)           // the save remembers the keys
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
                player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
