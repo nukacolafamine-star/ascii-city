@@ -8154,6 +8154,7 @@ const MQ1 = {
         if (invCount('scrap') >= 5) return toHideout();
         return supplyMark(nearestDepot(5 - invCount('scrap')), 'DEPOT') || toHideout();
       },
+      take: { scrap: 5 },
       auto(){ return invCount('scrap') >= 5 && atHideout(6); } }] },
   mq7: { name: 'A LOUD DISTRACTION', act: 1,
     stages: [{ log: 'pull the patrols to the marked junction - make a noise',
@@ -8297,8 +8298,10 @@ function rookTree(){
       opts: [{ t: 'Five scrap', do(){ mqStart('mq6'); } }] },
     turn6: { text: () => invCount('scrap') >= 5 ? 'Five units. That buys the next stupid thing we do.'
                                                 : 'Count stands at ' + invCount('scrap') + ' of 5.',
+      // the scrap and the fee are both the stage's business now, so handing
+      // them over in person pays exactly what walking in with them pays
       opts: [{ t: 'Delivered', if: () => invCount('scrap') >= 5,
-               do(){ invTake('scrap', 5); player.credits += 40; mqDone('mq6'); toast('+40 cr'); },
+               do(){ mqDone('mq6'); },
                next: 'give7' }] },
     give7: { text: 'Tomorrow we hit a corpo courier on the strip. Tonight, we teach the patrols to look the wrong way. Set off firecrackers at the marked junction - loud, then gone.',
       opts: [{ t: 'Boom', do(){ mqStart('mq7'); } }] },
@@ -10630,7 +10633,9 @@ const QUEST_PAY = {
      wage that buys it arrives. mq4 is the biggest purse in act one for one
      reason: mq5 wants a board, and the courier run is what pays for it. */
   // ---- act one: proving you turn up ----
-  mq1: 0, mq2: 30, mq3: 35, mq4: 95, mq5: 30, mq6: 25, mq7: 50, mq8: 65,
+  // mq6 was 25 through the marker and 65 through ROOK's dialogue, because
+  // the dialogue handed over forty of its own. One number now.
+  mq1: 0, mq2: 30, mq3: 35, mq4: 95, mq5: 30, mq6: 65, mq7: 50, mq8: 65,
   // ---- act two: the cell trusts you with doors ----
   mq9: 0, mq10: 30, mq11: 35, mq12: 50, mq13: 0, mq14: 0,
   mq15: 40, mq16: 65,
@@ -10693,6 +10698,16 @@ function advanceQuest(id){
   // a finished quest has 'done' where its stage number was, and 'done' + 1
   // is a string that indexes nothing - any second call used to crash here
   if (!q || typeof player.quests[id] !== 'number') return;
+  /* `take` on a stage is what handing the job in COSTS you. It lives here
+     rather than in the dialogue that turns it in, because a stage with an
+     auto() finishes the moment its condition is true and the dialogue is
+     never opened - which is how you could walk into the hideout carrying
+     five scrap for ROOK, have the job tick itself off, and walk out still
+     carrying all five. Both routes go through this function, so this is the
+     only place that can charge you exactly once. */
+  const done = q.stages[player.quests[id]];
+  if (done && done.take)
+    for (const it in done.take) invTake(it, done.take[it]);
   let s = player.quests[id] + 1;
   if (s >= q.stages.length){
     player.quests[id] = 'done';
