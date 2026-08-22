@@ -11251,6 +11251,15 @@ function wallDist(maxD){
   }
   return maxD;
 }
+/* How far off the line a target may be and still be hit, at distance f.
+   This used to be a flat number of tiles at any range, which is a corridor
+   rather than a cone - and a corridor half a tile wide is a couple of
+   degrees at arm's length and a fraction of one at seventy metres. That is
+   why anything far enough away to be six pixels tall could not be shot: you
+   were being asked for an accuracy the screen could not even display. It
+   opens with distance now, so what the crosshair covers on screen is roughly
+   what the bullet covers in the world. */
+function aimWidth(halfW, f){ return halfW * clamp(f / 10, 1, 4); }
 function hostileInSights(maxD, halfW){
   halfW = halfW || 0.45;
   const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
@@ -11262,7 +11271,7 @@ function hostileInSights(maxD, halfW){
     const rx = a.x - cam.x, ry = a.y - cam.y;
     const f = rx * vx + ry * vy;
     if (f < 0.3 || f > wd) continue;
-    if (Math.abs(vy * rx - vx * ry) > halfW) continue;
+    if (Math.abs(vy * rx - vx * ry) > aimWidth(halfW, f)) continue;
     if (f < bd){ bd = f; best = a; }
   }
   return best && { a: best, d: bd };
@@ -11281,7 +11290,7 @@ function characterInSights(maxD, halfW){
       const rx = a.x - cam.x, ry = a.y - cam.y;
       const f = rx * vx + ry * vy;
       if (f < 0.3 || f > wd) continue;
-      if (Math.abs(vy * rx - vx * ry) > halfW) continue;
+      if (Math.abs(vy * rx - vx * ry) > aimWidth(halfW, f)) continue;
       if (f < bd){
         bd = f; best = a; ped = false;
         if (a.hp === undefined || a.hp <= 0){ a.hp = 30; a.maxHp = 30; }
@@ -11291,15 +11300,23 @@ function characterInSights(maxD, halfW){
   if (!inside){
     const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
     const wd = Math.min(bd, wallDist(maxD));
-    const near = gridQuery(pedGrid, cam.x + vx * Math.min(12, maxD * 0.4),
-                           cam.y + vy * Math.min(12, maxD * 0.4), 16, _q1);
-    for (let i = 0; i < near.length; i++){
-      const p = near[i];
-      const rx = p.x - cam.x, ry = p.y - cam.y;
-      const f = rx * vx + ry * vy;
-      if (f < 0.3 || f > wd) continue;
-      if (Math.abs(vy * rx - vx * ry) > halfW) continue;
-      if (f < bd){ bd = f; best = p; ped = true; }
+    // One grid query twelve metres up the line covered a rifle the same way
+    // it covered a holdout, so nobody past about twenty-eight metres was in
+    // the world as far as a bullet was concerned. Walk the line instead, in
+    // steps the query radius can cover.
+    const step = 20, seen = new Set();
+    for (let t = 0; t <= wd + step; t += step){
+      const near = gridQuery(pedGrid, cam.x + vx * t, cam.y + vy * t, 14, _q1);
+      for (let i = 0; i < near.length; i++){
+        const p = near[i];
+        if (seen.has(p)) continue;
+        seen.add(p);
+        const rx = p.x - cam.x, ry = p.y - cam.y;
+        const f = rx * vx + ry * vy;
+        if (f < 0.3 || f > wd) continue;
+        if (Math.abs(vy * rx - vx * ry) > aimWidth(halfW, f)) continue;
+        if (f < bd){ bd = f; best = p; ped = true; }
+      }
     }
   }
   return best && { a: best, d: bd, ped };
@@ -11874,7 +11891,12 @@ function viewW(rows){ let w = 0; for (const r of rows) w = Math.max(w, r.length)
 /* solid defaults on: what you are holding is opaque. The one caller that
    passes false is the muzzle flash, which is light leaving the bore - a
    black plate behind THAT would be a box round the flash. */
-function drawViewArt(rows, ax, ay, tr, cmap, solid){
+/* `hole` leaves a disc of the art undrawn - glyphs AND the opaque backing -
+   so something mounted on the gun can be seen THROUGH. Without it a ring
+   painted on the viewmodel is a ring painted on a wall: the backing that
+   stops the street showing through the gun also stops it showing through
+   the glass. */
+function drawViewArt(rows, ax, ay, tr, cmap, solid, hole){
   rows = groundArt(rows);                    // always planted on the screen edge
   const ah = rows.length, aw = viewW(rows);
   const want = tr;
@@ -11886,7 +11908,13 @@ function drawViewArt(rows, ax, ay, tr, cmap, solid){
     let run = -1;                              // start column of the span
     for (let x = 0; x < tc; x++){
       const ch = sr[(x * aw / tc) | 0];
-      if (!ch || ch === ' '){
+      let cut = false;
+      if (hole){
+        const dx = (ax + x - hole.cx) / hole.rad;
+        const dy = (ay + y - hole.cy) / (hole.rad * (R.cellW / R.cellH));
+        cut = dx * dx + dy * dy <= 1;
+      }
+      if (!ch || ch === ' ' || cut){
         if (run >= 0){ if (solid !== false) hudSolidRun(ax + run, ay + y, x - run);
                        run = -1; }
         continue;
@@ -14275,7 +14303,9 @@ function floorSample(wx, wy, ix, iy){
       if (gl && fx >= 0.14 && fy >= 0.10){
         const gc = ((fx - 0.14) * 4.17) | 0, gr = ((fy - 0.10) * 6.25) | 0;
         if (gc >= 0 && gr < 5 && gl[gr * 4 + gc] === '#'){
-          _wb = C.nAmber; _wd = 0.95; _wwet = puddleAt(ix, iy);
+          // the block number is painted in something that glows: it is a
+          // source of light, so it does not carry anyone else's
+          _wb = C.nAmber; _wd = 0.95; _wwet = 0;
           return;
         }
       }
@@ -16580,7 +16610,25 @@ function hudPass(){
         // recoil in stages: the buck, the settle, the return
         const kick = muzzleT > 0.06 ? 3 : muzzleT > 0.03 ? 2 : muzzleT > 0 ? 1 : 0;
         const gx = (cols >> 1) - sightX, gy = rows - tr + bob + kick;
-        drawViewArt(gart, gx, gy, tr, CM_GUN);
+        /* A scoped gun is drawn with a hole in it and a ring round the hole -
+           the tube, seen from behind, mounted on the weapon rather than
+           painted on the screen. It rides the gun, so it lifts with the bob
+           and jumps with the recoil, and the aim dot does NOT follow it: the
+           dot sits where the barrel is pointing and the ring sits where the
+           gun is, so bringing one onto the other is a thing you do with the
+           mouse. At rest they line up; walk, or take the recoil, and you put
+           them back. */
+        const G2 = GUNS[gid];
+        let hole = null;
+        if (G2 && G2.scope){
+          hole = { cx: cols >> 1, cy: gy + Math.round(rows * 0.10),
+                   rad: Math.max(3.5, rows * 0.085) };
+        }
+        drawViewArt(gart, gx, gy, tr, CM_GUN, true, hole);
+        if (hole){
+          ringCells(hole.cx, hole.cy, hole.rad, (x, y) => hudCell(x, y, 'O', H_DIM));
+          ringCells(hole.cx, hole.cy, hole.rad + 1, (x, y) => hudCell(x, y, '#', H_DRK));
+        }
         if (muzzleT > 0)                        // the flash leaves the bore
           drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
                       (cols >> 1) - 3, gy - 3, 3, CM_MUZ, false);
@@ -16611,12 +16659,6 @@ function hudPass(){
     }
     const aim = cam.riding ? null : hostileInSights(30);
     const rr0 = (rows >> 1) + Math.round(cam.pitch);
-    // A rifle carries its glass with it: even down at the hip there is a
-    // ring round the aim point, and the dot sits dead centre of it. Up at
-    // the eye that ring becomes the tube itself.
-    if (!scopeUp() && scopeGun() && !cam.riding && !sitting && !skating)
-      ringCells((cols - 1) / 2, rr0, 4.2,
-                (x, y) => hudCell(x, y, 'o', H_DIM));
     hudStr(cols >> 1, rr0, aim ? 'x' : '+',
            aim ? H_RED : player.bling === 'shades' ? H_PUR : H_GRN);
     if (aim){
@@ -16934,8 +16976,13 @@ function frame(now){
   shotCool = Math.max(0, shotCool - dt);
   // full auto: the trigger is still down and the gun is ready again
   if (fireHeld && shotCool <= 0 && !topMode() && !worldFrozen()){
-    const G = GUNS[weaponId()];
-    if (G && G.auto && document.pointerLockElement === view) fireWeapon();
+    const wid = weaponId(), G = GUNS[wid];
+    // A dry gun falls through fireWeapon into a punch, and the punch never
+    // sets the shot cooldown - so an SMG with an empty magazine turned the
+    // held trigger into full-auto fists. Auto fire needs a gun in your hands
+    // and something in it.
+    if (G && G.auto && invCount(wid) > 0 && invCount('ammo') > 0 &&
+        document.pointerLockElement === view) fireWeapon();
   }
   if (punchT > 0){
     const eOld = punchDur - punchT;
