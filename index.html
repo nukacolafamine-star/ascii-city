@@ -19122,9 +19122,59 @@ const RTC_TRACKERS = ['wss://tracker.webtorrent.dev',
                       'wss://tracker.files.fm:7073/announce'];
 const RTC_OFFERS = 3;          // spares, so a second arrival is not left waiting
 const RTC_BEAT = 8000;         // re-announce, in ms
+/* STUN alone is why this worked on a LAN and nowhere else. It tells you your
+   own public address, which is enough when the router will accept a return
+   packet from whoever you just spoke to - and useless behind a symmetric NAT,
+   which mints a fresh port per destination, so the address the other side was
+   given is dead by the time they use it. Two machines on one network never
+   need any of it and connect on host candidates, which is exactly the shape
+   of "works on LAN, never on the internet".
+
+   The answer is a relay: a box in the middle both ends can reach outward to.
+   These are the free openrelay ones - public, no account, and the 443/TCP
+   entry also gets through firewalls that pass nothing but web traffic. A
+   relayed connection costs a hop of latency and is the difference between a
+   game and no game. */
 const RTC_ICE = { iceServers: [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
-] };
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject', credential: 'openrelayproject' }
+], iceCandidatePoolSize: 2 };
+/* Public relays come and go - every one tried while writing this had stopped
+   resolving - and a relay is the difference between "works on our LAN" and
+   "works". So one can be supplied and is remembered: open the page once with
+   ?turn=turn:host:3478|user|pass and it is kept from then on. Several may be
+   given, separated by commas. Free tiers exist (Cloudflare, Metered) and a
+   coturn on any cheap box takes ten minutes; either way the credentials are
+   yours and stay on your machine. */
+function netExtraIce(){
+  let raw = '';
+  try {
+    const q = new URLSearchParams(location.search).get('turn');
+    if (q !== null){ localStorage.setItem('asciiCityTurn', q); raw = q; }
+    else raw = localStorage.getItem('asciiCityTurn') || '';
+  } catch (e){}
+  const out = [];
+  for (const part of raw.split(',')){
+    const bits = part.trim().split('|');
+    if (!bits[0]) continue;
+    const e = { urls: bits[0] };
+    if (bits[1]) e.username = bits[1];
+    if (bits[2]) e.credential = bits[2];
+    out.push(e);
+  }
+  return out;
+}
+function netIceConfig(){
+  const extra = netExtraIce();
+  if (!extra.length) return RTC_ICE;
+  return { iceServers: extra.concat(RTC_ICE.iceServers),
+           iceCandidatePoolSize: 2 };
+}
 /* Twenty bytes, as the tracker wants them, out of whatever was typed. */
 function rtc20(seed){
   let out = '';
@@ -19144,13 +19194,45 @@ function rtcRand20(){
 /* Gather until the browser says it is finished, or until it has been long
    enough that whatever it has is what it is going to get. Trickling every
    candidate through a tracker is more round trips than this is worth. */
+/* Wait for something ROUTABLE, not merely for time to pass. Gathering often
+   never reports itself complete at all - six seconds in it is still
+   "gathering" while having produced everything it is ever going to - so a
+   plain timeout either cuts off the relay candidate or waits pointlessly.
+   This resolves once a reflexive or relayed candidate exists and has had a
+   moment for its siblings, and gives up at the hard stop either way. */
 function rtcGathered(pc, ms){
   return new Promise(res => {
     if (pc.iceGatheringState === 'complete') return res();
-    const done = () => { clearTimeout(t); pc.removeEventListener('icegatheringstatechange', chk); res(); };
+    let settled = false, grace = null;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hard); clearTimeout(grace);
+      pc.removeEventListener('icegatheringstatechange', chk);
+      pc.removeEventListener('icecandidate', onc);
+      res();
+    };
     const chk = () => { if (pc.iceGatheringState === 'complete') done(); };
-    const t = setTimeout(done, ms || 2500);
+    const onc = e => {
+      const c = e.candidate;
+      /* A null candidate is the end of ONE transport, not the end of
+         gathering, and it arrives in milliseconds - long before a TURN server
+         has finished an allocation. Treating it as the finish line is why the
+         offer went out at 169ms carrying host and reflexive candidates and
+         never a relayed one. Only a relay, or the real completion, or the
+         hard stop ends this. */
+      if (!c) return;
+      if (c.type === 'relay'){ clearTimeout(grace); grace = setTimeout(done, 400); return; }
+      // Only hang about for a relay if one was actually configured. With
+      // nothing but STUN there is nothing further coming, and waiting two
+      // seconds per offer for it - three offers deep, in sequence - was
+      // enough to stop the handshake completing at all.
+      if (c.type === 'srflx' && !grace)
+        grace = setTimeout(done, netExtraIce().length ? 2200 : 500);
+    };
+    const hard = setTimeout(done, ms || 5000);
     pc.addEventListener('icegatheringstatechange', chk);
+    pc.addEventListener('icecandidate', onc);
   });
 }
 /* The crowd is four hundred and thirty positions and goes out eight times a
@@ -19177,7 +19259,8 @@ function rtcUnpackCrowd(buf){
 function rtcLink(room, onMsg, onStat){
   const L = { kind: 'net', mesh: true, chans: new Set(), socks: [], dead: false,
               peers: 0, note: 'looking for the room',
-              t0: Date.now(), live: 0, swarm: 0, offers: 0, answered: 0 };
+              t0: Date.now(), live: 0, swarm: 0, offers: 0, answered: 0,
+              failed: 0, ice: '-', pc: '-', route: '-' };
   const ih = rtc20('ascii-city/' + room), me = rtcRand20();
   const pending = new Map();                    // offer_id -> {pc, dc}
   const seen = new Set();                        // peers already being answered
@@ -19188,6 +19271,14 @@ function rtcLink(room, onMsg, onStat){
   const byPeer = new Map();                      // peer id -> the one channel
 
   const stat = n => { L.note = n; if (onStat) onStat(L); };
+  const kinds = sdp => {
+    const t = {};
+    for (const line of String(sdp || '').split(String.fromCharCode(10)))
+      if (line.indexOf('a=candidate:') === 0){
+        const m = /typ (\w+)/.exec(line); if (m) t[m[1]] = (t[m[1]] || 0) + 1;
+      }
+    return t;
+  };
   const arm = (pc, dc, pid, offerer) => {
     dc.binaryType = 'arraybuffer';
     dc.__pid = pid; dc.__off = offerer;
@@ -19218,19 +19309,27 @@ function rtcLink(room, onMsg, onStat){
         else onMsg(rtcUnpackCrowd(ev.data));
       } catch (e){}
     };
+    pc.oniceconnectionstatechange = () => { L.ice = pc.iceConnectionState; };
     pc.onconnectionstatechange = () => {
+      L.pc = pc.connectionState;
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed'){
-        L.chans.delete(dc); L.peers = L.chans.size;
+        L.chans.delete(dc);
+        if (dc.__pid && byPeer.get(dc.__pid) === dc) byPeer.delete(dc.__pid);
+        L.peers = byPeer.size || L.chans.size;
+        if (pc.connectionState === 'failed') L.failed++;
         if (pid) seen.delete(pid);
+        stat(L.peers ? L.peers + ' connected'
+                     : (L.failed ? 'found them, could not connect' : 'in the room, waiting'));
       }
     };
   };
   async function freshOffer(){
-    const pc = new RTCPeerConnection(RTC_ICE);
+    const pc = new RTCPeerConnection(netIceConfig());
     const dc = pc.createDataChannel('c', { ordered: false, maxRetransmits: 2 });
     arm(pc, dc);
     await pc.setLocalDescription(await pc.createOffer());
     await rtcGathered(pc);
+    L.route = Object.keys(kinds(pc.localDescription.sdp)).join('+') || 'none';
     const oid = rtcRand20();
     pending.set(oid, { pc, dc });
     return { offer_id: oid, offer: { type: 'offer', sdp: pc.localDescription.sdp } };
@@ -19238,7 +19337,7 @@ function rtcLink(room, onMsg, onStat){
   async function answerTo(sock, msg){
     if (seen.has(msg.peer_id)) return;
     seen.add(msg.peer_id);
-    const pc = new RTCPeerConnection(RTC_ICE);
+    const pc = new RTCPeerConnection(netIceConfig());
     pc.ondatachannel = ev => arm(pc, ev.channel, msg.peer_id, msg.peer_id);
     await pc.setRemoteDescription(msg.offer);
     await pc.setLocalDescription(await pc.createAnswer());
@@ -19259,18 +19358,31 @@ function rtcLink(room, onMsg, onStat){
     const now = Date.now();
     if (!force && now - shoutAt < 3000) return;
     shoutAt = now;
-    if (pending.size > 12){                      // retire the stale ones
+    /* Every announce carries its OWN offers. Topping up to a shared cap
+       looks thriftier and quietly breaks the whole thing: a tracker can only
+       introduce people using offers it was handed, and the first one to be
+       announced to consumed the entire budget - so every announce after it,
+       including all of them to the only tracker that actually relays, went
+       out carrying nothing. Both ends sat in a swarm of two forever.
+
+       The cap is enforced by retiring the OLDEST instead, which bounds the
+       connections without ever starving an announce. */
+    if (pending.size > 24){
       for (const [k, v] of pending){
         try { v.pc.close(); } catch (e){}
         pending.delete(k);
-        if (pending.size <= RTC_OFFERS) break;
+        if (pending.size <= 12) break;
       }
     }
-    const want = Math.max(0, RTC_OFFERS - pending.size);
-    const offers = [];
-    for (let i = 0; i < want; i++){ try { offers.push(await freshOffer()); } catch (e){} }
+    // Built together, not one after another: each waits on its own ICE, and
+    // three of those in sequence is three times the delay before anybody can
+    // answer any of them.
+    const want = RTC_OFFERS;
+    const made = await Promise.all(
+      Array.from({ length: want }, () => freshOffer().catch(() => null)));
+    const offers = made.filter(Boolean);
     L.offers = pending.size;
-    if (!offers.length && !force) return;        // nothing new to hand out
+    if (!offers.length) return;                  // nothing to hand out
     sock.send(JSON.stringify({ action: 'announce', info_hash: ih, peer_id: me,
       numwant: 8, uploaded: 0, downloaded: 0, left: 0, event: 'started', offers }));
   }
@@ -19466,6 +19578,17 @@ function openMultiplayerMenu(){
   items.push({ label: 'TRYING FOR', value: () => {
     const L = NET.on && NET.link && NET.link.rtc;
     return !L ? '-' : Math.round((Date.now() - L.t0) / 1000) + 's'; } });
+  // srflx means we have a public address; relay means a way through a NAT
+  // that will not take one. host alone is a LAN and nothing further.
+  items.push({ label: 'ROUTE', value: () => {
+    const L = NET.on && NET.link && NET.link.rtc;
+    return !L ? '-' : L.route + (L.failed ? '  (' + L.failed + ' failed)' : ''); } });
+  items.push({ label: 'CONNECTION', value: () => {
+    const L = NET.on && NET.link && NET.link.rtc;
+    return !L ? '-' : L.ice; } });
+  items.push({ label: 'RELAY', value: () => {
+    const n = netExtraIce().length;
+    return n ? n + ' supplied' : 'none - LAN or open NAT only'; } });
   items.push({ label: 'LAST ERROR', value: () => NET.error || 'none' });
   items.push({ sep: true });
   if (!NET.on){
@@ -19482,6 +19605,7 @@ function openMultiplayerMenu(){
   items.push({ sep: true });
   items.push({ info: 'the same code works across tabs and across machines' });
   items.push({ info: 'no server: tabs meet directly, machines meet peer to peer' });
+  items.push({ info: 'strict NAT needs a relay - open the page with ?turn=URL|user|pass' });
   items.push({ sep: true });
   items.push({ label: 'BACK', act(){ popMode(); } });
   pushMode(makeListMenu({ name: 'multiplayer', title: 'MULTIPLAYER', items }));
