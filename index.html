@@ -5518,6 +5518,7 @@ function spawnActors(){
   // The fixer is not on a corner any more - he has a room upstairs on the
   // mile, built by buildInterior, and his tree lives on its own so the flip
   // phone can open the same conversation from anywhere in the city.
+  spawnPatrols();
   // the belt has teeth: razors prowl the industrial district streets
   let packed = 0;
   for (let i = 0; i < 4000 && packed < 14; i++){
@@ -11056,15 +11057,29 @@ function flockEyes(){
 }
 function flockSees(){ return flockEyes() > 0; } // the ledger needs a witness
 function crimeEvent(n, why){
-  if (!flockSees()){                            // no witness, no record
+  // A man standing across the street is not a camera. The flock decides
+  // whether it goes on your RECORD; an officer who watched you do it comes
+  // for you either way, which is the difference between being filed and
+  // being caught.
+  enfWitness();
+  if (!flockSees()){                            // no lens, no paperwork
     toast('no cameras saw that');
     return;
   }
   if (n <= 0) return;
-  player.corruption = Math.min(10, player.corruption + n);
+  /* A crime sticks according to where you did it. The mile barely writes
+     it down; downtown counts it one and a half times. Whole points are what
+     the player sees, so the remainder is carried rather than rounded away -
+     four small crimes in the red mile still eventually make a point. */
+  const f = enfHere();
+  player.qvar.heatFrac = (player.qvar.heatFrac || 0) + n * f;
+  const whole = Math.floor(player.qvar.heatFrac);
+  player.qvar.heatFrac -= whole;
+  if (whole > 0) player.corruption = Math.min(10, player.corruption + whole);
   player.qvar.lastCrimeDay = dayCount;
   sfx('ui_back', { vol: 0.6, rate: 0.5 });
-  toast('the system notices: +' + n + ' corruption (' + why + ')');
+  if (whole > 0) toast('the system notices: +' + whole + ' corruption (' + why + ')');
+  else toast('noted, and barely - ' + why + ' in a ' + enfDistName() + ' district');
 }
 function pedCrime(n, why){
   // the cap is on OUTSTANDING ped-sourced corruption: as the score decays
@@ -11239,16 +11254,72 @@ function wayTick(dt){
     wayOn = true;
   } else wayOn = false;                          // unroutable: the dots wait
 }
-function enfCap(){
-  const c = player.corruption;
-  return c >= 6 ? 6 : c >= 4 ? 3 : c >= 2 ? 2 : 0;
+/*========================== THE ENFORCEMENT LADDER =========================
+  Corruption used to be three numbers wearing ten faces: something at 2,
+  something at 4, something at 6, and seven of the ten levels were flavour
+  text. It is a rung-by-rung table now, and every rung buys them something -
+  more of them, sooner, in bigger parties, harder, and less willing to lose
+  you. Ten is meant to be unsurvivable in the open.
+
+  cap    how many can be on the street at once
+  gap    seconds between call-outs
+  party  how many arrive together
+  hunt   they spawn already knowing where you are
+  hp/atk what turns up
+============================================================================*/
+const ENF_TIER = [
+  { cap: 0,  gap: 999, party: 0, hunt: 0, hp: 40, atk: 9,  spd: 2.6 },
+  { cap: 1,  gap: 165, party: 1, hunt: 0, hp: 40, atk: 9,  spd: 2.6 },
+  { cap: 2,  gap: 135, party: 1, hunt: 0, hp: 42, atk: 9,  spd: 2.6 },
+  { cap: 2,  gap: 110, party: 1, hunt: 1, hp: 45, atk: 10, spd: 2.7 },
+  { cap: 3,  gap: 88,  party: 1, hunt: 1, hp: 48, atk: 10, spd: 2.8 },
+  { cap: 4,  gap: 70,  party: 2, hunt: 1, hp: 52, atk: 11, spd: 2.9 },
+  { cap: 5,  gap: 54,  party: 2, hunt: 1, hp: 56, atk: 11, spd: 3.0 },
+  { cap: 6,  gap: 42,  party: 3, hunt: 1, hp: 62, atk: 12, spd: 3.1 },
+  { cap: 8,  gap: 32,  party: 3, hunt: 1, hp: 70, atk: 13, spd: 3.2 },
+  { cap: 10, gap: 24,  party: 4, hunt: 1, hp: 78, atk: 14, spd: 3.3 },
+  { cap: 13, gap: 15,  party: 5, hunt: 1, hp: 90, atk: 16, spd: 3.5 }
+];
+function enfTier(){ return ENF_TIER[clamp(player.corruption | 0, 0, 10)]; }
+// The district multiplies the strength on the street, but there is a point
+// past which more of them is not more frightening, only slower - sixteen
+// bodies converging is already the end of the conversation.
+function enfCap(){ return Math.min(16, Math.round(enfTier().cap * enfHere())); }
+/*--------------------------- where you are ---------------------------------
+  A district is a policing budget. The red mile is somebody else's problem
+  and nobody files anything; downtown counts the paving slabs. The same
+  factor does three jobs - how fast a crime sticks to you, how many of them
+  come, and how long you have to stand still to stop being interesting -
+  which is what makes a district a PLACE rather than a palette. */
+const DIST_ENF = [];
+(function(){
+  DIST_ENF[D_DOWN]  = 1.65;
+  DIST_ENF[D_STRIP] = 1.15;
+  DIST_ENF[D_RES]   = 1.0;
+  DIST_ENF[D_SUB]   = 0.9;
+  DIST_ENF[D_IND]   = 0.75;
+  DIST_ENF[D_RURAL] = 0.55;
+  DIST_ENF[D_RED]   = 0.4;
+})();
+function enfHere(x, y){
+  const d = DIST_ENF[districtAt(x === undefined ? cam.x | 0 : x | 0,
+                                y === undefined ? cam.y | 0 : y | 0)];
+  return d === undefined ? 1 : d;
+}
+function enfDistName(){
+  const f = enfHere();
+  return f >= 1.4 ? 'heavy' : f >= 1.05 ? 'watched' : f >= 0.8 ? 'ordinary'
+       : f >= 0.6 ? 'thin' : 'nobody is counting';
 }
 function spawnEnforcer(nearR, aggro){
   const t = randWalkNear(cam.x, cam.y, nearR, nearR + 14);
   if (!t) return null;
+  const T = enfTier();
   const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
-    { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
-  a.aggro = aggro ? 1 : 0; a.atk = 9;
+    { name: 'ENFORCER', brain: 'hostile', hp: T.hp, shirt: C.carC, skin: C.dataDk });
+  a.aggro = aggro ? 1 : 0; a.atk = T.atk; a.spd = T.spd;
+  // the record that called him out. Clean back below it and he is stood down
+  a.tier = Math.max(1, player.corruption | 0);
   return a;
 }
 function heliFrame(dt){
@@ -11295,17 +11366,66 @@ function heliFrame(dt){
   }
   swatT = Math.max(0, swatT - dt);
 }
+/*---------------------------- going to ground ------------------------------
+  Hiding was six seconds flat and half of them vanished. Now it is a real
+  way out of a chase, and how hard it is depends on everything it should:
+  the record they are holding, the district you are standing in, how fast
+  you are on your feet, and whether you are dressed like somebody worth
+  stopping.
+
+  Two seconds over the minimum at one point in the red mile. Half a minute
+  at ten downtown with nothing going for you - and the length is only half
+  of it, because at seven and up you cannot start at all while one of them
+  has his eyes on you. Agility and a coat the street respects together take
+  a third off. */
+function cloutHide(){
+  // Clout cuts both ways and here it cuts your way: a face the street knows
+  // is a face the street covers for. Shades hide it outright.
+  let f = 0;
+  if (isWorn('shades')) f += 0.16;
+  if (isWorn('chain') || isWorn('watch')) f += 0.08;
+  if (isWorn('ring')) f += 0.05;
+  if (player.outfit && ITEMS[player.outfit] && (ITEMS[player.outfit].price || 0) >= 120)
+    f += 0.10;
+  return Math.min(0.34, f);
+}
+function hideNeed(){
+  const c = clamp(player.corruption | 0, 0, 10);
+  const base = 4 + c * 1.5;                          // 4s at zero, 19 at ten
+  const agi = 1 - Math.min(0.34, (player.stats.AGI - 1) * 0.075);
+  return Math.max(3, base * agi * (1 - cloutHide()) * enfHere());
+}
+/* At the top of the ladder you cannot simply crouch in front of them. */
+function hideBlockedBy(){
+  const c = player.corruption;
+  if (c < 7) return null;
+  const near = c >= 10 ? 14 : c >= 9 ? 11 : 8;
+  for (const a of actors){
+    if (a.kind !== 'enforcer' || a.interior || !a.aggro) continue;
+    if (Math.hypot(a.x - cam.x, a.y - cam.y) > near) continue;
+    if (sightClear(a.x, a.y, cam.x, cam.y)) return a;
+  }
+  return null;
+}
 function tryHide(){
   if (hideT > 0){ hideT = 0; toast('hide broken'); return; }
   if (inside || cam.riding || skating){ toast('stand on your own feet first'); return; }
   if (player.corruption <= 0 && !actors.some(a => a.kind === 'enforcer')){
     toast('nobody is looking for you'); return;
   }
-  hideT = 6;
+  const seen = hideBlockedBy();
+  if (seen){
+    toast('one of them is looking straight at you - break the line first');
+    sfx('ui_back', { vol: 0.5, rate: 0.6 });
+    return;
+  }
+  hideNeedT = hideNeed();
+  hideT = hideNeedT;
   hideX = cam.x; hideY = cam.y;
-  toast('hold still - become nobody');
+  toast('hold still - ' + hideT.toFixed(0) + 's, ' + enfDistName() + ' district');
   sfx('ui_move', { vol: 0.4, rate: 0.5 });
 }
+let hideNeedT = 6;
 let hideX = 0, hideY = 0;
 function hideFrame(dt){
   if (hideT <= 0) return;
@@ -11322,16 +11442,133 @@ function hideFrame(dt){
   if (heli && Math.hypot(cam.x - heli.sx, cam.y - heli.sy) < 2.2){
     hideT = 0; toast('not in the light, you will not'); return;
   }
+  // somebody who can see you does not stop being able to see you
+  const seen = hideBlockedBy();
+  if (seen){ hideT = 0; toast('he has not looked away - move'); return; }
   hideT -= dt;
   if (hideT <= 0){
-    for (const a of actors) if (a.kind === 'enforcer') a.aggro = 0;
-    // half of them get reassigned somewhere less interesting
-    for (let i = actors.length - 1; i >= 0; i--)
-      if (actors[i].kind === 'enforcer' && (i & 1)) actors.splice(i, 1);
-    if (heli){ heli = null; toast('the rotor swings away - trail lost'); }
-    else toast('the street forgets you - trail lost');
+    /* They do not go home and they do not evaporate. They lose YOU, which
+       is a different thing: each one posts up on the last place he had you
+       and works that block, and will have you again the moment he sees you.
+       What stands them down is the paperwork going away - each remembers the
+       record that called him out, and below it he is off the clock. */
+    let n = 0;
+    for (const a of actors){
+      if (a.kind !== 'enforcer' || a.interior) continue;
+      a.aggro = 0; a.brain = 'watch';
+      a.wx = hideX; a.wy = hideY;               // the block he lost you on
+      a.wt = 0; a.wa = Math.random() * 6.28;
+      n++;
+    }
+    if (heli){ heli = null; toast('the rotor swings away - the light moves on'); }
+    else if (n) toast('you are nobody again - ' + n +
+                      (n === 1 ? ' of them works the block' : ' of them work the block'));
+    else toast('the street forgets you');
     heliT = 120 + Math.random() * 60;
     sfx('ui_select', { vol: 0.6, rate: 0.7 });
+  }
+}
+/*----------------- watchers, patrols, and being recognised -----------------
+  Two brains that are not 'hostile'. A WATCH is somebody who had you and lost
+  you: he works the block you went cold on and takes you back the moment he
+  sees you. A PATROL never had you at all - he walks a long loop of the city
+  and only becomes your problem if he personally watches you do something,
+  or if your record is bad enough that his briefing has your face in it.
+
+  Both of them see with their eyes: range, and a wall stops it. That is the
+  whole reason hiding works and the whole reason it stops working when one
+  of them is stood in the open looking at you.
+============================================================================*/
+const ENF_SEE = 15;                           // how far an officer knows a face
+function enfSees(a, r){
+  const d = Math.hypot(a.x - cam.x, a.y - cam.y);
+  if (d > (r || ENF_SEE)) return false;
+  // the dark and the crowd both help, and so does not being lit up
+  if (heli && Math.hypot(cam.x - heli.sx, cam.y - heli.sy) < 2.2) return true;
+  return sightClear(a.x, a.y, cam.x, cam.y);
+}
+function enfRecognise(a, why){
+  a.brain = 'hostile'; a.aggro = 1;
+  a.tier = Math.max(a.tier || 1, Math.max(1, player.corruption | 0));
+  toast(why);
+  sfx('ui_back', { vol: 0.6, rate: 0.7 });
+}
+/* somebody saw you do it: every patrol with eyes on picks it up */
+function enfWitness(){
+  for (const a of actors){
+    if (a.kind !== 'enforcer' || a.interior || a.aggro) continue;
+    if (a.brain !== 'patrol' && a.brain !== 'watch') continue;
+    if (enfSees(a, 18)) enfRecognise(a, 'one of them SAW that');
+  }
+}
+/* One step along a.dx/a.dy. It tests walkG per axis rather than blockedAt,
+   because blockedAt counts ACTORS - including the one doing the moving, who
+   is always exactly on top of himself. Every officer stood perfectly still
+   for that reason. This is how the hostile brain has always done it. */
+function enfStep(a, spd, dt){
+  const nx = a.x + a.dx * spd * dt, ny = a.y + a.dy * spd * dt;
+  let moved = false;
+  if (walkG[clamp(a.y | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]){ a.x = nx; moved = true; }
+  if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(a.x | 0, 0, MAP - 1)]){ a.y = ny; moved = true; }
+  return moved;
+}
+function enfBrainTick(dt){
+  if (inside) return;
+  for (let i = actors.length - 1; i >= 0; i--){
+    const a = actors[i];
+    if (a.kind !== 'enforcer' || a.interior) continue;
+    // the record that called him out has faded: he is off the clock
+    if (a.tier && player.corruption < a.tier && !a.aggro && a.brain !== 'patrol'){
+      actors.splice(i, 1);
+      continue;
+    }
+    if (a.brain === 'watch'){
+      if (enfSees(a)){ enfRecognise(a, 'he has you again'); continue; }
+      // works the block: a slow circuit of where he lost you
+      a.wt -= dt;
+      if (a.wt <= 0){ a.wt = 2.5 + Math.random() * 3; a.wa += 1.1 + Math.random(); }
+      const tx = a.wx + Math.cos(a.wa) * 6, ty = a.wy + Math.sin(a.wa) * 6;
+      const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy);
+      if (d > 0.4){ a.dx = dx / d; a.dy = dy / d; a.moving = enfStep(a, 1.2, dt); }
+      else a.moving = 0;
+      a.phase += dt * 3;
+    } else if (a.brain === 'patrol'){
+      // a beat that goes round the city whether you exist or not
+      if (player.corruption >= 4 && enfSees(a))
+        { enfRecognise(a, 'a patrol recognises your face'); continue; }
+      const w = a.route[a.ri];
+      const dx = w[0] - a.x, dy = w[1] - a.y, d = Math.hypot(dx, dy);
+      if (d < 1.5) a.ri = (a.ri + 1) % a.route.length;
+      else {
+        a.dx = dx / d; a.dy = dy / d;
+        // walked into something: take the next leg rather than stand there
+        if (!enfStep(a, 1.5, dt)){ a.ri = (a.ri + 1) % a.route.length; a.moving = 0; }
+        else a.moving = 1;
+      }
+      a.phase += dt * 3;
+    }
+  }
+}
+/* The beat officers. They exist from the moment the city does, walk long
+   loops through it, and are the reason a district FEELS policed before
+   anybody has done anything. */
+function spawnPatrols(){
+  const want = 10;
+  for (let n = 0; n < want; n++){
+    const start = randWalkNear(MAP * 0.5, MAP * 0.5, 60, 420);
+    if (!start) continue;
+    const route = [];
+    let px = start[0], py = start[1];
+    for (let k = 0; k < 5; k++){
+      const t = randWalkNear(px, py, 30, 70);
+      if (!t) break;
+      route.push([t[0] + 0.5, t[1] + 0.5]);
+      px = t[0]; py = t[1];
+    }
+    if (route.length < 3) continue;
+    const a = spawnActor('enforcer', start[0] + 0.5, start[1] + 0.5,
+      { name: 'PATROL', brain: 'patrol', hp: 44, shirt: C.carC, skin: C.dataDk });
+    a.atk = 9; a.spd = 2.6; a.route = route; a.ri = 0; a.tier = 0;
   }
 }
 function corruptionTick(){                    // polled every half second
@@ -11343,25 +11580,24 @@ function corruptionTick(){                    // polled every half second
     camWhisperT = 22 + Math.random() * 30;
     if (flockEyes() > 0) toast('a camera swivels to follow you');
   }
-  const c = player.corruption, cap = enfCap();
+  const c = player.corruption, T = enfTier(), cap = enfCap();
   if (cap > 0){
     enfT -= 0.5;
     if (enfT <= 0){
-      enfT = c >= 6 ? 30 + Math.random() * 30
-           : c >= 4 ? 60 + Math.random() * 45
-           : 110 + Math.random() * 70;
-      const have = actors.filter(a => a.kind === 'enforcer').length;
+      // the gap between call-outs is the rung, shortened by the district
+      enfT = (T.gap * (0.75 + Math.random() * 0.5)) / Math.max(0.35, enfHere());
+      const have = actors.filter(a => a.kind === 'enforcer' && a.brain !== 'patrol').length;
       if (have < cap){
-        if (c >= 6){                           // they arrive in threes now
-          let n = 0;
-          for (let i = 0; i < 3 && have + n < cap; i++)
-            if (spawnEnforcer(14, true)) n++;
-          if (n) toast(n > 1 ? 'a coordinated party fans out' : 'an enforcer has your signature');
-        } else {
-          const a = spawnEnforcer(18, c >= 4);
-          if (a) toast(c >= 4 ? 'an enforcer has your signature'
-                              : 'an enforcer walks this district with your face on file');
-        }
+        let n = 0;
+        const near = c >= 8 ? 8 : c >= 6 ? 12 : 18;
+        for (let i = 0; i < T.party && have + n < cap; i++)
+          if (spawnEnforcer(near, T.hunt)) n++;
+        if (n) toast(
+          c >= 9 ? 'they are not looking for you any more, they are converging'
+          : n > 2 ? 'a party fans out across the block'
+          : n > 1 ? 'two of them, moving together'
+          : T.hunt ? 'an enforcer has your signature'
+                   : 'an enforcer walks this district with your face on file');
       }
     }
   }
@@ -11369,7 +11605,7 @@ function corruptionTick(){                    // polled every half second
     if (!heli){
       heliT -= 0.5;
       if (heliT <= 0){
-        heliT = c >= 6 ? 20 + Math.random() * 25 : 90 + Math.random() * 90;
+        heliT = (c >= 9 ? 8 : c >= 6 ? 20 : 90) + Math.random() * (c >= 6 ? 25 : 90);
         heli = { x: cam.x + 20, y: cam.y + 20, sx: cam.x + 10, sy: cam.y + 10,
                  lock: 0, rot: 0, beam: 0,
                  t: c >= 6 ? 999 : 30 + Math.random() * 25 };
@@ -17037,7 +17273,7 @@ function simulate(dt){
     fxs[i].t -= dt;
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
-  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); runFrame(dt); }
+  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); runFrame(dt); enfBrainTick(dt); }
   if (player.car && !myCar && DEALER)           // the save remembers the keys
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
                player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
