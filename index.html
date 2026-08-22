@@ -389,7 +389,7 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_METRO = 10, PK_APPLE = 11, PK_TURBINE = 12, PK_ITEM = 13,
       PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17, PK_RACK = 18,
       PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22,
-      PK_FLOTSAM = 23;
+      PK_FLOTSAM = 23, PK_RAMP = 24;
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -1435,7 +1435,10 @@ function placeWeaponCaches(){
    player. Runtime drops are all pickups, so the bake never goes stale. */
 function bakeSolidProps(){
   for (const p of props){
-    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;
+    // A ramp is a surface, not an obstacle - closing the road under it would
+    // wall off the very street the run is routed down.
+    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR ||
+        p.k === PK_RAMP) continue;
     const yaw = p.yaw === undefined ? (p.yaw = propFacing(p)) : p.yaw;
     const fb = footBox(p.k, yaw);
     const x0 = Math.floor(p.x - fb[0] * 0.5 + 1e-6), x1 = Math.floor(p.x + fb[0] * 0.5 - 1e-6);
@@ -1484,6 +1487,7 @@ const MODEL_FOOT = [];
   f(PK_RAIL, 0.95);       f(PK_CROP, 0.9);
   f(PK_HOOP, 1.9, 1.0);   f(PK_SWING, 3.4, 1.8); f(PK_CLIMB, 3.0, 3.0);
   f(PK_FLOTSAM, 2.1, 2.1);
+  f(PK_RAMP, 6.2, 3.4);
 })();
 /* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
    generators scatter by per-tile chance, which clumps. Minimum gap between
@@ -2686,6 +2690,48 @@ PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
                      sl: slots({ M: [C.rail, 0.6], S: [C.nMag, 0.85],
                                  W: [C.nWhite, 0.8], P: [C.nViolet, 0.8] }) };
 // playground equipment: authored volumes, so they read from every angle
+/* A half-pipe, laid across a street for one night only. Cross-section is a
+   U: ground level down the middle, both lips curving up to full height, so
+   it launches you whichever way you come at it. The curve is squared rather
+   than circular - a circle's lip stands almost vertical at the top and reads
+   as a wall from a distance, where x^2 keeps a face you can see up. */
+function rampArt(){
+  return flotArt(26, 12, function(aw, vd, ah){
+    const M = ROLE.M, X = ROLE.X, W = ROLE.W, K = ROLE.K;
+    const out = new Uint8Array(aw * vd * ah);
+    const set = (x, y, z, r) => {
+      if (x >= 0 && y >= 0 && z >= 0 && x < aw && y < vd && z < ah)
+        out[(z * vd + y) * aw + x] = r;
+    };
+    const cx = (aw - 1) / 2;
+    for (let x = 0; x < aw; x++){
+      // Two transitions meeting at a ridge - a spine. The tempting shape is
+      // the other one, a U with the height at the outer edges, and it is
+      // wrong here: coming at it down the street you meet the BACK of the
+      // near wall, which is a wall. This one starts at the tarmac under your
+      // wheels and lifts you, whichever end you come in from.
+      const u = (x - cx) / cx;                    // -1 and 1 at the tarmac
+      const h = Math.round((ah - 1) * (1 - u * u));
+      for (let y = 0; y < vd; y++){
+        for (let z = 0; z < h; z++)
+          set(x, y, z, (y % 3 === 2) ? K : M);    // planking, seamed
+        if (h > 0) set(x, y, h, M);
+        // coping along the ridge, and a painted line up the middle of the
+        // transition so you can see which way the thing runs
+        if (x === Math.round(cx) || x === Math.round(cx) - 1) set(x, y, h, X);
+        if (h > 0 && (y === (vd >> 1) || y === (vd >> 1) - 1)) set(x, y, h, W);
+      }
+    }
+    // kerbs down both long sides, so it reads as built rather than drawn
+    for (let x = 0; x < aw; x++){
+      const u = (x - cx) / cx;
+      const h = Math.round((ah - 1) * (1 - u * u));
+      if (h > 0){ set(x, 0, h, X); set(x, vd - 1, h, X); }
+    }
+    return out;
+  });
+}
+ART.ramp = rampArt();
 ART.pallet = palletArt(); ART.drum = drumArt();
 ART.slick  = slickArt();  ART.tyre = tyreArt();
 /* Everything the river carries, on one kind - the variant comes off the
@@ -2701,6 +2747,9 @@ const FLOTSAM = [
     sl: slots({ T: [C.tire, 0.9] }) }
 ];
 PROPDEF[PK_FLOTSAM] = FLOTSAM[0];
+PROPDEF[PK_RAMP] = { art: ART.ramp, w: 6.2, h: 2.9, dep: 0.62,
+                     sl: slots({ M: [C.deckOld, 0.74], K: [C.trunk, 0.62],
+                                 X: [C.nMag, 1.0], W: [C.nWhite, 0.9] }) };
 PROPDEF[PK_HOOP]  = { art: ART.hoop,  w: 1.9, h: 3.4, dep: 0.85,
                       sl: slots({ M: [C.rail, 0.72], W: [C.nWhite, 0.92],
                                   X: [C.tlAmb, 1.0] }) };
@@ -5506,7 +5555,8 @@ function propBlocked(x, y, rad){
   const near = gridQuery(propGrid, x, y, 3.2, _q1);
   for (let i = 0; i < near.length; i++){
     const p = near[i];
-    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR) continue;
+    if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR ||
+        p.k === PK_RAMP) continue;                    // you ride over a ramp
     if (grind && (p.k === PK_RAIL || p.k === PK_BENCH)) continue;   // walk-through kinds
     if (p.k === PK_STALL){
       // A cart is a box three metres across, not a post. A circle round its
@@ -5709,7 +5759,17 @@ let stumbleT = 0, wobbleT = 0, carveT = 0, seamAcc = 0, nearT = 0, skLean = 0;
 let skTrick = null, skCombo = 1, comboT = 0, styleN = 0, styleAcc = 0;
 let ollieHold = -1;                            // >=0 while SPACE is charging
 let grind = null, grindT = 0;
+/* rampAir marks air that came off a half-pipe rather than off your own legs,
+   which is the difference between a trick that buys time on the run and a
+   trick that just looks good. The cooldown stops one pipe firing twice as
+   you roll the length of it. */
+let rampAir = 0, rampCd = 0;
 const skParts = [];
+function rampUnder(){
+  for (const q of gridQuery(propGrid, cam.x, cam.y, 4, _q1))
+    if (q.k === PK_RAMP && Math.hypot(q.x - cam.x, q.y - cam.y) < 2.6) return q;
+  return null;
+}
 function resetSkate(){
   skV = 0; airT = 0; skTrick = null; skChain = []; grind = null;
   skCombo = 1; comboT = 0; styleN = 0; stumbleT = 0; wobbleT = 0; crouchT = 0;
@@ -6089,6 +6149,19 @@ function skateFrame(dt){
       }
     } else skLean *= Math.pow(0.01, dt);
     if (skV < 0.15) skV = 0;
+    // a pipe throws you far higher than your own pop ever will, and gives
+    // back a little speed out of the transition the way a real one does
+    if (rampCd > 0) rampCd -= dt;
+    if (rampCd <= 0 && skV > 4 && stumbleT <= 0 && rampUnder()){
+      const f = skV / SK_MAX;
+      rampCd = 1.4; rampAir = 1;
+      arcH = 2.3 + 2.7 * f;
+      airDur = airT = 0.8 + 0.6 * f;
+      skV = Math.min(SK_MAX, skV + 1.2);
+      crouchT = 0; ollieHold = -1;
+      sfx('footstep', { rate: 1.25, vol: 1.0 });
+      sfx('ui_move', { rate: 2.6, vol: 0.35 });
+    }
   } else if (grind){
     skV = Math.max(0, skV - skV * 0.15 * dt);
     grindT -= dt;
@@ -6184,6 +6257,7 @@ function skateLand(){
         Math.hypot(p.x - cam.x, p.y - cam.y) < 0.6){
       grind = p; grindT = 0; styleAcc = 0;
       resolveTrick(true);
+      rampAir = 0;
       toast(p.k === PK_RAIL ? 'rail grind' : 'bench grind');
       sfx('ui_move', { rate: 2.2, vol: 0.45 });
       return;
@@ -6192,6 +6266,7 @@ function skateLand(){
   sfx('footstep', { rate: 0.62, vol: 1.0 });
   sfx('footstep', { rate: 0.9, vol: 0.4 });
   resolveTrick(false);
+  rampAir = 0;
 }
 function resolveTrick(intoGrind){
   if (!skChain.length){ skTrick = null; if (!intoGrind) skCombo = 1; return; }
@@ -6203,6 +6278,7 @@ function resolveTrick(intoGrind){
   const sketchy = !clean && frac >= 0.22;
   if (clean){
     const pts = chainPoints() * skCombo;
+    runRampTrick();                            // off a pipe, mid-run: +2s
     styleN += pts;
     skV = Math.min(SK_MAX, skV + 0.3);
     toast((nm + '  +' + pts + (skCombo > 1 ? '  x' + skCombo : '')).slice(0, 64));
@@ -7285,43 +7361,229 @@ function mqSpot(salt, dist){
 function atSpot(sp, r){ return sp && Math.hypot(sp.x - cam.x, sp.y - cam.y) < (r || 6); }
 function toHideout(){ return HIDEOUT && { x: HIDEOUT.x, y: HIDEOUT.y, name: 'THE HIDEOUT' }; }
 
-/*--------------------- the skateboard chase (Act 1 climax) -----------------*/
-let chaseT = 0, chaseOn = false;
-function startChase(){
-  chaseOn = true; chaseT = 55;
-  // a wall of enforcers between you and home
+/*======================= THE RUN (Act 1 climax) ============================
+  Three beats, and none of them are a hiding mechanic.
+
+  1. Ride out to the corner where the courier went down. It is a place in the
+     city, so it gets a marker and the red line like any other job.
+  2. VESPER is already there, and has been for a while. A short scene.
+  3. Enforcers come round both ends of the street and you go home the only
+     way left: flat out, with VESPER leading, down a route somebody has
+     already thrown half-pipes across.
+
+  The race is the point. The clock is set just under an honest run of the
+  route, so arriving is not the question - arriving is the question ONLY if
+  you skate it clean and never leave the ground. Every trick landed off a
+  ramp buys two seconds back, so the fast line is the ramp line, and the
+  ramps are laid along the actual path home rather than somewhere scenic.
+  Whatever is left on the clock at the door is paid out as a bonus, which is
+  the difference between surviving the run and having a good one.
+============================================================================*/
+let RUN = null;                                 // null unless the run is live
+const RUN_RAMP_GAP = 26;                        // tiles between half-pipes
+const RUN_TRICK_BONUS = 2;                      // seconds a landed trick buys
+/* the corner the courier was hit on - one place, remembered all run */
+function runDrop(){ return mqSpot(651, D_STRIP); }
+function toDrop(){ const d = runDrop(); return d && { x: d.x, y: d.y, name: 'THE CORNER' }; }
+function toVesper(){
+  const a = actors.find(x => x.name === 'VESPER' && !x.interior);
+  return a ? { x: a.x, y: a.y, name: 'VESPER' } : toDrop();
+}
+/*--- the route, and the ramps somebody laid along it ---------------------*/
+function runRoute(){
+  const d = runDrop();
+  if (!d || !HIDEOUT) return null;
+  return astar(d.x | 0, d.y | 0, HIDEOUT.x | 0, HIDEOUT.y | 0, 400000);
+}
+/* Half-pipes go down every RUN_RAMP_GAP tiles of the ACTUAL route home, so
+   the quick line and the fun line are the same line. Anywhere the street is
+   too tight for seven metres of ramp is skipped rather than forced. */
+function layRamps(path){
+  const out = [];
+  if (!path) return out;
+  // Does a pipe fit here, and which way round? A full rectangle test rejects
+  // almost every real street - one kerbside lamp in a corner of the box is
+  // enough - so the test is the shape that actually matters: a clear run
+  // along the way you are travelling, and a little room to either side of
+  // the middle of it. The ramp is not solid, so a bin near a corner is a
+  // thing you ride past, not a thing you hit.
+  const fits = (i) => {
+    const c = path[i], x = c % MAP, y = (c / MAP) | 0;
+    if (tType[c] !== T_ROAD && tType[c] !== T_CROSS) return null;
+    // read the heading over several steps: one step is often diagonal, and a
+    // diagonal has no dominant axis to build against
+    const c2 = path[Math.min(path.length - 1, i + 5)];
+    const dx = (c2 % MAP) - x, dy = ((c2 / MAP) | 0) - y;
+    if (!dx && !dy) return null;
+    const alongX = Math.abs(dx) >= Math.abs(dy);
+    for (let a = -3; a <= 3; a++){
+      const px = x + (alongX ? a : 0), py = y + (alongX ? 0 : a);
+      if (!inMap(px, py) || !walkG[py * MAP + px]) return null;
+    }
+    for (let b = -1; b <= 1; b++){
+      const px = x + (alongX ? 0 : b), py = y + (alongX ? b : 0);
+      if (!inMap(px, py) || !walkG[py * MAP + px]) return null;
+    }
+    // The curve runs along your travel and the ramp is narrower across it.
+    // footBox swaps the two on the odd quarter turns, so these yaws put the
+    // long axis where the riding happens.
+    return { x: x + 0.5, y: y + 0.5, k: PK_RAMP, s: 0, r: 0, run: 1,
+             yaw: alongX ? (dx >= 0 ? 0 : Math.PI)
+                         : (dy >= 0 ? Math.PI / 2 : -Math.PI / 2) };
+  };
+  for (let i = 8; i < path.length - 8; i += RUN_RAMP_GAP){
+    // if the exact spacing lands somewhere impossible, take the nearest
+    // place that works rather than dropping the ramp altogether
+    let pr = null;
+    for (const off of [0, 3, -3, 6, -6, 9, -9]){
+      const j = i + off;
+      if (j < 4 || j > path.length - 5) continue;
+      pr = fits(j);
+      if (pr) break;
+    }
+    if (!pr) continue;
+    props.push(pr); out.push(pr);
+  }
+  indexProps(); indexSpriteProps();
+  return out;
+}
+function clearRamps(){
+  for (let i = props.length - 1; i >= 0; i--) if (props[i].run) props.splice(i, 1);
+  indexProps(); indexSpriteProps();
+}
+/*--- the clock ------------------------------------------------------------
+  An honest run of the route at a realistic cruising pace, times a shade
+  under one, so a clean ride arrives with nothing to spare and a ramp ride
+  arrives rich. RUN_PACE is tiles per second actually held on a street - not
+  SK_MAX, which is a number you touch for a moment on a straight. */
+const RUN_PACE = 6.0, RUN_TIGHT = 0.95;
+function runClock(path){
+  const tiles = path ? path.length : 220;
+  return clamp(Math.round(tiles / RUN_PACE * RUN_TIGHT), 40, 150);
+}
+/*--- starting it ---------------------------------------------------------*/
+function startRun(){
+  const path = runRoute();
+  const secs = runClock(path);
+  RUN = { t: secs, max: secs, tricks: 0, gained: 0, path: path || [],
+          ramps: layRamps(path), lead: null, idx: 0 };
+  // VESPER goes in front, and she is the one who knows the way
+  const v = actors.find(a => a.name === 'VESPER' && !a.interior);
+  if (v){ v.brain = 'lead'; v.spd = 6.4; v.tree = null; v.dialog = null; RUN.lead = v; }
   for (let i = 0; i < 4; i++){
-    const t = randWalkNear(cam.x, cam.y, 12, 22);
+    const t = randWalkNear(cam.x, cam.y, 10, 18);
     if (t){ const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
       { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
       a.aggro = 1; a.atk = 9; a.spd = 2.9; }
   }
-  toast('RIDE. the hideout, before they box you in');
+  if (!skating && invCount('deck') && !inside) toggleRide();
+  advanceQuest('mq8');                          // beat 2 -> beat 3
+  toast('GO. follow VESPER - hit the pipes, they buy you time');
   sfx('shot', { vol: 0.7, rate: 0.6 });
 }
-function chaseFrame(dt){
-  if (!chaseOn) return;
-  chaseT -= dt;
-  if (mqLive('mq8') && atHideout(5)){
-    chaseOn = false;
-    mqDone('mq8', 2, 8);
-    toast('inside. the door slams. ROOK is grinning');
-    sfx('ui_select', { vol: 0.7, rate: 0.7 });
-    for (let i = actors.length - 1; i >= 0; i--)
-      if (actors[i].kind === 'enforcer') actors.splice(i, 1);
+/*--- a trick off a ramp buys time ---------------------------------------*/
+function runRampTrick(){
+  if (!RUN || !rampAir) return;
+  RUN.t += RUN_TRICK_BONUS; RUN.max += RUN_TRICK_BONUS;
+  RUN.tricks++; RUN.gained += RUN_TRICK_BONUS;
+  toast('+' + RUN_TRICK_BONUS + 's  -  air time is time');
+  sfx('ui_select', { vol: 0.6, rate: 1.5 });
+}
+/*--- the frame -----------------------------------------------------------*/
+function runFrame(dt){
+  if (!RUN){
+    // A race is a set piece held in memory, not in the save file - load a
+    // game taken mid-run and the stage is there with no clock, no ramps and
+    // no way to finish it. Put it back to the corner scene instead: VESPER
+    // is waiting, the marker points at her, and her second line is one press
+    // long precisely so picking it up again costs nothing.
+    if (player.quests.mq8 === 2 && !inside){
+      player.quests.mq8 = 1;
+      spawnRunVesper();
+    }
     return;
   }
-  if (chaseT <= 0){
-    chaseOn = false;
-    toast('they had the corner. ROOK will not be pleased - try again');
-    // reset to the strip start; the quest stays live
-    const sp = mqSpot(651, D_STRIP);
-    cam.x = sp.x; cam.y = sp.y;
-    for (let i = actors.length - 1; i >= 0; i--)
-      if (actors[i].kind === 'enforcer') actors.splice(i, 1);
+  RUN.t -= dt;
+  // VESPER runs the route ahead of you, waiting up if you are a long way
+  // back. She always walks the path node by node - what changes with the gap
+  // is her PACE, not her place in the route. Pushing her index instead sends
+  // her at a node fifty tiles away, which she then makes for in a straight
+  // line, straight through the buildings in between.
+  const v = RUN.lead;
+  if (v && RUN.path.length){
+    const gap = Math.hypot(v.x - cam.x, v.y - cam.y);
+    // past a certain distance she stops outright and waits - a lead you
+    // cannot see is not leading you anywhere
+    const pace = v.spd * (gap > 26 ? 0 : gap > 18 ? 0.4 : gap > 12 ? 0.8
+                                       : gap < 7 ? 1.25 : 1);
+    let step = pace * dt;
+    // she may cross more than one node in a frame at speed
+    for (let guard = 0; guard < 8 && step > 0; guard++){
+      const ahead = RUN.path[Math.min(RUN.path.length - 1, RUN.idx)];
+      const ax = (ahead % MAP) + 0.5, ay = ((ahead / MAP) | 0) + 0.5;
+      const dx = ax - v.x, dy = ay - v.y, d = Math.hypot(dx, dy);
+      if (d < 1e-4 || d <= step){
+        v.x = ax; v.y = ay; step -= d;
+        if (RUN.idx >= RUN.path.length - 1) break;
+        RUN.idx++;
+      } else { v.x += dx / d * step; v.y += dy / d * step; step = 0; }
+    }
+  }
+  if (atHideout(5)){
+    const left = Math.max(0, Math.round(RUN.t));
+    const bonus = left * 2;
+    endRun();
+    mqDone('mq8', 2, 8);
+    if (bonus){
+      player.credits += bonus;
+      toast('inside. ' + left + 's spare, ' + bonus + ' cr for the style');
+    } else toast('inside, by the width of the door. ROOK is grinning');
+    sfx('ui_select', { vol: 0.7, rate: 0.7 });
+    return;
+  }
+  if (RUN.t <= 0){
+    endRun();
+    toast('they had the corner. back to the strip - go again');
+    const d = runDrop();
+    if (d){ cam.x = d.x; cam.y = d.y; }
+    spawnRunVesper();
+    player.quests.mq8 = 1;                       // back to the scene, not the start
   }
 }
-
+function endRun(){
+  clearRamps();
+  RUN = null;
+  for (let i = actors.length - 1; i >= 0; i--)
+    if (!actors[i].interior &&
+        (actors[i].kind === 'enforcer' || actors[i].name === 'VESPER'))
+      actors.splice(i, 1);
+}
+/* she is waiting on the corner when you get there, and has been a while */
+function spawnRunVesper(){
+  if (actors.some(a => a.name === 'VESPER' && !a.interior)) return;
+  const d = runDrop();
+  if (!d) return;
+  const t = randWalkNear(d.x, d.y, 1, 4) || [d.x | 0, d.y | 0];
+  const v = spawnActor('citizen', t[0] + 0.5, t[1] + 0.5, {
+    name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: runVesperTree() });
+  v.range = 3;
+  return v;
+}
+function runVesperTree(){
+  return {
+    entry(){ return player.qvar.mq8scene ? 'again' : 'scene'; },
+    scene: { text: 'He was nineteen. I counted the shots from the next street and I still got here after. They took the case off him and left him, and the case had nothing in it - ROOK knew it had nothing in it. That is the part I cannot put down.',
+      opts: [{ t: 'ROOK sent him to be seen', next: 'seen' },
+             { t: 'We should not be standing here', next: 'go' }] },
+    seen: { text: 'To be SEEN. Yes. A courier they could catch, so the ones they could not catch got through. He would have said yes if anybody had asked him. Nobody asked him.',
+      opts: [{ t: 'They are coming', next: 'go' }] },
+    go: { text: 'Listen. Sirens, both ends, and they are not moving like people who are looking for us. They knew where we were the whole time. Get on the deck. I know a way through the pipes on Ninth - stay behind me and do not stop, whatever you hear.',
+      opts: [{ t: '(get on the deck and go)',
+               do(){ player.qvar.mq8scene = 1; startRun(); } }] },
+    again: { text: 'Sirens. Both ends. Go.',
+      opts: [{ t: '(go)', do(){ startRun(); } }] }
+  };
+}
 /*------------------------------- Act 1 jobs --------------------------------*/
 const MQ1 = {
   mq1: { name: 'THE HIDEOUT', act: 1,
@@ -7364,8 +7626,17 @@ const MQ1 = {
       target(){ return mqSpot(671, D_STRIP); },
       auto(){ return player.qvar.mq7pop && atSpot(mqSpot(671, D_STRIP), 10); } }] },
   mq8: { name: 'THE RUN', act: 1,
-    stages: [{ log: 'RIDE the deck to THE HIDEOUT before the enforcers box you in',
-      target: toHideout }] }
+    stages: [
+      { log: 'ride out to the corner on THE STRIP where the courier went down',
+        target: toDrop,
+        auto(){ return atSpot(runDrop(), 6); } },
+      { log: 'VESPER is on the corner - hear her out',
+        target: toVesper },
+      { log: () => RUN
+          ? 'RIDE. follow VESPER home - ' + Math.max(0, Math.ceil(RUN.t)) +
+            's, and every trick off a pipe buys ' + RUN_TRICK_BONUS + ' more'
+          : 'RIDE the deck to THE HIDEOUT',
+        target: toHideout }] }
 };
 /* firecrackers set the mq7 flag when they pop near the junction */
 function mqFirecracker(x, y){
@@ -7495,11 +7766,9 @@ function rookTree(){
     give7: { text: 'Tomorrow we hit a corpo courier on the strip. Tonight, we teach the patrols to look the wrong way. Set off firecrackers at the marked junction - loud, then gone.',
       opts: [{ t: 'Boom', do(){ mqStart('mq7'); } }] },
     wait7: { text: 'The junction is marked. Crackers, then leave. Do not linger to admire it.' },
-    give8: { text: 'The courier is hit, the take is ours, and every enforcer in the district just got the same alert. You cannot walk out of this one. RIDE - the deck, straight here, and do not stop for anything wearing armour.',
-      opts: [{ t: 'Start the run', do(){ mqStart('mq8');
-               const sp = mqSpot(651, D_STRIP); cam.x = sp.x; cam.y = sp.y;
-               if (!skating && invCount('deck')) toggleRide();
-               startChase(); }, next: 'runline' }] },
+    give8: { text: 'The courier is down on the strip and it has gone wrong in the way these things go wrong. VESPER is already out there and she will not answer me. Get on the deck, get to that corner, and bring her home. Do not walk it - after tonight nobody in this district gets to walk.',
+      opts: [{ t: 'Where on the strip?', do(){ mqStart('mq8'); spawnRunVesper(); },
+               next: 'runline' }] },
     /* the door is open, the work is not */
     toohot: { text: () =>
         'No. Look at you - corruption ' + player.corruption + ', and I will not go past ' +
@@ -14576,6 +14845,7 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_RACK, 0.6, 1);
   set(PK_HOOP, 0.45, 0);  set(PK_SWING, 0.16, 0); set(PK_CLIMB, 0.33, 0);
   set(PK_FLOTSAM, 1.0, 0);
+  set(PK_RAMP, 0.62, 1);
 })();
 /* How far a kind is worth marching at all. Small debris is sub-cell long
    before the general 170-tile cut-off, and a river is a straight corridor a
@@ -14584,6 +14854,11 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
    either way - this is a ceiling, not a rescue. */
 const MODEL_FAR = [];
 MODEL_FAR[PK_FLOTSAM] = 95;
+// A pipe is a big volume and the run lines ten of them up down one street.
+// Measured A/B in a single page load, 110 and 150 cost the same (about 2ms
+// with several in shot, on a 5ms frame) - this is a ceiling on a long
+// straight, not a rescue.
+MODEL_FAR[PK_RAMP] = 110;
 /* How a cart stands: backed up against a building, counter looking out over
    the street at the frontage on the far side. That is what a real pitch is -
    you put your back to a wall so nobody comes round it, and you face the
@@ -15976,6 +16251,18 @@ function hudPass(){
     hudPanel(x, (rows >> 1) + 5, msg.length + 2, 1);
     hudStr(x + 1, (rows >> 1) + 5, msg, H_GRN);
   }
+  // ---- the run's clock: big, centre-top, counting down in your face ----
+  if (RUN && !inside){
+    const left = Math.max(0, RUN.t);
+    const txt = left.toFixed(1) + 's';
+    const sub2 = RUN.tricks ? RUN.tricks + ' tricks  +' + RUN.gained + 's' : 'hit the pipes';
+    const w = Math.max(txt.length, sub2.length) + 2;
+    const x = Math.max(1, (cols - w) >> 1);
+    hudPanel(x, 1, w, 2);
+    hudStr(x + 1 + ((w - 2 - txt.length) >> 1), 1, txt,
+           left < 8 ? H_RED : left < 20 ? H_YEL : H_GRN);
+    hudStr(x + 1 + ((w - 2 - sub2.length) >> 1), 2, sub2, H_DIM);
+  }
   // ---- transient message: drawn last, above the arms, so nothing hides it ----
   if (toastT > 0 && toastMsg){
     const x = Math.max(1, (cols - toastMsg.length - 2) >> 1);
@@ -16086,7 +16373,7 @@ function simulate(dt){
     fxs[i].t -= dt;
     if (fxs[i].t <= 0) fxs.splice(i, 1);
   }
-  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); chaseFrame(dt); }
+  if (!inside){ heliFrame(dt); hideFrame(dt); wayTick(dt); runFrame(dt); }
   if (player.car && !myCar && DEALER)           // the save remembers the keys
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
                player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
