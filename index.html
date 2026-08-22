@@ -9803,6 +9803,50 @@ const BODY_POSE = {
   punch:  { armL: 3.4, armR:-1.0, armInL: 3.0, armRaise: 0.06, lean: 0.8 },
   hurt:   { lean: -1.2, crouch: 0.12, armL: 1.0, armR: 1.0, armRaise: -0.06 }
 };
+/*------------------------- taking something -------------------------------
+  Every consumable in the game, classed by how it is actually TAKEN rather
+  than by what it does - which the names hand you: a RUSH INHALER goes to the
+  face, a NUMB PATCH goes on the arm, an OVERCLOCK SHOT goes into it, CHILLAX
+  GUMMIES go in the mouth. Six gestures cover all twenty-three, which is also
+  six poses in the cache instead of twenty-three.
+
+  VANIM covers only four of them, because only four have first-person
+  viewmodel art. The body does not need art to know what the hands are doing,
+  so third person animates all of them.
+--------------------------------------------------------------------------*/
+const CONSUME_CLASS = {
+  noodles:'eat', ramen:'eat', gyoza:'eat', bao:'eat', onigiri:'eat',
+  taiyaki:'eat', skewer:'eat', kebab:'eat', apple:'eat',
+  soda:'drink', coffee:'drink', boba:'drink', sake:'drink',
+  cigarette:'smoke',
+  chill:'pill', haze:'pill', mirror:'pill', staticd:'pill',
+  rush:'inhale', ghost:'inhale',
+  numb:'jab', overclock:'jab', medkit:'jab'
+};
+const CONSUME_DUR = { eat:1.7, drink:1.3, smoke:0, pill:0.9, inhale:1.1, jab:1.6 };
+function consumeClass(id){ return CONSUME_CLASS[id] || 'eat'; }
+/* The rituals, seen from outside. Every one is a hand at the face or the
+   arm; what differs is what is in it and how the body leans into it. */
+const CONSUME_POSE = {
+  // Both hands up around it: one arm folded in only narrows the silhouette,
+  // and a narrower body reads as the same body, not a different action. Two
+  // hands with something bright between them reads instantly.
+  eat:    { mouthL: 1, mouthR: 1, lean: 0.8, crouch: 0.04,
+            mouthItem: { w: 2.2, h: 0.22, r: 'X', both: 1 } },
+  drink:  { mouthR: 1, armL: -0.6, lean: -1.0,             // head tips back
+            mouthItem: { w: 1.3, h: 0.26, r: 'X' } },
+  smoke:  { mouthR: 1, armL: 0.4,
+            mouthItem: { w: 1.0, h: 0.10, r: 'X' } },
+  // a quick flick to the mouth: hand high and tight, nothing held out
+  pill:   { mouthR: 1, armL: 0.6, lean: 0.3,
+            mouthItem: { w: 0.8, h: 0.10, r: 'W' } },
+  // pressed to the face and held there, both hands, head back into it
+  inhale: { mouthL: 1, mouthR: 1, lean: -0.7,
+            mouthItem: { w: 1.6, h: 0.30, r: 'W', both: 1 } },
+  // into the other arm: one hand across, the body folded over the work
+  jab:    { mouthL: 1, armR: 1.8, lean: 1.0, crouch: 0.10,
+            mouthItem: { w: 1.6, h: 0.16, r: 'W' } }
+};
 function playerBodyVol(worn, P){
   P = P || BODY_POSE.idle;
   const has = id => worn.indexOf(id) >= 0;
@@ -9878,22 +9922,37 @@ function playerBodyVol(worn, P){
        torso - which is exactly why both arms disappeared the moment anybody
        drew a weapon. Reaching arms get built forward instead. */
     const shoulder = tT - 0.04 + raise, armLo = hip + 0.06 + raise;
-    const arm = (xoff, swing, reach, drop, role, hw) => {
+    const arm = (xoff, swing, reach, drop, role, hw, mouth) => {
+      if (mouth){
+        // a hand brought up to the face: the forearm folds IN and UP rather
+        // than reaching out, which is what eating and smoking look like
+        slab(shoulder - 0.08, nT + 0.02, hw, 1.5, role, xoff * 0.5, FWD * 1.1);
+        return;
+      }
       if (reach > 0){
         const top = shoulder - (drop || 0);
         slab(top - 0.28, top, hw, reach * 0.5 + 0.9, role, xoff,
              FWD * (reach * 0.5 + 0.7));
       } else slab(armLo, shoulder, hw, 1.9, role, xoff, swing);
     };
-    arm(-5.2, armL, reachL, dropL, R.S, 1.2);
-    arm( 5.2, armR, reachR, dropR, R.S, 1.2);
+    arm(-5.2, armL, reachL, dropL, R.S, 1.2, P.mouthL);
+    arm( 5.2, armR, reachR, dropR, R.S, 1.2, P.mouthR);
+    // and whatever is being lifted to it
+    if (P.mouthItem){
+      const M = P.mouthItem;
+      // level with the mouth, not the chin: it has to break the head's
+      // outline or it is simply inside the face
+      const z0 = nT + 0.04, z1 = z0 + (M.h || 0.10);
+      const off = M.both ? 0 : (P.mouthR ? 2.4 : -2.4);
+      slab(z0, z1, M.w || 1.0, 1.2, R[M.r] || R.W, off, FWD * 1.6);
+    }
     slab(tT, nT, 2.0, 2.0, R.S, 0, lean);                    // neck
     slab(nT, hT, 3.0, 2.6, R.S, 0, lean);                    // head
     // --- what you put on ----------------------------------------------
     if (outer){                                              // the coat wins
       slab(hip - 0.02, tT + 0.04, 4.6, 2.7, R.K, 0, lean);
-      arm(-5.3, armL, reachL, dropL, R.K, 1.5);              // sleeves
-      arm( 5.3, armR, reachR, dropR, R.K, 1.5);
+      arm(-5.3, armL, reachL, dropL, R.K, 1.5, P.mouthL);    // sleeves
+      arm( 5.3, armR, reachR, dropR, R.K, 1.5, P.mouthR);
       if (outer === 'puffer'){                               // horizontal baffles
         for (let h = hip + 0.04; h < tT + 0.04; h += 0.16)
           slab(h, h + 0.05, 4.8, 2.8, R.W, 0, lean);
@@ -10005,6 +10064,25 @@ function weaponSwing(H){
                : { fwd: (H.gun.fwd || 0.20) + 0.10 });
   return S;
 }
+/* Riding with something in your hands. The board, the crouch and the stance
+   are the skate pose; the arms are the weapon's, tucked in a little because
+   you are also balancing. The arms stop swinging - they are busy. */
+const _skwCache = new Map();
+function skateHold(fr, id){
+  const k = fr + ':' + id;
+  let P = _skwCache.get(k);
+  if (!P){
+    const S = BODY_POSE['skate' + fr], W = WEAPON_HOLD[id] || WEAPON_HOLD.fist;
+    P = Object.assign({}, S, {
+      reachL: (W.reachL || 0) * 0.78,
+      reachR: (W.reachR || 0) * 0.78,
+      armRaise: (W.armRaise || 0) * 0.7,
+      gun: W.gun, armL: 0, armR: 0
+    });
+    _skwCache.set(k, P);
+  }
+  return P;
+}
 const _swingCache = new Map();
 function weaponHold(id, swinging){
   const H = WEAPON_HOLD[id] || WEAPON_HOLD.fist;
@@ -10073,7 +10151,10 @@ const WEAPON_MODEL = {
              { u0:.28,u1:.72, v0:.22,v1:.27, w0:.32,w1:.68, r:'T' },   // guard
              { u0:.44,u1:.56, v0:.27,v1:1.0, w0:.38,w1:.62, r:'W' } ], // blade
   maul:    [ { u0:.42,u1:.58, v0:.00,v1:.70, w0:.42,w1:.58, r:'K' },   // haft
-             { u0:.24,u1:.76, v0:.70,v1:1.0, w0:.24,w1:.76, r:'T' } ]  // head
+             { u0:.24,u1:.76, v0:.70,v1:1.0, w0:.24,w1:.76, r:'T' } ], // head
+  // what leaves the bore: a bright body with a hotter point ahead of it
+  flash:   [ { u0:.10,u1:.90, v0:.00,v1:.55, w0:.10,w1:.90, r:'X' },
+             { u0:.32,u1:.68, v0:.55,v1:1.0, w0:.32,w1:.68, r:'W' } ]
 };
 /* One palette for everything held: four roles is enough to tell a grip from
    a barrel from an edge, and more would be invisible at this size. */
@@ -10118,6 +10199,19 @@ function weaponArt(id, vertical){
                    vol: weaponVol(boxes, vertical) };
   }
   return _gunArt[k];
+}
+/* The flash the third person sees. Brightest at the instant and gone in a
+   twelfth of a second, which is why it is driven by an event rather than by
+   the position stream - at fifteen packets a second a flag would be missed
+   more often than it was caught. */
+function drawMuzzleFlash(x, y, yaw, G, t){
+  if (!G || G.up) return;                       // a blade has no bore
+  const sl = gunSlots(), art = weaponArt('flash', false);
+  const fx = Math.cos(yaw), fy = Math.sin(yaw);
+  const d = (G.fwd || 0.22) + G.len + 0.05;
+  const k = 0.10 + 0.20 * Math.min(1, t / 0.09);
+  drawModel(x + fx * d, y + fy * d, G.z - k * 0.45, k, k, art,
+            sl.base, sl.dens, 0, yaw + Math.PI / 2, 1.5, 0);
 }
 function drawHeldWeapon(x, y, yaw, H){
   const G = H && H.gun;
@@ -10168,14 +10262,25 @@ function bodyWeaponOf(p){
   if (!p || p.local !== false) return typeof weaponId === 'function' ? weaponId() : 'fist';
   return p.weapon || 'fist';
 }
+/* Ours is read live rather than off the wire, so the camjack shows us eating
+   with netplay switched off entirely. */
+function bodyUsingOf(p){
+  if (!p || p.local !== false) return typeof usingNow === 'function' ? usingNow() : null;
+  return p.using || null;
+}
 /* What a body is doing, read off the same flags the first-person view uses.
    A hold and a swing carry the weapon in the key, because the arms are a
    different shape for a rifle than for a knife. */
 function bodyPoseOf(p){
+  const u = bodyUsingOf(p);
+  if (u) return 'use:' + consumeClass(u);       // a ritual outranks everything
   if (p.sit) return 'sit';
   if (p.hitT > 0) return 'hurt';
-  if (p.skate) return (p.pushT > 0 || ((p.phase | 0) & 1)) ? 'skate1' : 'skate0';
   const w = bodyWeaponOf(p);
+  if (p.skate){
+    const fr = (p.pushT > 0 || ((p.phase | 0) & 1)) ? 1 : 0;
+    return w === 'fist' ? 'skate' + fr : 'sk' + fr + ':' + w;
+  }
   if (p.punchT > 0) return 'sw:' + w;
   if (p.aiming && w !== 'fist') return 'wp:' + w;
   if (p.moving) return (p.running ? 'run' : 'walk') + ((p.phase | 0) & 1);
@@ -10185,7 +10290,11 @@ function bodyPoseOf(p){
 function bodyPose(key){
   const c = key.indexOf(':');
   if (c < 0) return BODY_POSE[key] || BODY_POSE.idle;
-  return weaponHold(key.slice(c + 1), key.slice(0, c) === 'sw');
+  const mode = key.slice(0, c), arg = key.slice(c + 1);
+  if (mode === 'use') return CONSUME_POSE[arg] || CONSUME_POSE.eat;
+  if (mode === 'sk0') return skateHold(0, arg);
+  if (mode === 'sk1') return skateHold(1, arg);
+  return weaponHold(arg, mode === 'sw');
 }
 /* Draw anybody's body where they are standing - the camjack looking back at
    you, and everyone else in the room. */
@@ -10195,8 +10304,14 @@ function drawBodyOf(p, x, y, yaw){
   drawModel(x, y, 0, BODY_W, BODY_H, e.art,
             p.hitT > 0 ? HIT_SB : e.sl.base, e.sl.dens, 0, yaw + Math.PI / 2,
             BODY_DEP / BODY_W, 0);
-  const c = key.indexOf(':');
-  if (c >= 0) drawHeldWeapon(x, y, yaw, weaponHold(key.slice(c + 1), key.slice(0, c) === 'sw'));
+  const P = bodyPose(key);
+  if (P && P.gun){
+    drawHeldWeapon(x, y, yaw, P);
+    // ours reads the same muzzle timer the first-person view uses, so the
+    // camjack sees our own shots without netplay being on at all
+    const fT = p.local === false ? (p.fireT || 0) : muzzleT;
+    if (fT > 0) drawMuzzleFlash(x, y, yaw, P.gun, fT);
+  }
 }
 /* the camjack's view of you, left standing where you walked away from */
 function drawPlayerBody(){
@@ -10409,7 +10524,14 @@ function useItem(id){
   st.qty--;
   if (st.qty <= 0) player.inv.splice(player.inv.indexOf(st), 1);
   sfx('ui_select', { vol: 0.5, rate: 0.9 });
+  // Get out of the way and let the ritual play. Eating a bowl of noodles
+  // behind the inventory screen means never seeing your own hands do it.
+  if (VANIM[id]) closeMenus();
   playVAnim(id);
+  if (CONSUME_CLASS[id]){                      // the body knows even when the
+    useAnimId = id;                            // viewmodel has no art for it
+    useAnimT = CONSUME_DUR[consumeClass(id)] || 1.2;
+  }
   toast('used ' + def.name.toLowerCase());
 }
 function resetPlayer(){
@@ -12779,6 +12901,9 @@ function fireWeapon(){
   invTake('ammo', 1);
   shotCool = G.cool;
   muzzleT = 0.09;
+  // a flash is gone in a twelfth of a second, far too short to survive being
+  // sampled by the position stream - it goes as its own event or not at all
+  netBroadcastEvent('shot', { x: +cam.x.toFixed(2), y: +cam.y.toFixed(2) });
   cam.pitch = clamp(cam.pitch + G.kick, -R.rows * 0.62, R.rows * 0.62);
   sfx('shot', { vol: G.snd, rate: G.rate * (0.97 + Math.random() * 0.06) });
   panicHere(cam.x, cam.y, 120);
@@ -14920,7 +15045,16 @@ VANIM.cigarette = { dur: 4.4, loop: 1,
 for (const k in VANIM)                        // every ritual, twice the frames
   if (VANIM[k] && VANIM[k].frames) VANIM[k].frames = tweenFrames(VANIM[k].frames);
 let vAnim = null, smokeGlow = 0;
-function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0, loop: d.loop }; }
+/* VANIM drives the first-person viewmodel and only four items have that art.
+   The BODY needs to know what the hands are doing for all twenty-three, so
+   this runs alongside it: what is being taken, and how long the gesture has
+   left. The cigarette is the exception that never ends - smoking() owns it. */
+let useAnimId = null, useAnimT = 0;
+function usingNow(){
+  if (smoking()) return 'cigarette';
+  return useAnimT > 0 ? useAnimId : null;
+}
+function playVAnim(id){ const d = VANIM[id]; if (d) vAnim = { d, t: 0, loop: d.loop, id }; }
 /* the cigarette is the one ritual that does not end: it rides along with
    anything your hands are not doing, and the city blooms while it burns */
 function smoking(){ return !!(vAnim && vAnim.loop); }
@@ -18187,6 +18321,7 @@ function netSampleMe(dt){
                   document.pointerLockElement === view);
   ME.hp = player.hp;
   ME.weapon = typeof weaponId === 'function' ? weaponId() : 'fist';
+  ME.using = usingNow();                        // mid-ritual, and which one
   if (len > 1e-4){ ME.dx = dx / len; ME.dy = dy / len; }
   _nmx = cam.x; _nmy = cam.y;
 }
@@ -18391,6 +18526,7 @@ function netOnMsg(m){
       p.hp = m.hp === undefined ? p.hp : m.hp;
       p.phase = m.ph || 0;
       p.weapon = m.w || 'fist';
+      p.using = m.u || null;
       netUnflag(p, m.fl | 0);
       if (m.s !== p.sceneId) peerSetScene(p, m.s);
       // first word from somebody: put them there rather than easing in from
@@ -18424,8 +18560,11 @@ function netEvent(m){
         if ((q.k === PK_CAM || q.k === PK_LAMP) && (q.y | 0) * MAP + (q.x | 0) === m.i) q.dead = 1;
       return;
     case 'shot': {                              // a bang everyone should hear
-      const p = playerById(m.f);
-      if (p) { muzzleT = 0.06; panicHere(m.x, m.y, 90); }
+      const q = playerById(m.f);
+      if (q) q.fireT = 0.09;                    // THEIR muzzle, not ours
+      // the crowd is the host's to scatter; a guest doing it too would only
+      // be overwritten by the next snapshot
+      if (NET.role === 'host' && m.x !== undefined) panicHere(m.x, m.y, 90);
       sfx('shot', { vol: 0.5 });
       return;
     }
@@ -18457,6 +18596,7 @@ function netTick(dt){
     if (p.moving) p.phase += dt * (p.running ? 5.2 : 3.4);
     if (p.punchT > 0) p.punchT -= dt;
     if (p.hitT > 0) p.hitT -= dt;
+    if (p.fireT > 0) p.fireT -= dt;
   }
   // drop anybody who has stopped talking
   for (let i = PLAYERS.length - 1; i > 0; i--){
@@ -18475,7 +18615,7 @@ function netTick(dt){
   netSend({ t: 'me', x: +cam.x.toFixed(2), y: +cam.y.toFixed(2),
             a: +cam.ang.toFixed(3), s: netSceneId(), fl: netFlags(ME),
             ph: +(ME.phase || 0).toFixed(1), hp: player.hp,
-            w: ME.weapon,
+            w: ME.weapon, u: ME.using,
             name: NET.name, worn: player.worn, skinC: player.skinC,
             shirtC: player.shirtC });
 }
@@ -18787,6 +18927,7 @@ function frame(now){
   // Netplay ticks OUTSIDE the freeze: opening your own pause menu must not
   // stop you existing for everybody else, and their bodies should keep moving
   // on your screen while you read it.
+  if (useAnimT > 0) useAnimT = Math.max(0, useAnimT - dt);
   netTick(dt);
   fade *= Math.pow(0.02, dt);
   muzzleT = Math.max(0, muzzleT - dt);
