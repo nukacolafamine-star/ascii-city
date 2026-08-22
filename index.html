@@ -389,7 +389,8 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_METRO = 10, PK_APPLE = 11, PK_TURBINE = 12, PK_ITEM = 13,
       PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17, PK_RACK = 18,
       PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22,
-      PK_FLOTSAM = 23, PK_RAMP = 24;
+      PK_FLOTSAM = 23, PK_RAMP = 24,
+      PK_FOUNT = 25, PK_STATUE = 26, PK_BAND = 27;
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -901,8 +902,60 @@ function stampPark(bi, bj, bw, bh, kind){
     }
   let title;
   if (kind === 'main'){
-    title = placeWord() + ' ' + ['PARK', 'GARDENS', 'COMMONS', 'GREEN',
-                                 'MEADOW'][(rnd() * 5) | 0];
+    /* The big parks used to be a name over a scatter of trees, which made
+       seven of them the same park seven times. They get themes the way the
+       playgrounds do, and the centrepiece decides which one it is. */
+    const px = (x0 + x1) * 0.5, py = (y0 + y1) * 0.5;
+    const place = placeWord();
+    const theme = (rnd() * 3) | 0;
+    if (theme === 0){
+      // formal: somebody on a plinth, an avenue of trees at him, benches
+      // facing the man rather than the view
+      title = place + ' MEMORIAL PARK';
+      props.push({ x: px, y: py, k: PK_STATUE, s: rnd(), r: 0.7, fix: rnd() * 6.28 });
+      const along = (x1 - x0) >= (y1 - y0);
+      const reach = (along ? (x1 - x0) : (y1 - y0)) * 0.5 - 3;
+      for (let t = 5; t < reach; t += 3.4)
+        for (const sgn of [-1, 1]){
+          const tx = px + (along ? sgn * t : 4.5), ty = py + (along ? 4.5 : sgn * t);
+          props.push({ x: tx, y: ty, k: PK_TREE, s: rnd(), r: 0.42 });
+          props.push({ x: px + (along ? sgn * t : -4.5), y: py + (along ? -4.5 : sgn * t),
+                       k: PK_TREE, s: rnd(), r: 0.42 });
+        }
+      for (let k = 0; k < 6; k++){
+        const th = k / 6 * Math.PI * 2;
+        props.push({ x: px + Math.cos(th) * 7, y: py + Math.sin(th) * 7,
+                     k: PK_BENCH, s: 0, r: 0.35 });
+      }
+    } else if (theme === 1){
+      // water: a fountain, blossom round it, and the benches you eat lunch on
+      title = place + ' ' + ['GARDENS', 'WATER GARDENS'][(rnd() * 2) | 0];
+      props.push({ x: px, y: py, k: PK_FOUNT, s: rnd(), r: 2.0, fix: 0 });
+      for (let k = 0; k < 10; k++){
+        const th = rnd() * Math.PI * 2, rad = 6 + rnd() * 7;
+        props.push({ x: px + Math.cos(th) * rad, y: py + Math.sin(th) * rad,
+                     k: rnd() < 0.7 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
+      }
+      for (let k = 0; k < 5; k++){
+        const th = k / 5 * Math.PI * 2 + 0.3;
+        props.push({ x: px + Math.cos(th) * 5.5, y: py + Math.sin(th) * 5.5,
+                     k: PK_BENCH, s: 0, r: 0.35 });
+      }
+    } else {
+      // a bandstand on the green, everything else kept back off the grass
+      title = place + ' ' + ['COMMONS', 'GREEN'][(rnd() * 2) | 0];
+      props.push({ x: px, y: py, k: PK_BAND, s: rnd(), r: 3.0, fix: 0 });
+      for (let k = 0; k < 8; k++){
+        const th = k / 8 * Math.PI * 2 + 0.2;
+        props.push({ x: px + Math.cos(th) * 9, y: py + Math.sin(th) * 9,
+                     k: PK_BENCH, s: 0, r: 0.35 });
+      }
+      for (let k = 0; k < 8; k++){
+        const th = rnd() * Math.PI * 2, rad = 12 + rnd() * 5;
+        props.push({ x: px + Math.cos(th) * rad, y: py + Math.sin(th) * rad,
+                     k: rnd() < 0.5 ? PK_SAKURA : PK_TREE, s: rnd(), r: 0.42 });
+      }
+    }
   } else {
     // Three kinds of small park, and the equipment decides which one it is.
     const px = (x0 + x1) * 0.5, py = (y0 + y1) * 0.5;
@@ -1488,6 +1541,7 @@ const MODEL_FOOT = [];
   f(PK_HOOP, 1.9, 1.0);   f(PK_SWING, 3.4, 1.8); f(PK_CLIMB, 3.0, 3.0);
   f(PK_FLOTSAM, 2.1, 2.1);
   f(PK_RAMP, 9.4, 3.8);
+  f(PK_FOUNT, 4.6, 4.6); f(PK_STATUE, 1.8, 1.8); f(PK_BAND, 6.4, 6.4);
 })();
 /* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
    generators scatter by per-tile chance, which clumps. Minimum gap between
@@ -1501,12 +1555,20 @@ const MODEL_SPACE = [];
   g(PK_TREE, 4);    g(PK_SAKURA, 4);  g(PK_ROCK, 3);
   g(PK_METRO, 8);   g(PK_SWING, 7);   g(PK_CLIMB, 7);
   g(PK_HOOP, 9);
+  g(PK_FOUNT, 12); g(PK_STATUE, 10); g(PK_BAND, 14);
 })();
 // placed on purpose first, scattered dressing last - and the first three
 // are never moved, because other systems know where they are
 // Rails come high: they are a run along a bridge edge at a fixed interval,
 // and one post lost to a passing bench leaves a visible gap in the railing.
-const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_RAIL, PK_HOOP, PK_SWING,
+/* A park's centrepiece is the reason the park exists, so it outranks the
+   scatter of trees and benches that was strewn across the plot before it
+   was placed. Left out of this list entirely, they lost every argument and
+   most of them were quietly deleted - seven large parks between them kept
+   one fountain. */
+const CLEAR_ORDER = [PK_METRO, PK_STAIR, PK_ITEM, PK_RAIL,
+                     PK_FOUNT, PK_STATUE, PK_BAND,
+                     PK_HOOP, PK_SWING,
                      PK_CLIMB, PK_STALL, PK_BENCH,
                      PK_CAM, PK_TLIGHT, PK_HYDR, PK_LAMP, PK_TURBINE,
                      PK_APPLE, PK_PLAY, PK_BIN, PK_RACK, PK_CROP,
@@ -2265,6 +2327,43 @@ const ART = {
         : ch === '#' ? C.leaf
         : (ch === '`' || ch === ',') ? C.leaf
         : C.trunk),
+  /* Three things a big park has and a playground does not: something with
+     water in it, something with a dead man on it, and something to stand a
+     band under. Authored as elevations rather than volumes - the voxeliser
+     inflates a side view into a round solid, which is exactly right for a
+     basin, a plinth and a bandstand roof. */
+  fount: parseArt(['..XXXXX..',
+                   '.XX...XX.',
+                   '..X...X..',
+                   '...XXX...',
+                   '...MMM...',
+                   '..MMMMM..',
+                   '.XXXXXXX.',
+                   'XXXXXXXXX',
+                   'MMMMMMMMM',
+                   'MMMMMMMMM']),
+  statue: parseArt(['...HH...',
+                    '...HH...',
+                    '..SSSS..',
+                    '.SSSSSS.',
+                    '.S.SS.S.',
+                    '...SS...',
+                    '..SSSS..',
+                    '..K..K..',
+                    '..K..K..',
+                    '.MMMMMM.',
+                    'MMMMMMMM',
+                    'MMMMMMMM']),
+  band: parseArt(['....X....',
+                  '..XXXXX..',
+                  'XXXXXXXXX',
+                  'XXXXXXXXX',
+                  'M.......M',
+                  'M.......M',
+                  'M.......M',
+                  'M.......M',
+                  'KKKKKKKKK',
+                  'KKKKKKKKK']),
   hydr: parseArt(['.B.', 'BBB', '.B.', '.B.']),
   bin:  parseArt(['TTT', 'MMM', 'MMM', 'MMM']),
   tlight: parseArt(['MMM', 'MXM', 'MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
@@ -2766,6 +2865,14 @@ PROPDEF[PK_FLOTSAM] = FLOTSAM[0];
 PROPDEF[PK_RAMP] = { art: ART.ramp, w: 9.4, h: 1.25, dep: 0.40,
                      sl: slots({ M: [C.deckOld, 0.74], K: [C.trunk, 0.62],
                                  X: [C.nMag, 1.0], W: [C.nWhite, 0.9] }) };
+PROPDEF[PK_FOUNT] = { art: ART.fount, w: 4.6, h: 2.6, dep: 1.0,
+                      sl: slots({ X: [C.water, 0.55], M: [C.curb, 0.72] }) };
+PROPDEF[PK_STATUE] = { art: ART.statue, w: 2.0, h: 4.4, dep: 0.85,
+                       sl: slots({ H: [C.curb, 0.66], S: [C.curb, 0.62],
+                                   K: [C.curb, 0.7], M: [C.dataDk, 0.75] }) };
+PROPDEF[PK_BAND]  = { art: ART.band,  w: 6.4, h: 4.2, dep: 1.0,
+                      sl: slots({ X: [C.deckOld, 0.74], M: [C.rail, 0.6],
+                                  K: [C.curb, 0.7] }) };
 PROPDEF[PK_HOOP]  = { art: ART.hoop,  w: 1.9, h: 3.4, dep: 0.85,
                       sl: slots({ M: [C.rail, 0.72], W: [C.nWhite, 0.92],
                                   X: [C.tlAmb, 1.0] }) };
@@ -5577,6 +5684,12 @@ function propBlocked(x, y, rad){
     if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR ||
         p.k === PK_RAMP) continue;                    // you ride over a ramp
     if (grind && (p.k === PK_RAIL || p.k === PK_BENCH)) continue;   // walk-through kinds
+    // Street furniture you can clear on a board. A bench is knee high and a
+    // bin is not much more, so with the wheels off the ground they are
+    // something you go OVER - the height test is what keeps that honest,
+    // rather than letting a rolling deck walk through them.
+    if (airT > 0 && cam.z > 1.62 + JUMPABLE_H &&
+        (p.k === PK_BENCH || p.k === PK_BIN || p.k === PK_HYDR)) continue;
     if (p.k === PK_STALL){
       // A cart is a box three metres across, not a post. A circle round its
       // middle left both wings open and you walked straight through them.
@@ -5800,6 +5913,8 @@ let grind = null, grindT = 0;
    trick that just looks good. The cooldown stops one pipe firing twice as
    you roll the length of it. */
 let rampAir = 0, rampCd = 0;
+/* how far off the deck your wheels have to be to clear a bench */
+const JUMPABLE_H = 0.55;
 const skParts = [];
 function rampUnder(){
   for (const q of gridQuery(propGrid, cam.x, cam.y, 4, _q1))
@@ -15256,6 +15371,7 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_HOOP, 0.45, 0);  set(PK_SWING, 0.16, 0); set(PK_CLIMB, 0.33, 0);
   set(PK_FLOTSAM, 1.0, 0);
   set(PK_RAMP, 0.40, 1);
+  set(PK_FOUNT, 1.0, 0); set(PK_STATUE, 0.85, 0); set(PK_BAND, 1.0, 1);
 })();
 /* How far a kind is worth marching at all. Small debris is sub-cell long
    before the general 170-tile cut-off, and a river is a straight corridor a
