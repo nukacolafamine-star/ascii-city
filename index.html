@@ -11598,6 +11598,7 @@ function checkQuests(){
     const st = QUESTS[id] && QUESTS[id].stages[s];
     if (st && st.auto && st.auto()) advanceQuest(id);
   }
+  netQuestTick();                              // did any of that move? say so
   autoPathTick();
 }
 /* the watcher pays 25 a unit, quest or no quest - the buyer scrap hints at */
@@ -18284,6 +18285,57 @@ function netSpawnOffset(){
   return false;
 }
 
+/*--------------------------- the story ------------------------------------
+  Quest state is not hooked at advanceQuest, because that is not the only
+  place it moves: dialogue trees write player.quests directly, so does the dev
+  console, and a stage with an auto() finishes without anybody opening a
+  conversation. So the state is WATCHED rather than intercepted - checkQuests
+  already runs twice a second, and a signature of the stages is cheap.
+
+  Merging is furthest-wins, so it does not matter who did the job or whose
+  packet arrives first. What crosses is the STAGE, not the consequences: the
+  one who handed it in pays its cost and takes its fee, and everybody else
+  watches the story move. That keeps inventory local, where it was asked to
+  stay.
+
+  Both objects are mutated IN PLACE and never replaced. Dialogue trees hold
+  references to player.quests and player.qvar for the life of the world -
+  swapping them out leaves every tree reading a snapshot that can never change
+  again, which is the trap loadGame already documents.
+--------------------------------------------------------------------------*/
+function qRank(v){
+  if (v === 'done') return 1e9;
+  if (typeof v === 'number') return v;
+  return -1;                                    // never offered
+}
+function qSignature(){
+  let sig = '';
+  for (const id in player.quests) sig += id + ':' + player.quests[id] + ';';
+  try { sig += '|' + JSON.stringify(player.qvar); } catch (e){}
+  return sig;
+}
+let _qSig = '';
+function netQuestTick(){
+  if (!NET.on) return;
+  const sig = qSignature();
+  if (sig === _qSig) return;
+  _qSig = sig;
+  netSend({ t: 'q', quests: player.quests, qvar: player.qvar, track: player.track });
+}
+function netApplyQuests(q, qv, track){
+  let moved = null;
+  if (q) for (const id in q){
+    if (qRank(q[id]) > qRank(player.quests[id])){
+      player.quests[id] = q[id];
+      if (QUESTS[id]) moved = QUESTS[id].name + (q[id] === 'done' ? ' - completed' : ' - moved on');
+    }
+  }
+  if (qv) for (const k in qv) player.qvar[k] = qv[k];
+  if (track && !player.track) player.track = track;
+  _qSig = qSignature();                         // do not echo what we were told
+  if (moved){ toast(moved); sfx('ui_select', { vol: 0.5, rate: 0.9 }); }
+}
+
 /*---------------------------- the wire ------------------------------------*/
 /* Only stamp what we are the AUTHOR of. This used to sign everything it
    touched with our own id, which is fine until a host forwards somebody
@@ -18307,7 +18359,8 @@ function netOnMsg(m){
         p.name = m.name || p.name;
         netSend({ t: 'world', to: m.f, seed: worldSeed, clock, day: dayCount,
                   wx: weather, tm: CFG.timeMode, fog: fogLevel, wet: wetLevel,
-                  delta: worldDelta, tags });
+                  delta: worldDelta, tags,
+                  quests: player.quests, qvar: player.qvar, track: player.track });
         toast(p.name + ' joined');
         sfx('ui_select', { vol: 0.5 }); }
       return;
@@ -18319,6 +18372,9 @@ function netOnMsg(m){
       worldDelta = m.delta || { taken: {} };
       applyDeltaToProps();
       tags = m.tags || {};
+      // newWorld has just called resetPlayer, so this is the story arriving
+      // rather than merging into anything
+      netApplyQuests(m.quests, m.qvar, m.track);
       netSpawnOffset();                       // do not arrive inside somebody
       if (GL) glBuildPalette(); else buildAtlases();
       bgGrad = null; buildBackground(); fade = 1;
@@ -18350,6 +18406,7 @@ function netOnMsg(m){
       return;
     }
     case 'crowd': if (netGuest()) netApplyCrowd(m); return;
+    case 'q': netApplyQuests(m.quests, m.qvar, m.track); return;
     case 'bye': dropPeer(m.f); NET.seen.delete(m.f); return;
     case 'ev': netEvent(m); return;
   }
