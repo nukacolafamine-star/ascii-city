@@ -390,7 +390,8 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_SAKURA = 14, PK_CROP = 15, PK_ROCK = 16, PK_STAIR = 17, PK_RACK = 18,
       PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22,
       PK_FLOTSAM = 23, PK_RAMP = 24,
-      PK_FOUNT = 25, PK_STATUE = 26, PK_BAND = 27;
+      PK_FOUNT = 25, PK_STATUE = 26, PK_BAND = 27,
+      PK_PARKED = 28;                         // stock, standing on its wheels
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -1675,6 +1676,7 @@ const MODEL_FOOT = [];
   f(PK_FLOTSAM, 2.1, 2.1);
   f(PK_RAMP, 9.4, 3.8);
   f(PK_FOUNT, 4.6, 4.6); f(PK_STATUE, 1.8, 1.8); f(PK_BAND, 6.4, 6.4);
+  f(PK_PARKED, 4.8, 2.4);                     // something to take cover behind
 })();
 /* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
    generators scatter by per-tile chance, which clumps. Minimum gap between
@@ -3740,6 +3742,7 @@ function spawnCars(){
 }
 function updateCar(f, dt){
   if (f.mine){ myCarFrame(f, dt); return; }
+  if (f.park && carParkFrame(f, dt)) return;    // landing, sitting, or climbing
   f.ttl -= dt;
   let dxT = f.tx - f.x, dyT = f.ty - f.y;
   const dist = Math.hypot(dxT, dyT);
@@ -5923,7 +5926,8 @@ function spawnActors(){
         ...spireTree() } });
   }
   if (DEALER){
-    const v = spawnActor('citizen', DEALER.lot.x, DEALER.lot.y, {
+    const vs = forecourtSpot(DEALER.stand || DEALER.yard);  // in the aisle, reachable
+    const v = spawnActor('citizen', vs.x, vs.y, {
       name: 'VANCE', brain: 'still', shirt: C.tlAmb, tree: vanceTree() });
     v.range = 2;
     spawnActor('citizen', DEALER.park.x, DEALER.park.y, {
@@ -7830,25 +7834,324 @@ function openStash(){
   and rides the save.
 ============================================================================*/
 let myCar = null, DEALER = null;
+/*======================= 13k4b. THE LOT AND THE YARD =======================
+  Both of these were a single walkable tile picked out of a hash, with a name
+  hung on it and nothing else: no forecourt, no building, no cars, and no
+  guarantee there was room to stand. That is also why the Kessler crew turned
+  up inside walls - they were placed at that tile PLUS ONE and PLUS TWO, and
+  nothing ever checked those. A crew embedded in masonry cannot be reached or
+  killed, the stage that waits on them being dead never finishes, and the
+  luxury runner that spawns on the stage after it therefore never appears at
+  all. One unchecked tile, and the whole line dies quietly.
+
+  So both are real places now. A forecourt is searched for as a RECTANGLE of
+  ground with nothing built on it, paved, and then furnished: the yard is
+  VANCE's showroom, ranked with stock; the lot is where the crew sit on the
+  prize, with bays for the traffic that comes down to use it.
+============================================================================*/
+/* Sizes to try, largest first. A city is generated, so no single rectangle
+   can be assumed to fit: 13 by 13 finds nowhere at all in the red mile on
+   this seed, and pinning one size means the whole line silently falls back to
+   a bare tile on any map where it does not happen to land. */
+const YARD_SIZES = [[15,15],[15,13],[13,13],[15,11],[13,11],[13,9],[11,9]];
+const LOT_SIZES  = [[13,13],[13,11],[11,11],[13,9],[11,9],[9,9]];
+function forecourtBest(dist, salt, sizes){
+  for (const [w, h] of sizes){
+    const r = forecourt(dist, salt, w, h);
+    if (r) return r;
+  }
+  return null;
+}
+/* Touching a road is not the same as being reachable: a walled service yard
+   in the red mile touches its own dead stub and nothing else, and on one seed
+   the entire lot - crew, prize and landing bay - was chosen inside one. The
+   component map is computed once per build and every candidate is checked
+   against it. openSealedDoors has already rebuilt walkG by the time this
+   runs, so the map is current. */
+let _fcComp = null;
+function forecourtReachable(x, y){
+  if (!_fcComp) _fcComp = walkComponents();
+  const i = y * MAP + x;
+  return !!walkG[i] && _fcComp.lab[i] === _fcComp.main;
+}
+function forecourt(dist, salt, w, h){
+  for (let t = 0; t < 1200; t++){
+    const x = 4 + ((hash3(worldSeed, salt, t) * (MAP - w - 10)) | 0);
+    const y = 4 + ((hash3(worldSeed, salt + 1, t) * (MAP - h - 10)) | 0);
+    if (districtAt(x + (w >> 1), y + (h >> 1)) !== dist) continue;
+    let ok = true, touchesRoad = false;
+    for (let j = -1; j <= h && ok; j++){
+      for (let i = -1; i <= w; i++){
+        const gx = x + i, gy = y + j;
+        if (!inMap(gx, gy)){ ok = false; break; }
+        const id = gy * MAP + gx;
+        // nothing built, and never over water or a span
+        if (tH[id] > 0 || tType[id] === T_WATER || tType[id] === T_BRIDGE){ ok = false; break; }
+        if (tType[id] === T_ROAD || tType[id] === T_CROSS) touchesRoad = true;
+      }
+    }
+    if (!ok || !touchesRoad) continue;           // it has to be drivable-to
+    // and joined to the city, not to a courtyard of its own
+    let joined = false;
+    for (let k = 0; k < w && !joined; k += 2)
+      if (forecourtReachable(x + k, y) || forecourtReachable(x + k, y + h - 1)) joined = true;
+    for (let k = 0; k < h && !joined; k += 2)
+      if (forecourtReachable(x, y + k) || forecourtReachable(x + w - 1, y + k)) joined = true;
+    if (!joined) continue;
+    return { x0: x, y0: y, x1: x + w - 1, y1: y + h - 1,
+             x: x + w * 0.5, y: y + h * 0.5, w, h };
+  }
+  return null;
+}
+/* Pave it. The final buildWalkGrid runs after this and reads tType, so
+   setting the surface is all that is needed to make it walkable. */
+function paveForecourt(r){
+  for (let y = r.y0; y <= r.y1; y++)
+    for (let x = r.x0; x <= r.x1; x++){
+      const id = y * MAP + x;
+      if (tType[id] === T_ROAD || tType[id] === T_CROSS) continue;   // leave the road
+      tType[id] = T_LOT; tH[id] = 0; tB[id] = -1;
+    }
+}
+/* A car standing on its wheels. It reuses the flying stock's own artwork and
+   its own colour, so a forecourt reads as the same traffic, parked. */
+function parkCar(x, y, yaw, colIdx){
+  const col = CARC[((colIdx | 0) % CARC.length + CARC.length) % CARC.length];
+  const sl = slots({ B: [col, 0.92], W: [C.glass, 0.52], T: [C.tire, 0.90],
+                     L: [C.head, 1.0], R: [C.tail, 1.0] });
+  const p = { x, y, k: PK_PARKED, s: 0, r: 1.2, yaw,
+              len: 4.6, wid: 2.2, col, sb: sl.base, sd: sl.dens };
+  props.push(p);
+  return p;
+}
+/* Ranks against the edges, nose-in, with the whole middle left as an aisle.
+   A car is 4.8 long by 2.4 wide and blocks every tile it covers, so a
+   forecourt filled edge to edge is not a forecourt - it is a wall made of
+   cars with its own keeper sealed inside it, which is precisely what the
+   first attempt at this built. The aisle runs the full width, so it reaches
+   whatever road the rectangle was chosen for touching. */
+function fillForecourt(r, salt, skip, ranks){
+  const out = [];
+  /* Parked ALONG the edge, not nose-in. Nose-in lays 4.8 metres of car across
+     the depth of the rank, which reaches the perimeter row and seals the
+     forecourt off from the very street it was chosen for touching - on one
+     seed in seven the whole lot ended up in its own pocket, crew and prize
+     with it. Broadside it is 2.4 deep, so the ring around the rectangle stays
+     open whatever else happens inside. */
+  /* Stock is ranked at ONE END and nowhere else. Ringing a forecourt looked
+     better and was wrong twice over: nose-in parking reached the perimeter
+     and sealed the whole thing off the street, and once the sides were lined
+     as well the middle became a pocket - walkable, and connected to nothing,
+     with the dealer standing in it. Two rows at the top, everything from the
+     third row down left open. What has to be REACHED lives in the open half.
+
+     Lengthways along the row: 4.8 metres of car wants five tiles of pitch. */
+  const bays = [];
+  if (ranks){
+    for (const rank of ranks)
+      for (let gx = r.x0 + 3; gx <= r.x1 - 2; gx += 4) bays.push([gx, rank.y, rank.yaw]);
+  } else {
+    for (let gx = r.x0 + 3; gx <= r.x1 - 2; gx += 4){    // ranked tight, as a lot is
+      bays.push([gx, r.y0 + 2, 0]);
+      if (r.h >= 11) bays.push([gx, r.y0 + 5, 0]);
+      if (r.h >= 15) bays.push([gx, r.y0 + 8, 0]);
+    }
+  }
+  let n = 0;
+  for (const bay of bays){
+    const gx = bay[0], gy = bay[1], id = gy * MAP + gx;
+    n++;
+    if (!inMap(gx, gy) || tType[id] === T_ROAD || tType[id] === T_CROSS) continue;
+    if (skip && skip(gx, gy)) continue;                      // a bay held open
+    if (hash3(worldSeed, salt, n) < 0.08) continue;          // a gap or two reads as a lot
+    out.push(parkCar(gx + 0.5, gy + 0.5, bay[2],
+                     (hash3(worldSeed, salt + 13, n) * 64) | 0));
+  }
+  return out;
+}
 function initDealership(){
   DEALER = null;
-  // the lot: a stretch of strip pavement; skypark: downtown paving; the
-  // impound: a corner of the red mile where the crew sits on the prize
-  const spot = (dist, salt) => {
+  _fcComp = null;                               // this city's own connectivity
+  const yard = forecourtBest(D_STRIP, 501, YARD_SIZES);
+  const lot  = forecourtBest(D_RED,   521, LOT_SIZES);
+  const park = (function(){                      // the skypark keeps its tile
     for (let t = 0; t < 400; t++){
-      const x = (hash3(worldSeed, salt, t) * MAP) | 0;
-      const y = (hash3(worldSeed, salt + 1, t) * MAP) | 0;
+      const x = (hash3(worldSeed, 511, t) * MAP) | 0;
+      const y = (hash3(worldSeed, 512, t) * MAP) | 0;
       if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
-      if (districtAt(x, y) !== dist) continue;
-      return [x + 0.5, y + 0.5];
+      if (districtAt(x, y) !== D_DOWN) continue;
+      return { x: x + 0.5, y: y + 0.5 };
     }
-    return [cam.x + 10, cam.y + 10];
+    return { x: MAP * 0.5, y: MAP * 0.5 };
+  })();
+  if (!yard || !lot){                            // no room anywhere: keep the old
+    const f = (d, s) => {                        // behaviour rather than no quest
+      for (let t = 0; t < 400; t++){
+        const x = (hash3(worldSeed, s, t) * MAP) | 0, y = (hash3(worldSeed, s + 1, t) * MAP) | 0;
+        if (inMap(x, y) && walkG[y * MAP + x] && districtAt(x, y) === d) return { x: x + 0.5, y: y + 0.5 };
+      }
+      return { x: MAP * 0.5, y: MAP * 0.5 };
+    };
+    DEALER = { yard: f(D_STRIP, 501), lot: f(D_RED, 521), park,
+               yardRect: null, lotRect: null, bays: [] };
+    landmarks.push({ name: 'VANCE AUTO', x: DEALER.yard.x, y: DEALER.yard.y });
+    landmarks.push({ name: 'THE LOT', x: DEALER.lot.x, y: DEALER.lot.y });
+    landmarks.push({ name: 'SKYPARK', x: park.x, y: park.y });
+    return;
+  }
+  paveForecourt(yard); paveForecourt(lot);
+  // The lot parks along its top edge only: the prize, the crew and whatever
+  // comes down out of the traffic all need the open half to themselves.
+  const bayA = { x: lot.x0 + 3.5, y: lot.y1 - 2.5 };   // the prize
+  const bayB = { x: Math.max(lot.x0 + 7.5, lot.x1 - 3.5), y: lot.y1 - 2.5 };
+  fillForecourt(yard, 531, null);
+  fillForecourt(lot, 541, null, [ { y: lot.y0 + 2, yaw: 0 } ]);
+  // The aisle is the one strip guaranteed clear and guaranteed connected to
+  // the street, so it is where anybody who has to be REACHED goes - Vance
+  // above all, since a dealer nobody can walk up to ends the line on quest one.
+  const aisleY = yard.y1 - 2.5;                 // the open half, below the stock
+  DEALER = {
+    yard: { x: yard.x, y: aisleY }, lot: { x: lot.x, y: lot.y }, park,
+    yardRect: yard, lotRect: lot,
+    stand: { x: yard.x, y: aisleY },
+    prize: bayA, bays: [bayB],
+    crew: [ { x: lot.x0 + 3.5, y: Math.max(lot.y0 + 5.5, lot.y1 - 5.5) },
+            { x: lot.x1 - 3.5, y: Math.max(lot.y0 + 5.5, lot.y1 - 5.5) },
+            { x: lot.x  - 0.5, y: Math.max(lot.y0 + 6.0, lot.y1 - 4.0) } ]
   };
-  const lot = spot(D_STRIP, 501), park = spot(D_DOWN, 511), imp = spot(D_RED, 521);
-  DEALER = { lot: { x: lot[0], y: lot[1] }, park: { x: park[0], y: park[1] },
-             impound: { x: imp[0], y: imp[1] } };
-  landmarks.push({ name: 'THE LOT', x: lot[0], y: lot[1] });
-  landmarks.push({ name: 'SKYPARK', x: park[0], y: park[1] });
+  landmarks.push({ name: 'VANCE AUTO', x: yard.x, y: aisleY });
+  landmarks.push({ name: 'THE LOT', x: lot.x, y: lot.y });
+  landmarks.push({ name: 'SKYPARK', x: park.x, y: park.y });
+}
+/* Resolved on FIRST USE, never at init. initDealership runs before the last
+   buildWalkGrid, so while the forecourts are being laid out walkG is still
+   the grid from before they were paved and before their cars were parked -
+   anything checked there is checked against a map that stops existing a
+   moment later. The crew were already late-bound and were reachable on every
+   seed tested; the bays were fixed offsets and were not. So everything goes
+   through here, and the answer is kept. */
+function dealerPoint(key, want){
+  if (!DEALER || !want) return want;
+  const c = DEALER._at || (DEALER._at = {});
+  if (!c[key]) c[key] = forecourtSpot(want);
+  return c[key];
+}
+/* A spot inside a forecourt that is walkable and not already occupied - what
+   the crew and the prize are placed on, so nothing is ever put in a wall. */
+/* The component map as it stands AFTER the world is finished, computed once
+   per build and only when something first asks. The one taken during
+   initDealership is the map before the forecourts were paved and before their
+   cars were baked into the grid - a rectangle can pass that check and still
+   be sealed by the time anybody walks to it. This is the map that decides
+   where a body actually goes. */
+let _liveComp = null, _liveEpoch = -1;
+function liveComponents(){
+  if (_liveEpoch !== buildEpoch || !_liveComp){
+    _liveComp = walkComponents(); _liveEpoch = buildEpoch;
+  }
+  return _liveComp;
+}
+/* Walkable, unoccupied, and JOINED TO THE CITY. The last of those is the one
+   that matters: a crew standing in a sealed yard cannot be fought, and the
+   stage waiting on them dying never ends. Better they stand just outside an
+   awkward lot than inside an unreachable one. */
+function forecourtSpot(want){
+  if (!want) return null;
+  const gx = want.x | 0, gy = want.y | 0;
+  const C = liveComponents();
+  let fallback = null;
+  for (let ring = 0; ring < 14; ring++)
+    for (let dy = -ring; dy <= ring; dy++)
+      for (let dx = -ring; dx <= ring; dx++){
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+        const x = gx + dx, y = gy + dy;
+        if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
+        if (propBlocked(x + 0.5, y + 0.5, 0.6)) continue;
+        const at = { x: x + 0.5, y: y + 0.5 };
+        if (C.lab[y * MAP + x] === C.main) return at;
+        if (!fallback) fallback = at;            // open, but in a pocket
+      }
+  return fallback || { x: want.x, y: want.y };
+}
+
+/*--------------------------- traffic that lands ---------------------------
+  Set dressing that stops being only set dressing at two places. A flyer is
+  occasionally sent down into a free bay at the lot, sits a while, and climbs
+  back out; and the yard occasionally puts a new one into the sky, which is
+  what a dealership is for. Neither touches anything the player can collide
+  with - they are still the same harmless traffic, only lower.
+--------------------------------------------------------------------------*/
+let lotT = 18, yardT = 26;
+function bayFree(b){
+  for (const f of cars)
+    if (f.park && Math.hypot(f.park.x - b.x, f.park.y - b.y) < 3) return false;
+  return true;
+}
+function lotTrafficTick(dt){
+  if (!DEALER || !DEALER.bays || !DEALER.bays.length) return;
+  // land one, now and then, if anybody is near enough to see it happen
+  lotT -= dt;
+  if (lotT <= 0){
+    lotT = 22 + Math.random() * 40;
+    const bi = (Math.random() * DEALER.bays.length) | 0;
+    const b = dealerPoint('bay' + bi, DEALER.bays[bi]);
+    if (bayFree(b)){
+      // Only one already in the neighbourhood. The approach slides toward the
+      // bay proportionally, so recruiting one from the far side of the map
+      // does not read as an approach - it reads as a car teleporting in.
+      let best = null, bd = 110;
+      for (const f of cars){
+        if (f.mine || f.park) continue;
+        const d = Math.hypot(f.x - b.x, f.y - b.y);
+        if (d < bd){ bd = d; best = f; }
+      }
+      if (best) best.park = { x: b.x, y: b.y, phase: 'in', t: 0 };
+    }
+  }
+  // and the yard puts one up
+  yardT -= dt;
+  if (yardT <= 0){
+    yardT = 30 + Math.random() * 50;
+    if (DEALER.yardRect && cars.length < CFG.CARS + 6){
+      const r = DEALER.yardRect;
+      const f = { x: r.x, y: r.y, z: 0.7, dx: 1, dy: 0, tx: 0, ty: 0, ttl: 0,
+                  band: BANDS[(Math.random() * BANDS.length) | 0], spd: 7, v: 3,
+                  col: 0, len: 4.6, wid: 2.2, blink: 0 };
+      const col = CARC[(Math.random() * CARC.length) | 0];
+      const sl = slots({ B: [col, 0.92], W: [C.glass, 0.52], T: [C.tire, 0.90],
+                         L: [C.head, 1.0], R: [C.tail, 1.0] });
+      f.col = col; f.sb = sl.base; f.sd = sl.dens;
+      pickFlyTarget(f);
+      f.park = { x: r.x, y: r.y, phase: 'out', t: 0 };   // climbing away from it
+      cars.push(f);
+    }
+  }
+}
+/* A flyer using a bay: down, sit, up, and back to being traffic. Returns
+   true while it owns its own steering. */
+function carParkFrame(f, dt){
+  const P = f.park;
+  P.t += dt;
+  const dx = P.x - f.x, dy = P.y - f.y, d = Math.hypot(dx, dy);
+  if (P.phase === 'in'){
+    if (d > 0.6){                                 // slide over the bay
+      const k = Math.min(1, dt * 1.1);
+      f.x += dx * k; f.y += dy * k;
+      f.dx = dx / (d || 1); f.dy = dy / (d || 1);
+    }
+    f.z += (0.55 - f.z) * Math.min(1, dt * 0.8);  // and settle onto it
+    if (d < 0.8 && f.z < 0.75){ P.phase = 'sit'; P.t = 0; }
+    if (P.t > 40){ P.phase = 'out'; P.t = 0; }    // never hang there forever
+    return true;
+  }
+  if (P.phase === 'sit'){
+    f.z += (0.5 - f.z) * Math.min(1, dt * 2);
+    if (P.t > 12 + Math.random() * 20){ P.phase = 'out'; P.t = 0; }
+    return true;
+  }
+  f.z += (f.band - f.z) * Math.min(1, dt * 0.5);  // out: climb back to the lane
+  if (f.z > f.band - 2){ f.park = null; pickFlyTarget(f); }
+  return true;
 }
 function spawnMyCar(kind, x, y){
   if (myCar){ const i = cars.indexOf(myCar); if (i >= 0) cars.splice(i, 1); }
@@ -10925,10 +11228,11 @@ const WHEELS_QUESTS = {
                  ? 'take the three SCRAP ELECTRONICS to VANCE'
                  : 'lift 3 SCRAP ELECTRONICS for VANCE (' + invCount('scrap') + ' of 3)',
         target(){
+          const y0 = DEALER && dealerPoint('yard', DEALER.yard);
           if (invCount('scrap') >= 3)
-            return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' };
+            return y0 && { x: y0.x, y: y0.y, name: 'VANCE AUTO' };
           return supplyMark(nearestDepot(3 - invCount('scrap')), 'DEPOT') ||
-                 (DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' });
+                 (y0 && { x: y0.x, y: y0.y, name: 'VANCE AUTO' });
         } }
     ]
   },
@@ -10936,41 +11240,52 @@ const WHEELS_QUESTS = {
     name: 'THE ERRAND',
     stages: [
       { log: 'carry the package to the SKYPARK attendant - do not open it',
-        target(){ return DEALER && { x: DEALER.park.x, y: DEALER.park.y, name: 'SKYPARK' }; } }
+        target(){ const P = DEALER && dealerPoint('park', DEALER.park);
+                  return P && { x: P.x, y: P.y, name: 'SKYPARK' }; } }
     ]
   },
   wheels3: {
     name: 'REPO MAN',
     stages: [
-      { log: 'the KESSLER CREW sits on a seized luxury runner - go take it back',
-        target(){ return DEALER && { x: DEALER.impound.x, y: DEALER.impound.y, name: 'THE IMPOUND' }; },
+      { log: 'the KESSLER CREW sits on a seized luxury runner at THE LOT - take it back',
+        target(){ const L = DEALER && dealerPoint('lot', DEALER.lot);
+                  return L && { x: L.x, y: L.y, name: 'THE LOT' }; },
         auto(){
           if (!DEALER) return false;
-          const d = Math.hypot(DEALER.impound.x - cam.x, DEALER.impound.y - cam.y);
-          if (d < 14 && !player.qvar.repoSpawned){
+          const d = Math.hypot(DEALER.lot.x - cam.x, DEALER.lot.y - cam.y);
+          if (d < 16 && !player.qvar.repoSpawned){
             player.qvar.repoSpawned = 1;
-            for (let i = 0; i < 2; i++){
-              const a = spawnActor('razor', DEALER.impound.x + 1 + i, DEALER.impound.y + 1,
+            // Every one of them is put on ground that has been CHECKED. They
+            // used to be dropped at the landmark tile plus one and plus two,
+            // which nothing validated - a crew standing inside a wall cannot
+            // be reached or killed, so this stage never finished and the
+            // runner on the stage after it never appeared at all.
+            const posts = (DEALER.crew || []).slice(0, 3);
+            for (const want of posts){
+              const at = forecourtSpot(want);
+              const a = spawnActor('razor', at.x, at.y,
                 { name: 'KESSLER CREW', brain: 'hostile', hp: 45 });
               a.atk = 8; a.aggro = 1;
             }
-            toast('the crew stands up - this is THEIR car');
+            toast('the crew stands up off the hood - this is THEIR car');
           }
           return player.qvar.repoSpawned === 1 &&
-                 !actors.some(a => a.name === 'KESSLER CREW' && a.hp > 0) && d < 10;
+                 !actors.some(a => a.name === 'KESSLER CREW' && a.hp > 0) && d < 14;
         } },
-      { log: 'take the runner (V beside it) and fly it back to THE LOT',
-        target(){ return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' }; },
+      { log: 'take the runner (V beside it) and fly it back to VANCE AUTO',
+        target(){ const Y = DEALER && dealerPoint('yard', DEALER.yard);
+                  return Y && { x: Y.x, y: Y.y, name: 'VANCE AUTO' }; },
         auto(){
           if (!myCar || !myCar.lux){             // the prize appears once
             if (player.qvar.repoSpawned === 1){
               player.qvar.repoSpawned = 2;
-              spawnMyCar('lux', DEALER.impound.x, DEALER.impound.y);
+              const at = dealerPoint('prize', DEALER.prize || DEALER.lot);
+              spawnMyCar('lux', at.x, at.y);
               toast('the luxury runner is yours. for now. it is FAST');
             }
             return false;
           }
-          if (Math.hypot(myCar.x - DEALER.lot.x, myCar.y - DEALER.lot.y) < 8 &&
+          if (Math.hypot(myCar.x - DEALER.yard.x, myCar.y - DEALER.yard.y) < 9 &&
               cam.riding !== myCar){
             // Vance takes her back - collateral, sentiment, tax reasons
             const ci = cars.indexOf(myCar);
@@ -10993,8 +11308,9 @@ const WHEELS_QUESTS = {
   wheels5: {
     name: 'THE KEYS',
     stages: [
-      { log: 'collect your runner from VANCE at THE LOT',
-        target(){ return DEALER && { x: DEALER.lot.x, y: DEALER.lot.y, name: 'THE LOT' }; } }
+      { log: 'collect your runner from VANCE at VANCE AUTO',
+        target(){ const Y = DEALER && dealerPoint('yard', DEALER.yard);
+                  return Y && { x: Y.x, y: Y.y, name: 'VANCE AUTO' }; } }
     ]
   }
 };
@@ -11308,7 +11624,8 @@ function vanceTree(){
     toKeys: { text: 'Registered and roadworthy - skyworthy - lawful-ish. One last formality:',
       opts: [{ t: 'The keys, Vance', do(){ startQuest('wheels5'); player.track = 'wheels5';
                player.car = 'runner';
-               player.carX = DEALER.lot.x + 3; player.carY = DEALER.lot.y + 1;
+               { const at = forecourtSpot({ x: DEALER.yard.x + 3, y: DEALER.yard.y + 1 });
+                 player.carX = at.x; player.carY = at.y; }
                spawnMyCar('runner', player.carX, player.carY);
                advanceQuest('wheels5');
                toast('the runner is YOURS - V beside it to fly'); }, next: 'after' }] },
@@ -16887,7 +17204,7 @@ function spritePass(){
     const nearR = pw <= 2.6 ? -(pw * 0.5 + 0.3) : 0.15;
     if (f < nearR || f > MD || f > (MODEL_FAR[p.k] || 170)) continue;
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + Math.min(pw * 0.6, 3)) continue;
-    drawList.push({ d: f, k: 2, o: p });
+    drawList.push({ d: f, k: p.k === PK_PARKED ? 6 : 2, o: p });
   }
   drawList.sort((a, b) => b.d - a.d);          // far to near
   statSprites = drawList.length;
@@ -16920,6 +17237,11 @@ function spritePass(){
       drawPlayerBody();
     } else if (it.k === 5){
       drawBodyOf(o, o.cam.x, o.cam.y, o.cam.ang);
+    } else if (it.k === 6){
+      // the same body the sky is full of, sitting on its wheels
+      if (o.yaw === undefined) o.yaw = 0;
+      drawModel(o.x, o.y, 0, o.len, 1.55, ART.carSide, o.sb, o.sd, 0,
+                o.yaw, o.wid / o.len, 1);
     } else if (it.k === 3){
       drawSprite(o.x, o.y, o.z, 0.36, 0.32, ART.spark,
                  SPARK_SL.base, SPARK_SL.dens, false, C.nAmber);
@@ -18259,7 +18581,9 @@ function placePlayer(){
   }
   cam.riding = null; cam.z = 1.62; cam.pitch = 0;
 }
+let buildEpoch = 0;                            // bumped per city, for caches
 function newWorld(seed){
+  buildEpoch++;
   // never rebuild the city into a room's arrays, and a rebuilt city
   // invalidates every room hanging off it
   if (SCENE && SCENE !== CITY) bindScene(CITY);
@@ -18826,6 +19150,7 @@ function simulate(dt){
       }
     } else {
       streamAgents();
+      lotTrafficTick(dt);                       // one down into the lot, one up
       serviceRepaths();
       for (let i = 0; i < cars.length; i++) updateCar(cars[i], dt);
       for (let i = 0; i < peds.length; i++) updatePed(peds[i], i, dt);
@@ -18861,7 +19186,7 @@ function simulate(dt){
   }
   if (player.car && !myCar && DEALER)           // the save remembers the keys
     spawnMyCar(player.car === 'lux' ? 'lux' : 'runner',
-               player.carX || DEALER.lot.x, player.carY || DEALER.lot.y);
+               player.carX || DEALER.yard.x, player.carY || DEALER.yard.y);
 }
 /*========================= drawing the world twice =========================
   A scope shows you two magnifications at once: through the glass it is 2x,
