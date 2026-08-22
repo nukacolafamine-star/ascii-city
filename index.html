@@ -2703,34 +2703,36 @@ function rampArt(){
       if (x >= 0 && y >= 0 && z >= 0 && x < aw && y < vd && z < ah)
         out[(z * vd + y) * aw + x] = r;
     };
+    // Z RUNS DOWNWARD. These volumes are indexed the way the ASCII arts they
+    // replace are - voxelize reads `data[z * aw + x]` straight off the art
+    // rows, and row 0 of a sprite is its TOP. Build upward from zero and you
+    // get a ramp hanging off the ceiling. So: height above the tarmac, and
+    // the helper does the flip.
+    const put = (x, y, hgt, r) => set(x, y, ah - 1 - hgt, r);
     const cx = (aw - 1) / 2;
+    // Two transitions meeting at a ridge - a spine, low and long. It began
+    // as a half-pipe and that was the wrong shape twice over: a U puts its
+    // height at the OUTER edges, so coming down the street you meet the
+    // back of the near wall, and at any height worth jumping the face is
+    // steep enough to read as a wall rather than a ramp. Nine metres of run
+    // for barely more than one of rise is about fifteen degrees - it sits
+    // down on the tarmac, you can see the whole of it coming, and it still
+    // throws you exactly as hard, because the launch is proximity and not
+    // physics.
+    const hAt = (x) => { const u = (x - cx) / cx; return Math.round((ah - 1) * (1 - u * u)); };
     for (let x = 0; x < aw; x++){
-      // Two transitions meeting at a ridge - a spine, low and long. It began
-      // as a half-pipe and that was the wrong shape twice over: a U puts its
-      // height at the OUTER edges, so coming down the street you meet the
-      // back of the near wall, and at any height worth jumping the face is
-      // steep enough to read as a wall rather than a ramp. Nine metres of
-      // run for barely more than one of rise is about fifteen degrees - it
-      // sits down on the tarmac, you can see the whole of it coming, and it
-      // still throws you exactly as hard because the launch is proximity,
-      // not physics.
-      const u = (x - cx) / cx;                    // -1 and 1 at the tarmac
-      const h = Math.round((ah - 1) * (1 - u * u));
+      const h = hAt(x);
       for (let y = 0; y < vd; y++){
         for (let z = 0; z < h; z++)
-          set(x, y, z, (y % 3 === 2) ? K : M);    // planking, seamed
-        if (h > 0) set(x, y, h, M);
-        // coping along the ridge, and a painted line up the middle of the
-        // transition so you can see which way the thing runs
-        if (x === Math.round(cx) || x === Math.round(cx) - 1) set(x, y, h, X);
-        if (h > 0 && (y === (vd >> 1) || y === (vd >> 1) - 1)) set(x, y, h, W);
+          put(x, y, z, (y % 3 === 2) ? K : M);    // planking, seamed
+        put(x, y, h, M);                          // the surface you ride
+        // coping along the ridge, and a painted line down the middle so you
+        // can see which way the thing runs
+        if (x === Math.round(cx) || x === Math.round(cx) - 1) put(x, y, h, X);
+        else if (y === (vd >> 1) || y === (vd >> 1) - 1) put(x, y, h, W);
       }
-    }
-    // kerbs down both long sides, so it reads as built rather than drawn
-    for (let x = 0; x < aw; x++){
-      const u = (x - cx) / cx;
-      const h = Math.round((ah - 1) * (1 - u * u));
-      if (h > 0){ set(x, 0, h, X); set(x, vd - 1, h, X); }
+      // kerbs down both long sides, so it reads as built rather than drawn
+      put(x, 0, h, X); put(x, vd - 1, h, X);
     }
     return out;
   });
@@ -7570,6 +7572,41 @@ function runRampTrick(){
   toast('+' + RUN_TRICK_BONUS + 's  -  air time is time');
   sfx('ui_select', { vol: 0.6, rate: 1.5 });
 }
+/*--- caught ---------------------------------------------------------------
+  You do not die on the run. You get taken, and what happens next is the
+  thing the whole line has been asking about you: whether you talk. You do
+  not, so you come out of it - bruised, two more marks against your name for
+  a night nobody will forget, and standing at the door you were riding for
+  anyway. The job is done. There is no bonus, because there was no style in
+  it; getting home in the back of a van still counts as getting home.
+============================================================================*/
+function runCaught(){
+  endRun();
+  player.hp = Math.min(player.maxHp, 10);
+  player.corruption = Math.min(10, player.corruption + 2);
+  player.qvar.lastCrimeDay = dayCount;
+  player.qvar.mq8caught = 1;
+  cam.riding = null; cam.z = 1.62; sitting = null;
+  skating = false; resetSkate();
+  drug = null; jamT = 0; snifferT = 0; bakeKey = -1;
+  hurtT = 1;
+  for (const a of actors) if (a.brain === 'hostile') a.aggro = 0;
+  openScene('PICKED UP', [
+    'A knee in your back on the wet road and the deck skittering away under a parked car. Somebody reads you your rights in the flat voice of a man reading a shopping list.',
+    'A room with no clock in it. They have your face on nine different cameras and none of it matters, because what they want is a name and an address, and they are prepared to be patient about it.',
+    'Hours. They tell you VESPER is already talking. They tell you ROOK gave you up an hour ago. They tell you the cell was never real and you are the only one who believed in it. You say nothing at all.',
+    'And at some grey hour they run out of patience or paperwork, and the door opens, and the city is exactly where you left it. Two more marks on your name. Nothing on anybody else’s.'
+  ], () => {
+    if (HIDEOUT){
+      const sp = freeSpotNear(HIDEOUT.x, HIDEOUT.y);
+      cam.x = sp[0]; cam.y = sp[1]; faceClear();
+    }
+    mqDone('mq8', 2, 8);
+    fade = 1;
+    toast('you held. ROOK will hear that before he hears anything else');
+    sfx('ui_select', { vol: 0.6, rate: 0.7 });
+  });
+}
 /*--- the frame -----------------------------------------------------------*/
 function runFrame(dt){
   if (!RUN){
@@ -11428,6 +11465,11 @@ function damagePlayer(d){
   if (player.hp <= 0) playerDown();
 }
 function playerDown(){
+  // Going down mid-chase is not a flatline. The cell's whole business is
+  // people who get picked up and say nothing, and the metro-respawn screen -
+  // half your credits, wake across the city, quest still open behind you -
+  // says none of that and puts the run out of reach besides.
+  if (RUN){ runCaught(); return; }
   pushMode(makeListMenu({
     name: 'dead', title: 'FLATLINED',
     onBack(){},                               // no slipping out of this one
