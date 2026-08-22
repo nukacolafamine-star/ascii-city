@@ -4447,6 +4447,7 @@ const ACTORDEF = {
   enforcer: { speed: 2.6, solid: true, r: 0.36 }
 };
 let actors = [];
+let CAST0 = 0;         // how many of them the seed placed; the rest are local
 function spawnActor(kind, x, y, o){
   o = o || {};
   const def = ACTORDEF[kind];
@@ -5680,10 +5681,13 @@ function tryInteract(){
       if (!worldDelta.cutIn) worldDelta.cutIn = {};
       // per-shop key; upper floors carry their storey so a dungeon's
       // camera locks stay cut floor by floor
-      worldDelta.cutIn['b' + inside.bld + (inside.floor > 1 ? 'f' + inside.floor : '')] = 1;
+      const ck = 'b' + inside.bld + (inside.floor > 1 ? 'f' + inside.floor : '');
+      worldDelta.cutIn[ck] = 1;
+      netBroadcastEvent('cutin', { k: ck });
     } else {
       if (!worldDelta.cut) worldDelta.cut = {};
       worldDelta.cut[(t.p.y | 0) * MAP + (t.p.x | 0)] = 1;
+      netBroadcastEvent('cut', { i: (t.p.y | 0) * MAP + (t.p.x | 0) });
     }
     sfx('hit', { vol: 0.7, rate: 0.5 });
     sfx('hit', { vol: 0.4, rate: 1.8 });        // the metal shriek over the thud
@@ -5698,7 +5702,7 @@ function tryInteract(){
       const i = props.indexOf(t.p);
       if (i >= 0) props.splice(i, 1);
       indexProps(); indexSpriteProps();
-      if (t.p.key) worldDelta.taken[t.p.key] = 1;
+      if (t.p.key){ worldDelta.taken[t.p.key] = 1; netBroadcastEvent('took', { key: t.p.key }); }
       sfx('ui_select', { rate: 1.5, vol: 0.65 });
       toast('+' + v + ' cr');
       return;
@@ -5722,7 +5726,8 @@ function tryInteract(){
       else crimeEvent(Math.max(1, Math.ceil(cost / 100)), 'theft');   // scaled to the take
     }
     invAdd(t.p.item, want);
-    if (t.p.key) worldDelta.taken[t.p.key] = 1;   // dropped loot has no key
+    if (t.p.key){ worldDelta.taken[t.p.key] = 1;   // dropped loot has no key
+      netBroadcastEvent('took', { key: t.p.key }); }
     props.splice(props.indexOf(t.p), 1);
     indexProps(); indexSpriteProps();
     sfx('ui_select', { rate: 1.35, vol: 0.6 });
@@ -9271,6 +9276,7 @@ function openTheChoice(){
 /*------------------------- the end of everything ---------------------------*/
 function endTheWorld(){
   player.qvar.ended = 1;
+  _endShown = true;                 // whoever pulled it does not see it twice
   openScene('THE SWITCH', [
     'You cut the power.',
     'The hum you never once noticed in all your time here stops.',
@@ -13364,6 +13370,12 @@ function killActor(a){
     if (!worldDelta.slain) worldDelta.slain = {};
     const room = worldDelta.slain[a.interior] || (worldDelta.slain[a.interior] = {});
     room[a.iidx] = 1;
+    // a body in a room falls on every screen, not only on one
+    netBroadcastEvent('slain', { s: a.interior, i: a.iidx });
+  } else if (!a.interior && a.id !== undefined && a.id < CAST0){
+    // the seeded cast shares ids everywhere; local spawns (enforcers, quest
+    // muscle) do not, and are never named on the wire
+    netBroadcastEvent('slain', { c: a.id });
   }
   actors.splice(actors.indexOf(a), 1);
   if (typeof mqWorksKill === 'function') mqWorksKill(a);
@@ -18789,6 +18801,7 @@ function newWorld(seed){
   // invalidates every room hanging off it
   if (SCENE && SCENE !== CITY) bindScene(CITY);
   dropAllScenes();
+  _endShown = false;                // a fresh city has not ended yet
   inside = null;
   worldSeed = seed;
   worldDelta = { taken: {} };
@@ -18819,6 +18832,11 @@ function newWorld(seed){
   spawnCars();
   spawnPeds();
   spawnActors();
+  /* Everything spawnActors placed is deterministic - same seed, same order,
+     same ids on every client - so an id below this line names the same
+     person everywhere. Everything after it (enforcers, quest muscle) is
+     spawned locally and its ids diverge, so it is never named on the wire. */
+  CAST0 = actors.length;
   worldTime = 0;
   gridClear(carGrid); for (const c of cars) gridAdd(carGrid, c.x, c.y, c);
   gridClear(pedGrid); for (const p of peds) gridAdd(pedGrid, p.x, p.y, p);
@@ -19040,6 +19058,28 @@ function qSignature(){
   try { sig += '|' + JSON.stringify(player.qvar); } catch (e){}
   return sig;
 }
+/* Stages travel on their own; these are a stage's CONSEQUENCES, run on
+   whoever merged them in. Every check is idempotent and reads flags that
+   already replicate, so arriving late or twice changes nothing. A fresh room
+   needs none of this - hideoutCast reads the same flags when it builds - it
+   is only for the cast already standing when the news lands. */
+let _endShown = false;
+function netQuestEffects(){
+  if (player.qvar.betrayed){
+    for (const a of actors)
+      if (a.name === 'ROOK' && a.brain !== 'hostile'){
+        a.brain = 'hostile'; a.tree = null; a.dialog = null;
+        a.hp = 220; a.maxHp = 220; a.atk = 12; a.spd = 2.4; a.aggro = 0;
+      }
+  }
+  if (player.qvar.vesperDead)
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].name === 'VESPER') actors.splice(i, 1);
+  /* Somebody cut the power. The fiction is that the switch was running the
+     whole world - and a fiction with a hole in it for the other player is no
+     fiction at all. The dark comes for everyone in the room. */
+  if (player.qvar.ended && !_endShown){ _endShown = true; endTheWorld(); }
+}
 let _qSig = '';
 function netQuestTick(){
   if (!NET.on) return;
@@ -19059,6 +19099,7 @@ function netApplyQuests(q, qv, track){
   if (qv) for (const k in qv) player.qvar[k] = qv[k];
   if (track && !player.track) player.track = track;
   _qSig = qSignature();                         // do not echo what we were told
+  netQuestEffects();
   if (moved){ toast(moved); sfx('ui_select', { vol: 0.5, rate: 0.9 }); }
 }
 
@@ -19129,7 +19170,15 @@ function netOnMsg(m){
       p.weapon = m.w || 'fist';
       p.using = m.u || null;
       netUnflag(p, m.fl | 0);
-      if (m.s !== p.sceneId) peerSetScene(p, m.s);
+      if (m.s !== p.sceneId){
+        peerSetScene(p, m.s);
+        /* A doorway is a teleport between coordinate frames: the street is
+           out at 497-and-something and every room sits at the array origin.
+           Easing between the two draws a body sliding four hundred tiles
+           through solid city in a second. The ease is for wobble WITHIN a
+           frame; travel between frames snaps. */
+        p.cam.x = m.x; p.cam.y = m.y; p.cam.ang = m.a;
+      }
       // first word from somebody: put them there rather than easing in from
       // wherever the object happened to be born
       if (!p.lastT){ p.cam.x = m.x; p.cam.y = m.y; p.cam.ang = m.a; }
@@ -19167,6 +19216,36 @@ function netEvent(m){
       // be overwritten by the next snapshot
       if (NET.role === 'host' && m.x !== undefined) panicHere(m.x, m.y, 90);
       sfx('shot', { vol: 0.5 });
+      return;
+    }
+    case 'slain': {
+      if (m.s !== undefined && m.i !== undefined){
+        if (!worldDelta.slain) worldDelta.slain = {};
+        (worldDelta.slain[m.s] = worldDelta.slain[m.s] || {})[m.i] = 1;
+        for (let i = actors.length - 1; i >= 0; i--)
+          if (actors[i].interior === m.s && actors[i].iidx === m.i){
+            addFx(actors[i].x, actors[i].y, 2.0);
+            actors.splice(i, 1);
+          }
+      } else if (m.c !== undefined){
+        for (let i = actors.length - 1; i >= 0; i--)
+          if (!actors[i].interior && actors[i].id === m.c && actors[i].id < CAST0){
+            addFx(actors[i].x, actors[i].y, 2.0);
+            actors.splice(i, 1);
+          }
+      }
+      return;
+    }
+    case 'cutin': {
+      if (!m.k) return;
+      if (!worldDelta.cutIn) worldDelta.cutIn = {};
+      worldDelta.cutIn[m.k] = 1;
+      // if that room is standing right now, its eye goes dark in place
+      const sid = m.k.indexOf('f') > 0 ? m.k : m.k + 'f1';
+      const sc = SCENES.get(sid);
+      if (sc) withScene(sc, () => {
+        for (const q of props) if (q.k === PK_CAM) q.dead = 1;
+      });
       return;
     }
     case 'say': toast((playerById(m.f) || { name: '?' }).name + ': ' + m.s); return;

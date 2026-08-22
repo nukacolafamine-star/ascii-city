@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ascii-city-mp",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.mjs", "8137", "H:/projects/ASCII-CITY-MP"],
+      "port": 8137
+    }
+  ]
+}
