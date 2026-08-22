@@ -19112,7 +19112,16 @@ function bcLink(room, onMsg){
   nothing, and it means no one machine is the relay and a host leaving does
   not take the room down with it.
 --------------------------------------------------------------------------*/
-const RTC_TRACKERS = ['wss://tracker.openwebtorrent.com', 'wss://tracker.webtorrent.dev'];
+/* More than one, because they are not equally alive: openwebtorrent accepts
+   an announce and answers it politely and has never once relayed a peer to
+   us, so a room that depends on it alone never fills. Announce to all of
+   them and take whichever actually introduces somebody. */
+const RTC_TRACKERS = ['wss://tracker.webtorrent.dev',
+                      'wss://tracker.openwebtorrent.com',
+                      'wss://tracker.btorrent.xyz',
+                      'wss://tracker.files.fm:7073/announce'];
+const RTC_OFFERS = 3;          // spares, so a second arrival is not left waiting
+const RTC_BEAT = 8000;         // re-announce, in ms
 const RTC_ICE = { iceServers: [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
 ] };
@@ -19167,7 +19176,8 @@ function rtcUnpackCrowd(buf){
 }
 function rtcLink(room, onMsg, onStat){
   const L = { kind: 'net', mesh: true, chans: new Set(), socks: [], dead: false,
-              peers: 0, note: 'looking for the room' };
+              peers: 0, note: 'looking for the room',
+              t0: Date.now(), live: 0, swarm: 0, offers: 0, answered: 0 };
   const ih = rtc20('ascii-city/' + room), me = rtcRand20();
   const pending = new Map();                    // offer_id -> {pc, dc}
   const seen = new Set();                        // peers already being answered
@@ -19237,38 +19247,87 @@ function rtcLink(room, onMsg, onStat){
       to_peer_id: msg.peer_id, offer_id: msg.offer_id,
       answer: { type: 'answer', sdp: pc.localDescription.sdp } }));
   }
-  async function shout(sock){
+  /* Rate limited, and it tops up rather than piling on. Announcing again on
+     every offer that arrives sounds harmless and is not: each announce builds
+     three fresh peer connections, offers arrive in bursts, and it ran to two
+     hundred and seventy-five live connections in under a minute - which is
+     what finally knocked the tracker sockets over. Never more than a few
+     spares outstanding, and never more than one announce every few seconds. */
+  let shoutAt = 0;
+  async function shout(sock, force){
     if (L.dead || sock.readyState !== 1) return;
+    const now = Date.now();
+    if (!force && now - shoutAt < 3000) return;
+    shoutAt = now;
+    if (pending.size > 12){                      // retire the stale ones
+      for (const [k, v] of pending){
+        try { v.pc.close(); } catch (e){}
+        pending.delete(k);
+        if (pending.size <= RTC_OFFERS) break;
+      }
+    }
+    const want = Math.max(0, RTC_OFFERS - pending.size);
     const offers = [];
-    try { offers.push(await freshOffer()); } catch (e){}
+    for (let i = 0; i < want; i++){ try { offers.push(await freshOffer()); } catch (e){} }
+    L.offers = pending.size;
+    if (!offers.length && !force) return;        // nothing new to hand out
     sock.send(JSON.stringify({ action: 'announce', info_hash: ih, peer_id: me,
       numwant: 8, uploaded: 0, downloaded: 0, left: 0, event: 'started', offers }));
   }
-  for (const url of RTC_TRACKERS){
+  /* Trackers drop you. Two of these four never connect at all on a given
+     day, and the ones that do hang up after a while - which is invisible
+     until somebody tries to join a room that has been open ten minutes and
+     finds nobody home. Each one is reconnected on its own timer, and only a
+     socket that actually opened is counted as having closed (a connection
+     that never succeeded fires close too, and was taking the count negative
+     and reporting nought reachable while two were working perfectly). */
+  const dial = (url, wait) => {
+    if (L.dead) return;
     let sock;
-    try { sock = new WebSocket(url); } catch (e){ continue; }
+    try { sock = new WebSocket(url); } catch (e){
+      setTimeout(() => dial(url, Math.min((wait || 4000) * 2, 60000)), wait || 4000);
+      return;
+    }
+    sock.__up = false;
     L.socks.push(sock);
-    sock.onopen = () => { stat('in the room, waiting'); shout(sock); };
+    const gone = () => {
+      if (sock.__up){ sock.__up = false; if (L.live > 0) L.live--; }
+      const i = L.socks.indexOf(sock); if (i >= 0) L.socks.splice(i, 1);
+      setTimeout(() => dial(url, Math.min((wait || 4000) * 2, 60000)), wait || 4000);
+    };
+    sock.onopen = () => {
+      sock.__up = true; L.live++;
+      wait = 4000;                               // it works: forget the backoff
+      stat(L.peers ? L.peers + ' connected' : 'in the room, waiting');
+      shout(sock, true);
+    };
     sock.onmessage = async ev => {
       let m; try { m = JSON.parse(ev.data); } catch (e){ return; }
-      if (m.info_hash !== ih || m.peer_id === me) return;
+      if (m.info_hash !== ih) return;
+      if (m.complete !== undefined || m.incomplete !== undefined)
+        L.swarm = Math.max(L.swarm, (m.complete | 0) + (m.incomplete | 0));
+      if (m.peer_id === me) return;
       try {
-        if (m.offer) await answerTo(sock, m);
+        if (m.offer){ L.answered++; await answerTo(sock, m); shout(sock); }
         else if (m.answer && pending.has(m.offer_id)){
           const e = pending.get(m.offer_id);
           pending.delete(m.offer_id);
           e.dc.__pid = m.peer_id; e.dc.__off = me;   // we offered this one
           if (e.pc.signalingState !== 'closed') await e.pc.setRemoteDescription(m.answer);
+          L.offers = pending.size;
+          if (pending.size < 2) shout(sock);       // keep a spare on the table
         }
       } catch (e){}
     };
     sock.onerror = () => {};
-  }
+    sock.onclose = gone;
+  };
+  for (const url of RTC_TRACKERS) dial(url, 4000);
   // keep announcing: somebody who arrives later has to be able to find us
   L.beat = setInterval(() => {
     if (L.dead) return;
-    for (const s of L.socks) if (s.readyState === 1) shout(s);
-  }, 20000);
+    for (const s of L.socks) if (s.readyState === 1) shout(s, true);
+  }, RTC_BEAT);
 
   L.send = o => {
     const outs = byPeer.size ? byPeer.values() : L.chans;
@@ -19393,6 +19452,20 @@ function openMultiplayerMenu(){
   items.push({ label: 'OVER THE WIRE',
                value: () => !NET.on ? '-'
                  : (NET.link && NET.link.rtc ? NET.link.rtc.note : 'this machine only') });
+  /* "looking for the room" forever tells you nothing about WHY. These say
+     whether the rendezvous is even reachable, whether anybody else is in the
+     swarm, and how long it has been trying - which separates "your firewall
+     eats websockets" from "nobody else has typed the code" from "we found
+     each other and the connection will not traverse". */
+  items.push({ label: 'RENDEZVOUS', value: () => {
+    const L = NET.on && NET.link && NET.link.rtc;
+    return !L ? '-' : L.live + ' of ' + RTC_TRACKERS.length + ' reachable'; } });
+  items.push({ label: 'IN THE SWARM', value: () => {
+    const L = NET.on && NET.link && NET.link.rtc;
+    return !L ? '-' : (L.swarm ? L.swarm + ' incl. you' : 'only you so far'); } });
+  items.push({ label: 'TRYING FOR', value: () => {
+    const L = NET.on && NET.link && NET.link.rtc;
+    return !L ? '-' : Math.round((Date.now() - L.t0) / 1000) + 's'; } });
   items.push({ label: 'LAST ERROR', value: () => NET.error || 'none' });
   items.push({ sep: true });
   if (!NET.on){
