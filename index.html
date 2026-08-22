@@ -9792,8 +9792,11 @@ const BODY_POSE = {
   run0:   { legL: 3.5, legR:-3.5, armL:-3.0, armR: 3.0, lean: 1.0, crouch: 0.05, thigh: 0.85 },
   run1:   { legL: 0.6, legR:-0.6, armL: 0.8, armR:-0.8, lean: 1.2, crouch: 0.10, thigh: 0.85 },
   // a stance across the board, knees in, both arms out for balance
-  skate0: { legL: 1.6, legR:-1.4, armL:-2.4, armR: 2.2, crouch: 0.20, board: 1 },
-  skate1: { legL: 2.4, legR:-1.0, armL:-1.4, armR: 2.8, crouch: 0.30, board: 1 },
+  /* A stance, not a squat. This was a fifth of a body height at rest and
+     nearly a third mid-push, which does not read as bent knees - it reads as
+     a shorter person. The board adds its own thickness underfoot as well. */
+  skate0: { legL: 1.6, legR:-1.4, armL:-2.4, armR: 2.2, crouch: 0.07, board: 1 },
+  skate1: { legL: 2.4, legR:-1.0, armL:-1.4, armR: 2.8, crouch: 0.12, board: 1 },
   sit:    { sit: 1 },
   // both hands out in front, holding something that matters
   aim:    { armL: 3.0, armR: 3.0, armInL: 2.0, armInR: 2.0, armRaise: 0.10 },
@@ -9808,11 +9811,19 @@ function playerBodyVol(worn, P){
   const shirt = has('tee') ? 'tee' : null;
   const shoes = has('runners') ? 'runners' : has('sneakers') ? 'sneakers' : null;
   const R = ROLE;
-  const legL = P.legL || 0, legR = P.legR || 0;
-  const armL = P.armL || 0, armR = P.armR || 0;
+  /* The body is drawn at yaw + PI/2, which puts the FRONT of it at low Y.
+     Every pose above is written the way a person thinks about a stride -
+     forward is positive - so it is turned round here, once, rather than in
+     fourteen weapon entries. Getting this wrong is invisible on a walk,
+     because a stride is symmetric and reads the same mirrored; it is glaring
+     the moment somebody holds a gun, because the arms then reach out behind
+     them while the weapon sits correctly in front. */
+  const FWD = -1;
+  const legL = (P.legL || 0) * FWD, legR = (P.legR || 0) * FWD;
+  const armL = (P.armL || 0) * FWD, armR = (P.armR || 0) * FWD;
   const reachL = P.reachL || 0, reachR = P.reachR || 0;
   const dropL = P.dropL || 0, dropR = P.dropR || 0;
-  const lean = P.lean || 0, crouch = P.crouch || 0, raise = P.armRaise || 0;
+  const lean = (P.lean || 0) * FWD, crouch = P.crouch || 0, raise = P.armRaise || 0;
   // the thigh pivots at the hip, so it trails the foot rather than matching it
   const thigh = P.thigh === undefined ? 0.5 : P.thigh;
   return function(aw, vd, ah){
@@ -9842,12 +9853,12 @@ function playerBodyVol(worn, P){
     // --- the legs -----------------------------------------------------
     if (P.sit){
       // thighs forward off the hip, shins down from the knee
-      slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P, -2.4, 2.0);
-      slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P,  2.4, 2.0);
-      slab(0.10, hip - 0.04, 1.6, 1.5, R.P, -2.4, 3.2);
-      slab(0.10, hip - 0.04, 1.6, 1.5, R.P,  2.4, 3.2);
-      slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T, -2.4, 3.4);
-      slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T,  2.4, 3.4);
+      slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P, -2.4, FWD * 2.0);
+      slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P,  2.4, FWD * 2.0);
+      slab(0.10, hip - 0.04, 1.6, 1.5, R.P, -2.4, FWD * 3.2);
+      slab(0.10, hip - 0.04, 1.6, 1.5, R.P,  2.4, FWD * 3.2);
+      slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T, -2.4, FWD * 3.4);
+      slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T,  2.4, FWD * 3.4);
     } else {
       slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T, -2.4, legL);
       slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T,  2.4, legR);
@@ -9870,7 +9881,8 @@ function playerBodyVol(worn, P){
     const arm = (xoff, swing, reach, drop, role, hw) => {
       if (reach > 0){
         const top = shoulder - (drop || 0);
-        slab(top - 0.28, top, hw, reach * 0.5 + 0.9, role, xoff, reach * 0.5 + 0.7);
+        slab(top - 0.28, top, hw, reach * 0.5 + 0.9, role, xoff,
+             FWD * (reach * 0.5 + 0.7));
       } else slab(armLo, shoulder, hw, 1.9, role, xoff, swing);
     };
     arm(-5.2, armL, reachL, dropL, R.S, 1.2);
@@ -9906,7 +9918,7 @@ function playerBodyVol(worn, P){
     const handAt = (xoff, swing, reach, drop, h0, h1, role) => {
       if (reach > 0){
         const top = shoulder - (drop || 0);
-        slab(top - 0.24, top - 0.10, 1.3, 0.8, role, xoff, reach + 1.0);
+        slab(top - 0.24, top - 0.10, 1.3, 0.8, role, xoff, FWD * (reach + 1.0));
       } else slab(h0, h1, 1.4, 2.0, role, xoff, swing);
     };
     if (has('ring'))  handAt( 5.4, armR, reachR, dropR,
@@ -9952,33 +9964,33 @@ function playerBodyVol(worn, P){
 const WEAPON_HOLD = {
   fist:     { reachL: 1.6, reachR: 1.6, armRaise: 0.10 },
   knife:    { reachL: 1.2, reachR: 2.4, armRaise: 0.04,
-              gun: { len: 0.22, th: 0.09, col: 'X', fwd: 0.18, z: 1.16 } },
+              gun: { id:'knife',    len:0.26, w:0.07, h:0.10, fwd:0.18, z:1.16 } },
   pipe:     { reachL: 1.0, reachR: 2.6, armRaise: 0.06,
-              gun: { len: 0.55, th: 0.12, col: 'T', fwd: 0.20, z: 1.14 } },
+              gun: { id:'pipe',     len:0.58, w:0.09, h:0.09, fwd:0.20, z:1.14 } },
   bat:      { reachL: 2.0, reachR: 2.2, armRaise: 0.16,
-              gun: { len: 0.80, th: 0.15, col: 'W', z: 1.16, up: 1 } },
+              gun: { id:'bat',      len:0.85, w:0.11, th:0.11, z:1.10, up:1 } },
   katana:   { reachL: 2.2, reachR: 2.4, armRaise: 0.18,
-              gun: { len: 0.95, th: 0.09, col: 'W', z: 1.20, up: 1 } },
+              gun: { id:'katana',   len:1.00, w:0.09, th:0.09, z:1.14, up:1 } },
   maul:     { reachL: 2.0, reachR: 2.4, armRaise: 0.16,
-              gun: { len: 0.85, th: 0.18, col: 'T', z: 1.14, up: 1 } },
+              gun: { id:'maul',     len:0.90, w:0.16, th:0.16, z:1.08, up:1 } },
   holdout:  { reachL: 1.4, reachR: 2.8, armRaise: 0.12,
-              gun: { len: 0.16, th: 0.10, col: 'T', fwd: 0.20, z: 1.26 } },
+              gun: { id:'holdout',  len:0.20, w:0.10, h:0.14, fwd:0.20, z:1.26 } },
   pistol:   { reachL: 2.6, reachR: 3.0, armRaise: 0.12,
-              gun: { len: 0.26, th: 0.12, col: 'T', fwd: 0.20, z: 1.26 } },
+              gun: { id:'pistol',   len:0.28, w:0.10, h:0.18, fwd:0.20, z:1.26 } },
   revolver: { reachL: 2.6, reachR: 3.2, armRaise: 0.12,
-              gun: { len: 0.32, th: 0.14, col: 'T', fwd: 0.20, z: 1.26 } },
+              gun: { id:'revolver', len:0.34, w:0.11, h:0.20, fwd:0.20, z:1.26 } },
   smg:      { reachL: 3.2, reachR: 2.2, armRaise: 0.10,
-              gun: { len: 0.46, th: 0.15, col: 'T', fwd: 0.20, z: 1.22 } },
+              gun: { id:'smg',      len:0.50, w:0.12, h:0.24, fwd:0.20, z:1.22 } },
   nailer:   { reachL: 3.0, reachR: 2.2, armRaise: 0.10,
-              gun: { len: 0.42, th: 0.16, col: 'T', fwd: 0.20, z: 1.22 } },
+              gun: { id:'nailer',   len:0.44, w:0.13, h:0.24, fwd:0.20, z:1.22 } },
   arcgun:   { reachL: 3.2, reachR: 2.2, armRaise: 0.10,
-              gun: { len: 0.50, th: 0.16, col: 'T', fwd: 0.20, z: 1.22, tip: 'X' } },
+              gun: { id:'arcgun',   len:0.52, w:0.14, h:0.24, fwd:0.20, z:1.22 } },
   shotgun:  { reachL: 3.8, reachR: 2.0, armRaise: 0.08,
-              gun: { len: 0.80, th: 0.15, col: 'T', fwd: 0.22, z: 1.20 } },
+              gun: { id:'shotgun',  len:0.85, w:0.12, h:0.22, fwd:0.22, z:1.20 } },
   rifle:    { reachL: 4.0, reachR: 2.0, armRaise: 0.08,
-              gun: { len: 1.00, th: 0.14, col: 'T', fwd: 0.22, z: 1.20 } },
+              gun: { id:'rifle',    len:1.05, w:0.11, h:0.24, fwd:0.22, z:1.20 } },
   railgun:  { reachL: 4.0, reachR: 2.0, armRaise: 0.08,
-              gun: { len: 1.15, th: 0.16, col: 'T', fwd: 0.22, z: 1.18, tip: 'X' } }
+              gun: { id:'railgun',  len:1.20, w:0.14, h:0.28, fwd:0.22, z:1.18 } }
 };
 /* A swing is the same hold with the leading arm thrown out and the body
    turned into it. Guns recoil rather than swing, so they only lurch. */
@@ -9988,7 +10000,9 @@ function weaponSwing(H){
   S.reachL = Math.min(4.2, (H.reachL || 1.6) + (melee ? 2.2 : 0.5));
   S.reachR = Math.max(0, (H.reachR || 1.6) - (melee ? 0.8 : 0.3));
   S.lean = melee ? 1.1 : 0.5;
-  if (H.gun) S.gun = Object.assign({}, H.gun, { up: 0, fwd: (H.gun.fwd || 0.30) + 0.16 });
+  if (H.gun) S.gun = Object.assign({}, H.gun,
+      H.gun.up ? { up: 0, fwd: 0.26, h: H.gun.th } // brought down through the swing
+               : { fwd: (H.gun.fwd || 0.20) + 0.10 });
   return S;
 }
 const _swingCache = new Map();
@@ -9999,59 +10013,130 @@ function weaponHold(id, swinging){
   if (!S){ S = weaponSwing(H); _swingCache.set(id, S); }
   return S;
 }
-/* One bar per colour, stretched to whatever length the weapon needs.
+/*------------------------- the things themselves --------------------------
+  Every weapon is an authored volume, not a tube with a colour. A box list in
+  its own normalised frame: u across, v along its length with 0 at the butt
+  and 1 at the muzzle, w up. That way a pistol has a grip hanging below its
+  slide, a rifle has a scope on top and a stock behind, a katana has a guard
+  between blade and hilt - and all of it survives being drawn eight
+  characters tall, because what reads at that size is silhouette.
 
-   It has to be an AUTHORED volume rather than an inflated silhouette. The
-   inflation path fills depth where |ny| <= 1, and ny is scaled by the
-   silhouette's own width - so it always rounds a shape out to roughly a
-   circular cross-section no matter what depthScale says. Asking it for a
-   barrel produced a short stub adrift in the middle of a long empty box,
-   which on screen was a few cells of gun hanging in the air well clear of
-   the hand holding it. A vol() fills the box it is given. */
-const _tubeArt = {}, _tubeSl = {};
-function tubeArt(roleName){
-  if (!_tubeArt[roleName]){
-    const role = ROLE[roleName] === undefined ? ROLE.T : ROLE[roleName];
-    const a = { w: 3, h: 3, data: new Uint8Array(9) };
-    a.data.fill(role);
-    a.vol = function(aw, vd, ah){
-      const v = new Uint8Array(aw * vd * ah);
-      v.fill(role);
-      return v;
-    };
-    _tubeArt[roleName] = a;
-  }
-  return _tubeArt[roleName];
+  v maps to LOW Y, for the same reason the body's poses are turned round: the
+  model is drawn at yaw + PI/2, which puts the front of it at low Y. A muzzle
+  authored at v = 1 has to land there or every gun in the city points behind
+  the person holding it.
+
+  Roles: T gunmetal, K grip and furniture, W bright steel or bone, X glow.
+--------------------------------------------------------------------------*/
+const WEAPON_MODEL = {
+  holdout: [ { u0:.36,u1:.64, v0:.42,v1:1.0, w0:.52,w1:.80, r:'T' },
+             { u0:.38,u1:.62, v0:.14,v1:.46, w0:.00,w1:.58, r:'K' } ],
+  pistol:  [ { u0:.34,u1:.66, v0:.34,v1:1.0, w0:.54,w1:.84, r:'T' },   // slide
+             { u0:.38,u1:.62, v0:.10,v1:.40, w0:.00,w1:.60, r:'K' },   // grip
+             { u0:.40,u1:.60, v0:.30,v1:.46, w0:.32,w1:.50, r:'K' } ], // guard
+  revolver:[ { u0:.36,u1:.64, v0:.46,v1:1.0, w0:.56,w1:.80, r:'T' },   // barrel
+             { u0:.26,u1:.74, v0:.30,v1:.50, w0:.46,w1:.88, r:'T' },   // cylinder
+             { u0:.38,u1:.62, v0:.06,v1:.34, w0:.00,w1:.58, r:'K' },
+             { u0:.40,u1:.60, v0:.26,v1:.42, w0:.30,w1:.48, r:'K' } ],
+  smg:     [ { u0:.34,u1:.66, v0:.26,v1:.80, w0:.48,w1:.84, r:'T' },   // receiver
+             { u0:.42,u1:.58, v0:.80,v1:1.0, w0:.58,w1:.76, r:'T' },   // barrel
+             { u0:.40,u1:.60, v0:.34,v1:.52, w0:.00,w1:.50, r:'K' },   // magazine
+             { u0:.38,u1:.62, v0:.00,v1:.26, w0:.54,w1:.78, r:'K' } ], // stock
+  nailer:  [ { u0:.32,u1:.68, v0:.24,v1:.78, w0:.42,w1:.80, r:'T' },
+             { u0:.44,u1:.56, v0:.78,v1:1.0, w0:.54,w1:.70, r:'T' },
+             { u0:.38,u1:.62, v0:.40,v1:.62, w0:.80,w1:1.0, r:'K' },   // top magazine
+             { u0:.40,u1:.60, v0:.06,v1:.30, w0:.00,w1:.44, r:'K' } ],
+  arcgun:  [ { u0:.32,u1:.68, v0:.22,v1:.76, w0:.46,w1:.84, r:'T' },
+             { u0:.40,u1:.60, v0:.06,v1:.32, w0:.00,w1:.50, r:'K' },
+             { u0:.26,u1:.36, v0:.76,v1:1.0, w0:.54,w1:.78, r:'X' },   // prongs
+             { u0:.64,u1:.74, v0:.76,v1:1.0, w0:.54,w1:.78, r:'X' } ],
+  shotgun: [ { u0:.40,u1:.60, v0:.40,v1:1.0, w0:.56,w1:.78, r:'T' },   // barrel
+             { u0:.36,u1:.64, v0:.44,v1:.66, w0:.38,w1:.58, r:'K' },   // pump
+             { u0:.38,u1:.62, v0:.22,v1:.44, w0:.44,w1:.78, r:'T' },   // receiver
+             { u0:.36,u1:.64, v0:.00,v1:.24, w0:.34,w1:.74, r:'K' } ], // stock
+  rifle:   [ { u0:.42,u1:.58, v0:.44,v1:1.0, w0:.56,w1:.74, r:'T' },   // barrel
+             { u0:.38,u1:.62, v0:.24,v1:.48, w0:.46,w1:.76, r:'T' },   // receiver
+             { u0:.40,u1:.60, v0:.30,v1:.52, w0:.76,w1:.94, r:'K' },   // scope
+             { u0:.36,u1:.64, v0:.00,v1:.26, w0:.30,w1:.72, r:'K' },   // stock
+             { u0:.42,u1:.58, v0:.50,v1:.66, w0:.36,w1:.54, r:'K' } ], // grip
+  railgun: [ { u0:.40,u1:.60, v0:.46,v1:1.0, w0:.54,w1:.76, r:'T' },
+             { u0:.30,u1:.70, v0:.22,v1:.48, w0:.42,w1:.84, r:'T' },   // body
+             { u0:.26,u1:.74, v0:.56,v1:.62, w0:.48,w1:.82, r:'X' },   // coils
+             { u0:.26,u1:.74, v0:.70,v1:.76, w0:.48,w1:.82, r:'X' },
+             { u0:.36,u1:.64, v0:.00,v1:.24, w0:.34,w1:.74, r:'K' } ],
+  knife:   [ { u0:.40,u1:.60, v0:.00,v1:.38, w0:.34,w1:.68, r:'K' },   // handle
+             { u0:.42,u1:.58, v0:.38,v1:1.0, w0:.38,w1:.64, r:'W' } ], // blade
+  pipe:    [ { u0:.36,u1:.64, v0:.00,v1:1.0, w0:.36,w1:.64, r:'T' } ],
+  bat:     [ { u0:.40,u1:.60, v0:.00,v1:.34, w0:.40,w1:.60, r:'K' },   // handle
+             { u0:.34,u1:.66, v0:.34,v1:1.0, w0:.34,w1:.66, r:'W' } ], // barrel
+  katana:  [ { u0:.40,u1:.60, v0:.00,v1:.22, w0:.40,w1:.60, r:'K' },   // hilt
+             { u0:.28,u1:.72, v0:.22,v1:.27, w0:.32,w1:.68, r:'T' },   // guard
+             { u0:.44,u1:.56, v0:.27,v1:1.0, w0:.38,w1:.62, r:'W' } ], // blade
+  maul:    [ { u0:.42,u1:.58, v0:.00,v1:.70, w0:.42,w1:.58, r:'K' },   // haft
+             { u0:.24,u1:.76, v0:.70,v1:1.0, w0:.24,w1:.76, r:'T' } ]  // head
+};
+/* One palette for everything held: four roles is enough to tell a grip from
+   a barrel from an edge, and more would be invisible at this size. */
+let _gunSl = null;
+function gunSlots(){
+  if (!_gunSl) _gunSl = slots({ T: [C.tire, 0.86], K: [C.rail, 0.90],
+                                W: [C.nWhite, 0.95], X: [C.tlAmb, 1.0] });
+  return _gunSl;
 }
-function tubeSlots(roleName){
-  if (!_tubeSl[roleName]){
-    const col = roleName === 'W' ? C.nWhite : roleName === 'X' ? C.tlAmb : C.tire;
-    const o = {}; o[roleName] = [col, roleName === 'T' ? 0.85 : 0.95];
-    _tubeSl[roleName] = slots(o);
+/* Boxes in, volume out. A vertical weapon runs its length up Z instead of
+   forward along Y - a katana is carried upright, not levelled. */
+function weaponVol(boxes, vertical){
+  return function(aw, vd, ah){
+    const v = new Uint8Array(aw * vd * ah);
+    for (let n = 0; n < boxes.length; n++){
+      const b = boxes[n], role = ROLE[b.r] === undefined ? ROLE.T : ROLE[b.r];
+      const x0 = Math.floor(b.u0 * aw), x1 = Math.ceil(b.u1 * aw) - 1;
+      let y0, y1, z0, z1;
+      if (vertical){
+        z0 = Math.floor((1 - b.v1) * ah); z1 = Math.ceil((1 - b.v0) * ah) - 1;
+        y0 = Math.floor(b.w0 * vd);       y1 = Math.ceil(b.w1 * vd) - 1;
+      } else {
+        y0 = Math.floor((1 - b.v1) * vd); y1 = Math.ceil((1 - b.v0) * vd) - 1;
+        z0 = Math.floor((1 - b.w1) * ah); z1 = Math.ceil((1 - b.w0) * ah) - 1;
+      }
+      for (let z = Math.max(0, z0); z <= Math.min(ah - 1, z1); z++)
+        for (let y = Math.max(0, y0); y <= Math.min(vd - 1, y1); y++)
+          for (let x = Math.max(0, x0); x <= Math.min(aw - 1, x1); x++)
+            v[(z * vd + y) * aw + x] = role;
+    }
+    return v;
+  };
+}
+const _gunArt = {};
+function weaponArt(id, vertical){
+  const k = id + (vertical ? 'v' : 'h');
+  if (!_gunArt[k]){
+    const boxes = WEAPON_MODEL[id] || WEAPON_MODEL.pipe;
+    // the silhouette grid: lateral x vertical. Length comes from depthScale.
+    const aw = 7, ah = vertical ? 26 : 11;
+    _gunArt[k] = { w: aw, h: ah, data: new Uint8Array(aw * ah),
+                   vol: weaponVol(boxes, vertical) };
   }
-  return _tubeSl[roleName];
+  return _gunArt[k];
 }
 function drawHeldWeapon(x, y, yaw, H){
   const G = H && H.gun;
-  if (!G) return;
-  const art = tubeArt(G.col), sl = tubeSlots(G.col);
+  if (!G || !G.id) return;
+  const sl = gunSlots();
   const fx = Math.cos(yaw), fy = Math.sin(yaw);
   if (G.up){
     // carried upright, out past the shoulder rather than through the head
     const sx = Math.cos(yaw + Math.PI * 0.5), sy = Math.sin(yaw + Math.PI * 0.5);
-    drawModel(x + fx * 0.10 + sx * 0.26, y + fy * 0.10 + sy * 0.26, G.z,
-              G.th, G.len, art, sl.base, sl.dens, 0, yaw + Math.PI / 2, 1, 1);
+    const art = weaponArt(G.id, true);
+    drawModel(x + fx * 0.08 + sx * 0.26, y + fy * 0.08 + sy * 0.26, G.z,
+              G.w, G.len, art, sl.base, sl.dens, 0, yaw + Math.PI / 2,
+              G.th / G.w, 1);
     return;
   }
-  const d = (G.fwd || 0.4) + G.len * 0.5;
-  drawModel(x + fx * d, y + fy * d, G.z, G.th, G.th, art, sl.base, sl.dens, 0,
-            yaw + Math.PI / 2, G.len / G.th, 1);
-  if (G.tip){                                     // a muzzle that catches light
-    const t = (G.fwd || 0.4) + G.len;
-    const ta = tubeArt(G.tip), ts = tubeSlots(G.tip);
-    drawModel(x + fx * t, y + fy * t, G.z, G.th * 1.2, G.th * 1.2, ta,
-              ts.base, ts.dens, 0, yaw + Math.PI / 2, 1.2, 1);
-  }
+  const art = weaponArt(G.id, false);
+  const d = (G.fwd || 0.22) + G.len * 0.5;
+  drawModel(x + fx * d, y + fy * d, G.z, G.w, G.h, art, sl.base, sl.dens, 0,
+            yaw + Math.PI / 2, G.len / G.w, 1);
 }
 const BODY_CACHE = new Map();
 const BODY_CACHE_MAX = 192;
