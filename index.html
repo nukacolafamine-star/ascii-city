@@ -5590,6 +5590,7 @@ function probeInteract(){
     }
     else if (p.k === PK_FURN && inside && p.fid === 'terminal'){
       if (mqLive('mq29') && WORKS && inside.bld === WORKS.bld &&
+          !player.qvar.betrayed && !player.qvar.ended &&
           !actors.some(a => a.interior && a.brain === 'hostile' && a.hp > 0))
         probeConsider(p.x, p.y, { kind: 'theswitch', prompt: '[E]  THE SWITCH' });
       else
@@ -6284,7 +6285,7 @@ function onPress(code, key){
     case 'ControlLeft': case 'ControlRight': fireWeapon(); break;
     case 'Tab': openInventory(); break;
     case 'KeyP': paused = !paused; break;
-    case 'KeyM': openMap(); break;
+    case 'KeyM': if (inside){ toast('no city map in here'); break; } openMap(); break;
     case 'KeyG': if (inside){ toast('no metro in here'); break; } useMetro(); break;
     case 'KeyB': bloomOn = !bloomOn; toast('bloom ' + (bloomOn ? 'on' : 'off')); break;
     case 'KeyC': tryHide(); break;
@@ -9234,9 +9235,20 @@ function openTheChoice(){
       start: { text: 'The switch is older than anything else in the room, and the room is older than the city. Two positions. It is ON. VESPER\u2019s voice, from a roof: if you cut it you don\u2019t free anyone. ROOK\u2019s voice, from every day since: the towers break first. Your hand is already on it.',
         opts: [
           { t: 'CUT THE POWER. finish what the cell started',
-            do(){ endTheWorld(); } },
+            do(){
+              // co-op: a partner's choice can sync in between the prompt
+              // appearing and this key landing - the switch only throws once
+              if (player.qvar.betrayed || player.qvar.ended){
+                toast('the switch already threw - someone got here first'); return;
+              }
+              mqDone('mq29', 4, 29);
+              endTheWorld();
+            } },
           { t: 'LEAVE IT ON. the people keep their light',
             do(){
+              if (player.qvar.betrayed || player.qvar.ended){
+                toast('the switch already threw - someone got here first'); return;
+              }
               player.qvar.betrayed = 1;
               mqDone('mq29', 4, 29);
               mqStart('mq30');
@@ -16135,7 +16147,7 @@ function buildTouchUI(){
   util('MAP', 0, () => {
     const m = topMode();
     if (m && m.name === 'map') m.onKey('Escape');
-    else if (!m) openMap();
+    else if (!m){ if (inside){ toast('no city map in here'); return; } openMap(); }
   });
   util('DECK', 55, () => { if (topMode()) return; if (inside){ toast('no room to ride in here'); return; } toggleRide(); });
   document.body.appendChild(root);
@@ -18426,7 +18438,11 @@ function drawMinimap(x0, y0){
   // The tracked quest, visible even when it is somewhere else: on the window
   // it pulses, off it it pins to the border as an arrow pointing the way.
   // Deltas are taken in SCREEN space, so the arrow follows the plotted mark.
-  const qm = questTarget();
+  // qm is a CITY-space point (mqSpot/toHideout/toWorks/HOMES); cxT/cyT above
+  // are interior-local while inside (tType is swapped to the room's grid
+  // too, so the rest of this map is self-consistent - only the quest target
+  // is still city-space and would plot somewhere meaningless).
+  const qm = inside ? null : questTarget();
   if (qm){
     const pulse = ((Date.now() / 300) | 0) & 1;
     const i = hw + Math.round(qm.x - cxT), j = hh + Math.round((qm.y - cyT) * 0.5);
@@ -19204,7 +19220,16 @@ function netApplyQuests(q, qv, track){
       if (QUESTS[id]) moved = QUESTS[id].name + (q[id] === 'done' ? ' - completed' : ' - moved on');
     }
   }
-  if (qv) for (const k in qv) player.qvar[k] = qv[k];
+  /* Delta-counters (camCut, mq27kills, vandal, spKills, ...) and the story
+     flags/steps above never go backwards over a session - a stale packet
+     landing after local progress must not un-teach the player's own kills.
+     heatFrac is the one exception: a decaying fractional accumulator, not
+     progress, so it keeps a plain overwrite like it always had. */
+  if (qv) for (const k in qv){
+    const local = player.qvar[k];
+    player.qvar[k] = (k !== 'heatFrac' && typeof qv[k] === 'number' && typeof local === 'number')
+      ? Math.max(local, qv[k]) : qv[k];
+  }
   if (track && !player.track) player.track = track;
   _qSig = qSignature();                         // do not echo what we were told
   netQuestEffects();
