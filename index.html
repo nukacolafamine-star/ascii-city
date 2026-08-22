@@ -1487,7 +1487,7 @@ const MODEL_FOOT = [];
   f(PK_RAIL, 0.95);       f(PK_CROP, 0.9);
   f(PK_HOOP, 1.9, 1.0);   f(PK_SWING, 3.4, 1.8); f(PK_CLIMB, 3.0, 3.0);
   f(PK_FLOTSAM, 2.1, 2.1);
-  f(PK_RAMP, 6.2, 3.4);
+  f(PK_RAMP, 9.4, 3.8);
 })();
 /* Furniture also wants to be SPREAD, not merely clear of its neighbours: the
    generators scatter by per-tile chance, which clumps. Minimum gap between
@@ -2696,7 +2696,7 @@ PROPDEF[PK_RACK] = { art: ART.rack, w: 1.7, h: 1.8,
    than circular - a circle's lip stands almost vertical at the top and reads
    as a wall from a distance, where x^2 keeps a face you can see up. */
 function rampArt(){
-  return flotArt(26, 12, function(aw, vd, ah){
+  return flotArt(36, 10, function(aw, vd, ah){
     const M = ROLE.M, X = ROLE.X, W = ROLE.W, K = ROLE.K;
     const out = new Uint8Array(aw * vd * ah);
     const set = (x, y, z, r) => {
@@ -2705,11 +2705,15 @@ function rampArt(){
     };
     const cx = (aw - 1) / 2;
     for (let x = 0; x < aw; x++){
-      // Two transitions meeting at a ridge - a spine. The tempting shape is
-      // the other one, a U with the height at the outer edges, and it is
-      // wrong here: coming at it down the street you meet the BACK of the
-      // near wall, which is a wall. This one starts at the tarmac under your
-      // wheels and lifts you, whichever end you come in from.
+      // Two transitions meeting at a ridge - a spine, low and long. It began
+      // as a half-pipe and that was the wrong shape twice over: a U puts its
+      // height at the OUTER edges, so coming down the street you meet the
+      // back of the near wall, and at any height worth jumping the face is
+      // steep enough to read as a wall rather than a ramp. Nine metres of
+      // run for barely more than one of rise is about fifteen degrees - it
+      // sits down on the tarmac, you can see the whole of it coming, and it
+      // still throws you exactly as hard because the launch is proximity,
+      // not physics.
       const u = (x - cx) / cx;                    // -1 and 1 at the tarmac
       const h = Math.round((ah - 1) * (1 - u * u));
       for (let y = 0; y < vd; y++){
@@ -2747,7 +2751,7 @@ const FLOTSAM = [
     sl: slots({ T: [C.tire, 0.9] }) }
 ];
 PROPDEF[PK_FLOTSAM] = FLOTSAM[0];
-PROPDEF[PK_RAMP] = { art: ART.ramp, w: 6.2, h: 2.9, dep: 0.62,
+PROPDEF[PK_RAMP] = { art: ART.ramp, w: 9.4, h: 1.25, dep: 0.40,
                      sl: slots({ M: [C.deckOld, 0.74], K: [C.trunk, 0.62],
                                  X: [C.nMag, 1.0], W: [C.nWhite, 0.9] }) };
 PROPDEF[PK_HOOP]  = { art: ART.hoop,  w: 1.9, h: 3.4, dep: 0.85,
@@ -5767,7 +5771,7 @@ let rampAir = 0, rampCd = 0;
 const skParts = [];
 function rampUnder(){
   for (const q of gridQuery(propGrid, cam.x, cam.y, 4, _q1))
-    if (q.k === PK_RAMP && Math.hypot(q.x - cam.x, q.y - cam.y) < 2.6) return q;
+    if (q.k === PK_RAMP && Math.hypot(q.x - cam.x, q.y - cam.y) < 4.2) return q;
   return null;
 }
 function resetSkate(){
@@ -7405,7 +7409,7 @@ const RUN_TRICK_BONUS = 2;                      // seconds a landed trick buys
   So: search properly, never hand back the hideout, and once a corner is
   chosen write it into qvar so it cannot wander mid-quest.
 ============================================================================*/
-const RUN_MIN_AWAY = 60;                       // tiles; a run needs a run-up
+const RUN_MIN_AWAY = 180;                      // tiles; a chase wants room
 /* Indoors, walkG IS THE ROOM. Ask it about a street corner on the far side
    of the city and every tile comes back unwalkable, so any search over it
    fails and takes its fallback - which is how ROOK handing you this job
@@ -7417,32 +7421,36 @@ function dropFarEnough(x, y){
   return !HIDEOUT || Math.hypot(x - HIDEOUT.x, y - HIDEOUT.y) > RUN_MIN_AWAY;
 }
 function pickDrop(){
-  // 1. the intended corner: a strip tile, well clear of home. More tries
-  //    than mqSpot takes, and it rejects the near ones rather than the
-  //    first walkable thing it trips over.
+  // Take the FARTHEST corner rather than the first acceptable one. A chase
+  // wants distance in it - the run should be most of the way across the
+  // city, not a couple of blocks - and picking the far end also puts the
+  // matter beyond the reach of the bug this used to have, where a search
+  // that found nothing quietly handed back the hideout itself.
+  //
+  // It scans on a stride rather than sampling at random. A hundred thousand
+  // reads, once per playthrough, cached afterwards - and every player on a
+  // seed gets the same corner, which random sampling never quite promised.
   const G = cityWalk();
-  for (let t = 0; t < 4000; t++){
-    const x = (hash3(worldSeed, 651, t) * MAP) | 0;
-    const y = (hash3(worldSeed, 658, t) * MAP) | 0;
-    if (!inMap(x, y) || !G[y * MAP + x]) continue;
-    if (districtAt(x, y) !== D_STRIP || !dropFarEnough(x, y)) continue;
-    return { x: x + 0.5, y: y + 0.5 };
-  }
-  // 2. guessing has failed, so stop guessing: walk the grid. A coarse stride
-  //    covers the whole map cheaply and deterministically, so every player
-  //    on this seed gets the same corner.
-  let any = null;
+  let best = null, bd = -1, fallback = null, fd = -1;
   for (let y = 2; y < MAP; y += 3)
     for (let x = 2; x < MAP; x += 3){
-      if (!G[y * MAP + x] || !dropFarEnough(x, y)) continue;
+      if (!G[y * MAP + x]) continue;
+      const d = HIDEOUT ? Math.hypot(x - HIDEOUT.x, y - HIDEOUT.y) : 0;
+      if (d <= fd && d <= bd) continue;
       const dist = districtAt(x, y);
-      if (dist === D_STRIP) return { x: x + 0.5, y: y + 0.5 };
-      if (!any && (dist === D_DOWN || dist === D_RED)) any = { x: x + 0.5, y: y + 0.5 };
+      if (dist === D_STRIP){
+        if (d > bd){ bd = d; best = { x: x + 0.5, y: y + 0.5 }; }
+      } else if (dist === D_DOWN || dist === D_RED){
+        if (d > fd){ fd = d; fallback = { x: x + 0.5, y: y + 0.5 }; }
+      }
     }
-  // 3. no strip on this map at all: any lit district far from home will do.
-  //    A courier can be shot anywhere. Being shot at the hideout is the one
-  //    answer this must never give.
-  return any;
+  // A strip corner is the one the story wants. If this map's strip is all
+  // crowded up against the hideout, a courier can be shot on any lit street
+  // - but never on the hideout's doorstep, which is the one answer that
+  // takes the whole set piece apart.
+  if (best && bd >= RUN_MIN_AWAY) return best;
+  if (fallback && fd > bd) return fallback;
+  return best || fallback;
 }
 function runDrop(){
   const q = player.qvar;
@@ -7485,7 +7493,7 @@ function layRamps(path){
     const dx = (c2 % MAP) - x, dy = ((c2 / MAP) | 0) - y;
     if (!dx && !dy) return null;
     const alongX = Math.abs(dx) >= Math.abs(dy);
-    for (let a = -3; a <= 3; a++){
+    for (let a = -5; a <= 5; a++){
       const px = x + (alongX ? a : 0), py = y + (alongX ? 0 : a);
       if (!inMap(px, py) || !walkG[py * MAP + px]) return null;
     }
@@ -7525,7 +7533,7 @@ function clearRamps(){
   under one, so a clean ride arrives with nothing to spare and a ramp ride
   arrives rich. RUN_PACE is tiles per second actually held on a street - not
   SK_MAX, which is a number you touch for a moment on a straight. */
-const RUN_PACE = 6.0, RUN_TIGHT = 0.95;
+const RUN_PACE = 6.0, RUN_TIGHT = 1.06;
 function runClock(path){
   const tiles = path ? path.length : 220;
   return clamp(Math.round(tiles / RUN_PACE * RUN_TIGHT), 40, 150);
@@ -7535,7 +7543,11 @@ function startRun(){
   const path = runRoute();
   const secs = runClock(path);
   RUN = { t: secs, max: secs, tricks: 0, gained: 0, path: path || [],
-          ramps: layRamps(path), lead: null, idx: 0, armed: false };
+          ramps: layRamps(path), lead: null, idx: 0,
+          // the finish counts once you have genuinely been away from it, and
+          // the corner is a couple of hundred tiles out, so this is normally
+          // true from the off - it exists for the case where it is not
+          armed: !HIDEOUT || Math.hypot(HIDEOUT.x - cam.x, HIDEOUT.y - cam.y) > 25 };
   // VESPER goes in front, and she is the one who knows the way
   const v = actors.find(a => a.name === 'VESPER' && !a.interior);
   if (v){ v.brain = 'lead'; v.spd = 6.4; v.tree = null; v.dialog = null; RUN.lead = v; }
@@ -7586,8 +7598,13 @@ function runFrame(dt){
     const gap = Math.hypot(v.x - cam.x, v.y - cam.y);
     // past a certain distance she stops outright and waits - a lead you
     // cannot see is not leading you anywhere
-    const pace = v.spd * (gap > 26 ? 0 : gap > 18 ? 0.4 : gap > 12 ? 0.8
-                                       : gap < 7 ? 1.25 : 1);
+    // A lead you cannot see is not leading you anywhere, and one that keeps
+    // vanishing round corners reads as a different route rather than a
+    // faster one. She holds a tight band: easing off at twelve tiles and
+    // stood still by eighteen, which is inside the distance you can pick
+    // her out of a street.
+    const pace = v.spd * (gap > 18 ? 0 : gap > 12 ? 0.45 : gap > 8 ? 0.8
+                                       : gap < 5 ? 1.3 : 1);
     let step = pace * dt;
     // she may cross more than one node in a frame at speed
     for (let guard = 0; guard < 8 && step > 0; guard++){
@@ -10825,7 +10842,31 @@ function clearWaypoint(quiet){
   if (!quiet) toast('you have arrived');
 }
 function wayTick(dt){
-  if (!waypoint || inside) return;
+  if (inside) return;
+  // During the run the line is not drawn TO anywhere - it IS the route, the
+  // same array VESPER is running and the same one the pipes were laid along.
+  // Routed independently the two agree for a while and then pick different
+  // sides of a block, and from behind that reads as her taking a different
+  // way home rather than a faster one. One path, one line, one lead.
+  if (RUN && RUN.path.length){
+    wayT -= dt;
+    if (wayT > 0) return;
+    wayT = 0.5;
+    if (!wayG) wayG = new Uint8Array(MAP * MAP);
+    for (const i of waySet) wayG[i] = 0;
+    waySet.length = 0;
+    // from the point on the route you are nearest to, onward
+    let bi = 0, bd = 1e9;
+    for (let i = 0; i < RUN.path.length; i++){
+      const c = RUN.path[i], dx = (c % MAP) + 0.5 - cam.x, dy = ((c / MAP) | 0) + 0.5 - cam.y;
+      const d = dx * dx + dy * dy;
+      if (d < bd){ bd = d; bi = i; }
+    }
+    for (let i = bi; i < RUN.path.length; i++){ wayG[RUN.path[i]] = 1; waySet.push(RUN.path[i]); }
+    wayOn = true;
+    return;
+  }
+  if (!waypoint) return;
   if (Math.hypot(waypoint.x - cam.x, waypoint.y - cam.y) < 3){
     clearWaypoint(); sfx('ui_select', { vol: 0.6, rate: 0.8 }); return;
   }
@@ -14939,7 +14980,7 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_RACK, 0.6, 1);
   set(PK_HOOP, 0.45, 0);  set(PK_SWING, 0.16, 0); set(PK_CLIMB, 0.33, 0);
   set(PK_FLOTSAM, 1.0, 0);
-  set(PK_RAMP, 0.62, 1);
+  set(PK_RAMP, 0.40, 1);
 })();
 /* How far a kind is worth marching at all. Small debris is sub-cell long
    before the general 170-tile cut-off, and a river is a straight corridor a
@@ -16456,6 +16497,11 @@ function newWorld(seed){
   }
   worldSeed = seed;
   worldDelta = { taken: {} };
+  // A race is state held outside the save file, pinned to a route through a
+  // city that is about to stop existing. Starting or loading a game with one
+  // still running leaves ramps indexed against a map that has been rebuilt
+  // underneath them. loadGame comes through here too, so this covers both.
+  RUN = null;
   resetPlayer();
   sitting = null; vAnim = null;
   buildCity(seed);
