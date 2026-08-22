@@ -11506,7 +11506,10 @@ function hudCell(cx, cy2, ch, ci){
   hGlyph[i] = code; hCol[i] = ci;
 }
 function viewW(rows){ let w = 0; for (const r of rows) w = Math.max(w, r.length); return w; }
-function drawViewArt(rows, ax, ay, tr, cmap){
+/* solid defaults on: what you are holding is opaque. The one caller that
+   passes false is the muzzle flash, which is light leaving the bore - a
+   black plate behind THAT would be a box round the flash. */
+function drawViewArt(rows, ax, ay, tr, cmap, solid){
   rows = groundArt(rows);                    // always planted on the screen edge
   const ah = rows.length, aw = viewW(rows);
   const want = tr;
@@ -11515,11 +11518,18 @@ function drawViewArt(rows, ax, ay, tr, cmap){
   const tc = Math.max(2, Math.round(tr * aw / ah));
   for (let y = 0; y < tr; y++){
     const sr = rows[(y * ah / tr) | 0];
+    let run = -1;                              // start column of the span
     for (let x = 0; x < tc; x++){
       const ch = sr[(x * aw / tc) | 0];
-      if (!ch || ch === ' ') continue;
+      if (!ch || ch === ' '){
+        if (run >= 0){ if (solid !== false) hudSolidRun(ax + run, ay + y, x - run);
+                       run = -1; }
+        continue;
+      }
+      if (run < 0) run = x;
       hudCell(ax + x, ay + y, ch, cmap[ch] !== undefined ? cmap[ch] : H_DRK);
     }
+    if (run >= 0 && solid !== false) hudSolidRun(ax + run, ay + y, tc - run);
   }
   return tc;
 }
@@ -15727,6 +15737,9 @@ function glPresent(){
   }
   if (fade > 0.01) glQuad(0, 0, R.W, R.H, 0.008, 0.012, 0.035, fade);
   if (hurtT > 0.01) glQuad(0, 0, R.W, R.H, 0.9, 0.1, 0.12, hurtT * 0.32);
+  for (let i = 0; i < hudSolids.length; i += 4)
+    glQuad(hudSolids[i], hudSolids[i + 1], hudSolids[i + 2], hudSolids[i + 3],
+           0.012, 0.023, 0.047, 1);
   for (let i = 0; i < hudRects.length; i += 4)
     glQuad(hudRects[i], hudRects[i + 1], hudRects[i + 2], hudRects[i + 3], 0.012, 0.023, 0.047, 0.60);
   glDrawGlyphs(nw, nh);
@@ -15773,6 +15786,23 @@ function hudStr(col, row, s, ci){
     const idx = row * R.cols + c;
     hGlyph[idx] = code; hCol[idx] = ci;
   }
+}
+/* Panels only DIM what is behind them - sixty percent of a near-black over
+   the world. That is right for a menu card you want the city faintly alive
+   behind, and wrong for the thing in your hands: a glyph is mostly empty
+   pixels, so at any lesser opacity the street shows through the gun you are
+   holding. Anything in this list is painted flat first, at full opacity, so
+   what sits on top of it is looked at rather than through.
+
+   Runs, not cells: a weapon covers several hundred cells and that many
+   fillRect calls a frame is a cost with nothing to show for it. One rect per
+   unbroken horizontal span backs exactly the cells that were painted, so
+   real gaps in the art - between the fingers, inside the trigger guard -
+   stay gaps. */
+const hudSolids = [];
+function hudSolidRun(x, y, w){
+  if (w > 0) hudSolids.push(R.ox + x * R.cellW, R.oy + y * R.cellH,
+                            w * R.cellW, R.cellH);
 }
 const hudRects = [];
 function hudPanel(x, y, w, h){
@@ -15977,6 +16007,7 @@ let fps = 60;
 function hudPass(){
   hGlyph.fill(0);
   hudRects.length = 0;
+  hudSolids.length = 0;
   hudR0 = 1e9; hudR1 = -1;
   const rows = R.rows, cols = R.cols;
   const cjm = topMode();
@@ -16168,7 +16199,7 @@ function hudPass(){
         drawViewArt(gart, gx, gy, tr, CM_GUN);
         if (muzzleT > 0)                        // the flash leaves the bore
           drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
-                      (cols >> 1) - 3, gy - 3, 3, CM_MUZ);
+                      (cols >> 1) - 3, gy - 3, 3, CM_MUZ, false);
       } else {
         const mw = meleeStats();
         const mh = MELEE_HOLD[mw.id];
@@ -16276,6 +16307,9 @@ function hudPass(){
     ctx.fillStyle = 'rgba(230,26,31,' + (hurtT * 0.32).toFixed(3) + ')';
     ctx.fillRect(0, 0, R.W, R.H);
   }
+  ctx.fillStyle = 'rgb(3,6,12)';
+  for (let i = 0; i < hudSolids.length; i += 4)
+    ctx.fillRect(hudSolids[i], hudSolids[i + 1], hudSolids[i + 2], hudSolids[i + 3]);
   ctx.fillStyle = 'rgba(3,6,12,0.60)';
   for (let i = 0; i < hudRects.length; i += 4)
     ctx.fillRect(hudRects[i], hudRects[i + 1], hudRects[i + 2], hudRects[i + 3]);
