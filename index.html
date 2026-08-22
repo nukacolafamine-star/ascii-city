@@ -2223,6 +2223,16 @@ const ART = {
     parseArt(['..HH..', '..HH..', '.SSSS.', 'SSSSSS', 'SSSSSS', '.SSSS.', '.PPPP.', '..PP..', '..PP..', '.TTT..'])
   ],
   pedSit: parseArt(['..HH..', '..HH..', '.SSSS.', '.SSSS.', '.SSPP.', '.PPPP.', '.TT.TT']),
+  /* Somebody on a board. Two frames: rolling, with both feet on and the
+     knees folded, and pushing, with the back leg down on the road. Wider
+     than a walker because the deck sticks out past the feet, and the deck
+     is the bottom row - these arts read top-down, row 0 is the head. */
+  pedSkate: [
+    parseArt(['...HH...', '...HH...', '..SSSS..', '.SSSSSS.', '.SSSSSS.',
+              '..SSSS..', '..PPPP..', '..P..P..', '.TT..TT.', 'KKKKKKKK']),
+    parseArt(['...HH...', '...HH...', '..SSSS..', '.SSSSSS.', '.SSSSSS.',
+              '..SSSSP.', '..PPP.P.', '..P...P.', '.TT...TT', 'KKKKK...'])
+  ],
   carSide: parseArt([
     '......BBBBBBB.....',
     '....BBWWWWWWWBB...',
@@ -4154,7 +4164,10 @@ function spawnActor(kind, x, y, o){
   const def = ACTORDEF[kind];
   const sl = slots({ H: [o.skin !== undefined ? o.skin : SKINC[(rnd() * SKINC.length) | 0], 0.92],
                      S: [o.shirt !== undefined ? o.shirt : SHIRTC[(rnd() * SHIRTC.length) | 0], 0.86],
-                     P: [C.pants, 0.82], T: [C.tire, 0.75] });
+                     P: [C.pants, 0.82], T: [C.tire, 0.75],
+                     // a board is not a shoe. Only the skating art uses K,
+                     // so this costs every other actor one unused slot
+                     K: [C.deckOld, 0.80] });
   const a = {
     id: actors.length, kind, name: o.name || 'STRANGER',
     x, y, dx: 0, dy: 1, spd: def.speed, r: def.r, solid: def.solid,
@@ -7397,6 +7410,11 @@ function toHideout(){ return HIDEOUT && { x: HIDEOUT.x, y: HIDEOUT.y, name: 'THE
 let RUN = null;                                 // null unless the run is live
 const RUN_RAMP_GAP = 26;                        // tiles between half-pipes
 const RUN_TRICK_BONUS = 2;                      // seconds a landed trick buys
+/* What she cruises at with a clear road, in tiles a second. SK_MAX is 14.3
+   but that is a number you touch on a straight and give back at the corner -
+   this is the pace a deck actually holds through a city, and it is the pace
+   the clock was set against. */
+const RUN_LEAD_CRUISE = 7.6;
 /*--- the corner the courier was hit on ------------------------------------
   This has to be a real corner, a long way from the hideout, and the SAME
   one every time it is asked for. mqSpot cannot promise any of the three.
@@ -7552,7 +7570,9 @@ function startRun(){
           armed: !HIDEOUT || Math.hypot(HIDEOUT.x - cam.x, HIDEOUT.y - cam.y) > 25 };
   // VESPER goes in front, and she is the one who knows the way
   const v = actors.find(a => a.name === 'VESPER' && !a.interior);
-  if (v){ v.brain = 'lead'; v.spd = 6.4; v.tree = null; v.dialog = null; RUN.lead = v; }
+  if (v){ v.brain = 'lead'; v.tree = null; v.dialog = null;
+          v.skate = 1; v.sv = 0; v.pushCd = 0; v.pushT = 0;
+          RUN.lead = v; }
   for (let i = 0; i < 4; i++){
     const t = randWalkNear(cam.x, cam.y, 10, 18);
     if (t){ const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
@@ -7633,21 +7653,33 @@ function runFrame(dt){
   const v = RUN.lead;
   if (v && RUN.path.length){
     const gap = Math.hypot(v.x - cam.x, v.y - cam.y);
-    // past a certain distance she stops outright and waits - a lead you
-    // cannot see is not leading you anywhere
-    // A lead you cannot see is not leading you anywhere, and one that keeps
-    // vanishing round corners reads as a different route rather than a
-    // faster one. She holds a tight band: easing off at twelve tiles and
-    // stood still by eighteen, which is inside the distance you can pick
-    // her out of a street.
-    const pace = v.spd * (gap > 18 ? 0 : gap > 12 ? 0.45 : gap > 8 ? 0.8
-                                       : gap < 5 ? 1.3 : 1);
-    let step = pace * dt;
+    /* She is on a board, not jogging, so she is not given a speed - she is
+       given a speed to WANT, and gets there the way the player's deck does:
+       a kick every so often, and rolling friction in between. She comes off
+       the corner slowly and winds up, which is what you are doing beside
+       her, and she coasts down rather than stopping dead.
+
+       A lead you cannot see is not leading you anywhere, and one that keeps
+       vanishing round corners reads as knowing a different route rather than
+       riding a faster line. So the band is tight: easing off at twelve
+       tiles and letting the board roll to a stop by eighteen. */
+    const want = RUN_LEAD_CRUISE * (gap > 18 ? 0 : gap > 12 ? 0.5 : gap > 8 ? 0.78
+                                                : gap < 5 ? 1.12 : 0.95);
+    if (v.sv === undefined){ v.sv = 0; v.pushCd = 0; v.pushT = 0; }
+    v.sv = Math.max(0, v.sv - v.sv * 0.30 * dt);      // rolling friction
+    v.pushCd -= dt; v.pushT -= dt;
+    if (v.pushCd <= 0 && v.sv < want * 0.94){
+      v.pushCd = 0.55 + 0.35 * v.sv / SK_MAX;         // kick less often at speed
+      v.pushT = 0.22;
+      v.sv = Math.min(want, v.sv + 3.2);
+    }
+    let step = v.sv * dt;
     // she may cross more than one node in a frame at speed
     for (let guard = 0; guard < 8 && step > 0; guard++){
       const ahead = RUN.path[Math.min(RUN.path.length - 1, RUN.idx)];
       const ax = (ahead % MAP) + 0.5, ay = ((ahead / MAP) | 0) + 0.5;
       const dx = ax - v.x, dy = ay - v.y, d = Math.hypot(dx, dy);
+      if (d > 1e-4){ v.dx = dx / d; v.dy = dy / d; }   // she faces her line
       if (d < 1e-4 || d <= step){
         v.x = ax; v.y = ay; step -= d;
         if (RUN.idx >= RUN.path.length - 1) break;
@@ -15217,8 +15249,15 @@ function spritePass(){
       if (o.sit){
         drawModel(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, 0, fy, 0.85, 0);
       } else {
-        const fr = o.moving && ((o.phase | 0) & 1) ? 1 : 0;
-        drawModel(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, 0, fy, 0.85, 0);
+        if (o.skate){
+          // a push reads for a moment after the kick, the way the player's
+          // own board does - otherwise she flickers between the two frames
+          const fr = o.pushT > 0 ? 1 : 0;
+          drawModel(o.x, o.y, 0, 0.84, 1.76, ART.pedSkate[fr], sbUse, o.sd, 0, fy, 0.85, 0);
+        } else {
+          const fr = o.moving && ((o.phase | 0) & 1) ? 1 : 0;
+          drawModel(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, 0, fy, 0.85, 0);
+        }
       }
     } else if (it.k === 4){
       drawPlayerBody();
