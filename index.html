@@ -7348,11 +7348,20 @@ function mqDone(id, act, step){
   if (act !== undefined) player.qvar.act = Math.max(player.qvar.act || 0, act);
 }
 /* markers the line drops around the city, from a small pool of spots */
+/* Indoors, walkG IS THE ROOM. Ask it about a street on the far side of the
+   city and every tile comes back unwalkable, so any search over it fails and
+   takes its fallback - and mqSpot's fallback is the hideout. That is how a
+   job handed to you at ROOK's table ends up naming his own front door as the
+   place it wants you to go. Every quest that picks a spot this way is given
+   from inside somewhere, so they all needed this. The city's own grid is
+   parked in EXT while you are in a room. */
+function cityWalk(){ return inside && EXT ? EXT.walkG : walkG; }
 function mqSpot(salt, dist){
+  const G = cityWalk();
   for (let t = 0; t < 300; t++){
     const x = (hash3(worldSeed, salt, t) * MAP) | 0;
     const y = (hash3(worldSeed, salt + 7, t) * MAP) | 0;
-    if (!inMap(x, y) || !walkG[y * MAP + x]) continue;
+    if (!inMap(x, y) || !G[y * MAP + x]) continue;
     if (dist !== undefined && districtAt(x, y) !== dist) continue;
     return { x: x + 0.5, y: y + 0.5 };
   }
@@ -7382,8 +7391,68 @@ function toHideout(){ return HIDEOUT && { x: HIDEOUT.x, y: HIDEOUT.y, name: 'THE
 let RUN = null;                                 // null unless the run is live
 const RUN_RAMP_GAP = 26;                        // tiles between half-pipes
 const RUN_TRICK_BONUS = 2;                      // seconds a landed trick buys
-/* the corner the courier was hit on - one place, remembered all run */
-function runDrop(){ return mqSpot(651, D_STRIP); }
+/*--- the corner the courier was hit on ------------------------------------
+  This has to be a real corner, a long way from the hideout, and the SAME
+  one every time it is asked for. mqSpot cannot promise any of the three.
+  THE STRIP is 1.3% of the walkable city, mqSpot takes 300 hashed guesses at
+  it, and on about one seed in twenty every guess misses - whereupon it
+  returns HIDEOUT, and the whole set piece collapses in a way that looks
+  nothing like its own cause: the corner IS the hideout, so stepping out of
+  ROOK's door counts as arriving, VESPER is waiting outside it, and the
+  instant the race starts you are already at the finish, so it completes
+  with no chase at all and sends you back in to be paid.
+
+  So: search properly, never hand back the hideout, and once a corner is
+  chosen write it into qvar so it cannot wander mid-quest.
+============================================================================*/
+const RUN_MIN_AWAY = 60;                       // tiles; a run needs a run-up
+/* Indoors, walkG IS THE ROOM. Ask it about a street corner on the far side
+   of the city and every tile comes back unwalkable, so any search over it
+   fails and takes its fallback - which is how ROOK handing you this job
+   from inside his own hideout ended up choosing the hideout as the place
+   the courier was shot. The city's grid is parked in EXT while you are in a
+   room; anything reasoning about the city has to read THAT. */
+
+function dropFarEnough(x, y){
+  return !HIDEOUT || Math.hypot(x - HIDEOUT.x, y - HIDEOUT.y) > RUN_MIN_AWAY;
+}
+function pickDrop(){
+  // 1. the intended corner: a strip tile, well clear of home. More tries
+  //    than mqSpot takes, and it rejects the near ones rather than the
+  //    first walkable thing it trips over.
+  const G = cityWalk();
+  for (let t = 0; t < 4000; t++){
+    const x = (hash3(worldSeed, 651, t) * MAP) | 0;
+    const y = (hash3(worldSeed, 658, t) * MAP) | 0;
+    if (!inMap(x, y) || !G[y * MAP + x]) continue;
+    if (districtAt(x, y) !== D_STRIP || !dropFarEnough(x, y)) continue;
+    return { x: x + 0.5, y: y + 0.5 };
+  }
+  // 2. guessing has failed, so stop guessing: walk the grid. A coarse stride
+  //    covers the whole map cheaply and deterministically, so every player
+  //    on this seed gets the same corner.
+  let any = null;
+  for (let y = 2; y < MAP; y += 3)
+    for (let x = 2; x < MAP; x += 3){
+      if (!G[y * MAP + x] || !dropFarEnough(x, y)) continue;
+      const dist = districtAt(x, y);
+      if (dist === D_STRIP) return { x: x + 0.5, y: y + 0.5 };
+      if (!any && (dist === D_DOWN || dist === D_RED)) any = { x: x + 0.5, y: y + 0.5 };
+    }
+  // 3. no strip on this map at all: any lit district far from home will do.
+  //    A courier can be shot anywhere. Being shot at the hideout is the one
+  //    answer this must never give.
+  return any;
+}
+function runDrop(){
+  const q = player.qvar;
+  if (q.mq8drop) return q.mq8drop;
+  const d = pickDrop();
+  // only remember a real answer - caching a failure would make one bad
+  // moment permanent, which is worse than the bad moment
+  if (d && dropFarEnough(d.x, d.y)) q.mq8drop = d;
+  return d;
+}
 function toDrop(){ const d = runDrop(); return d && { x: d.x, y: d.y, name: 'THE CORNER' }; }
 function toVesper(){
   const a = actors.find(x => x.name === 'VESPER' && !x.interior);
@@ -7466,7 +7535,7 @@ function startRun(){
   const path = runRoute();
   const secs = runClock(path);
   RUN = { t: secs, max: secs, tricks: 0, gained: 0, path: path || [],
-          ramps: layRamps(path), lead: null, idx: 0 };
+          ramps: layRamps(path), lead: null, idx: 0, armed: false };
   // VESPER goes in front, and she is the one who knows the way
   const v = actors.find(a => a.name === 'VESPER' && !a.interior);
   if (v){ v.brain = 'lead'; v.spd = 6.4; v.tree = null; v.dialog = null; RUN.lead = v; }
@@ -7497,10 +7566,13 @@ function runFrame(dt){
     // no way to finish it. Put it back to the corner scene instead: VESPER
     // is waiting, the marker points at her, and her second line is one press
     // long precisely so picking it up again costs nothing.
-    if (player.quests.mq8 === 2 && !inside){
-      player.quests.mq8 = 1;
-      spawnRunVesper();
-    }
+    if (inside) return;
+    const st = player.quests.mq8;
+    if (st === 2){ player.quests.mq8 = 1; spawnRunVesper(); }
+    // she is put out here rather than in ROOK's dialog, and re-checked every
+    // frame the job is live, so she cannot go missing whatever route you
+    // took to the street
+    else if (st === 0 || st === 1) spawnRunVesper();
     return;
   }
   RUN.t -= dt;
@@ -7529,7 +7601,13 @@ function runFrame(dt){
       } else { v.x += dx / d * step; v.y += dy / d * step; step = 0; }
     }
   }
-  if (atHideout(5)){
+  // You are racing TOWARD the hideout, so you cannot be at it yet. Until you
+  // have genuinely been away from it, the door does not count - otherwise a
+  // race that begins anywhere near home is over before the first push.
+  if (!RUN.armed){
+    if (!HIDEOUT || Math.hypot(HIDEOUT.x - cam.x, HIDEOUT.y - cam.y) > 25) RUN.armed = true;
+  }
+  if (RUN.armed && atHideout(5)){
     const left = Math.max(0, Math.round(RUN.t));
     const bonus = left * 2;
     endRun();
@@ -7560,6 +7638,10 @@ function endRun(){
 }
 /* she is waiting on the corner when you get there, and has been a while */
 function spawnRunVesper(){
+  // Never from inside a room: the corner would be picked against the room's
+  // own floor plan. runFrame calls this again the moment you are outdoors,
+  // so a job taken at ROOK's table still puts her on the corner.
+  if (inside) return;
   if (actors.some(a => a.name === 'VESPER' && !a.interior)) return;
   const d = runDrop();
   if (!d) return;
@@ -7629,7 +7711,9 @@ const MQ1 = {
     stages: [
       { log: 'ride out to the corner on THE STRIP where the courier went down',
         target: toDrop,
-        auto(){ return atSpot(runDrop(), 6); } },
+        // indoors your coordinates are the interior grid's, not the city's -
+        // never let a room's floor plan stand in for a street corner
+        auto(){ return !inside && atSpot(runDrop(), 6); } },
       { log: 'VESPER is on the corner - hear her out',
         target: toVesper },
       { log: () => RUN
