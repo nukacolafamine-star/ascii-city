@@ -18715,6 +18715,7 @@ const NET = {
   link: null, status: 'off', error: '',
   acc: 0, hz: 15,                   // how often we say where we are
   seen: new Map(),                  // id -> last heard, for dropping the gone
+  lastQ: new Map(),                 // id -> last sequence taken from them
   kind: 'local'
 };
 const NET_TIMEOUT = 6;              // seconds of silence before somebody is gone
@@ -18915,26 +18916,36 @@ function netApplyQuests(q, qv, track){
    the host's body snap to wherever that guest was standing, fifteen times a
    second, fighting the host's real packets in between. A relayed packet keeps
    the id of whoever it came from. */
+let _netSeq = 0;
 function netSend(o){
   if (!NET.link) return;
-  if (o.f === undefined) o.f = NET.id;
+  if (o.f === undefined){ o.f = NET.id; o.q = ++_netSeq; }
   try { NET.link.send(o); } catch (e){ NET.error = String(e && e.message || e); }
 }
 function netOnMsg(m){
   if (!m || m.f === NET.id) return;             // never hear ourselves
+  /* Somebody in the next tab who is ALSO on the wire is reachable twice, and
+     would otherwise be heard twice - every event fired again, every shot
+     cracking twice. The sender numbers what it authored; anything not newer
+     than the last thing we took from them has already been dealt with. */
+  if (m.q !== undefined){
+    const last = NET.lastQ.get(m.f);
+    if (last !== undefined && m.q <= last) return;
+    NET.lastQ.set(m.f, m.q);
+  }
   NET.seen.set(m.f, netNow());
   switch (m.t){
     case 'hi':                                  // somebody knocking
       if (NET.role !== 'host') return;
-      { const p = addPeer(m.f, { name: m.name, worn: m.worn,
+      { const known = !!playerById(m.f);
+        const p = addPeer(m.f, { name: m.name, worn: m.worn,
                                  skinC: m.skinC, shirtC: m.shirtC });
         p.name = m.name || p.name;
         netSend({ t: 'world', to: m.f, seed: worldSeed, clock, day: dayCount,
                   wx: weather, tm: CFG.timeMode, fog: fogLevel, wet: wetLevel,
                   delta: worldDelta, tags,
                   quests: player.quests, qvar: player.qvar, track: player.track });
-        toast(p.name + ' joined');
-        sfx('ui_select', { vol: 0.5 }); }
+        if (!known){ toast(p.name + ' joined'); sfx('ui_select', { vol: 0.5 }); } }
       return;
     case 'world':                               // the host tells us where we are
       if (NET.role !== 'guest' || (m.to && m.to !== NET.id)) return;
@@ -19014,9 +19025,22 @@ function netBroadcastEvent(e, o){
 }
 
 /*--------------------------- once a frame ---------------------------------*/
+/* A guest knocks until somebody opens the door. On the wire the knock has to
+   outlive the connection being made at all: netStart fires it immediately,
+   and a data channel takes ten seconds of tracker and ICE to exist, so the
+   first one is shouted into a room nobody is in yet. It repeats until the
+   world arrives. */
+function netHello(){
+  netSend({ t: 'hi', name: NET.name, worn: player.worn,
+            skinC: player.skinC, shirtC: player.shirtC });
+}
 function netTick(dt){
   if (!NET.on) return;
   _netBeat = netNow();                           // frames are alive; stand down
+  if (NET.role === 'guest' && NET.status !== 'joined'){
+    NET.helloT = (NET.helloT || 0) - dt;
+    if (NET.helloT <= 0){ NET.helloT = 2; netHello(); }
+  }
   netSampleMe(dt);
   // ease every peer toward where the wire last put them. A body that jumps
   // fifteen times a second reads as broken even when every packet is perfect.
@@ -19070,6 +19094,214 @@ function bcLink(room, onMsg){
   return { kind: 'local', mesh: true, send(o){ ch.postMessage(o); },
            close(){ try { ch.close(); } catch (e){} } };
 }
+/*------------------------- off this machine --------------------------------
+  WebRTC. The only thing a browser needs a server for is an introduction: two
+  pages that have never met cannot hand each other an SDP offer out of thin
+  air. Once they have, the connection is direct and nothing of ours is in the
+  middle - which is the whole reason this can ship from a static page with no
+  back end at all.
+
+  The introduction rides on a public BitTorrent WebSocket tracker. It is a
+  rendezvous that already exists, speaks JSON, wants no account and no key,
+  and was built for exactly this handshake - webtorrent does the same thing
+  with it. A room code is hashed into the twenty-byte info hash that a swarm
+  is named by, so everybody typing the same five characters lands in the same
+  swarm and is handed each other's offers.
+
+  It is a full mesh: eight people is twenty-eight connections, which is
+  nothing, and it means no one machine is the relay and a host leaving does
+  not take the room down with it.
+--------------------------------------------------------------------------*/
+const RTC_TRACKERS = ['wss://tracker.openwebtorrent.com', 'wss://tracker.webtorrent.dev'];
+const RTC_ICE = { iceServers: [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+] };
+/* Twenty bytes, as the tracker wants them, out of whatever was typed. */
+function rtc20(seed){
+  let out = '';
+  for (let i = 0; i < 20; i++){
+    let h = 2166136261 >>> 0;
+    for (let k = 0; k < seed.length; k++){ h ^= seed.charCodeAt(k); h = Math.imul(h, 16777619) >>> 0; }
+    h = Math.imul(h ^ i, 2654435761) >>> 0;
+    out += String.fromCharCode(32 + (h % 90));   // printable, and 20 of them
+  }
+  return out;
+}
+function rtcRand20(){
+  let s = '';
+  for (let i = 0; i < 20; i++) s += String.fromCharCode(97 + ((Math.random() * 26) | 0));
+  return s;
+}
+/* Gather until the browser says it is finished, or until it has been long
+   enough that whatever it has is what it is going to get. Trickling every
+   candidate through a tracker is more round trips than this is worth. */
+function rtcGathered(pc, ms){
+  return new Promise(res => {
+    if (pc.iceGatheringState === 'complete') return res();
+    const done = () => { clearTimeout(t); pc.removeEventListener('icegatheringstatechange', chk); res(); };
+    const chk = () => { if (pc.iceGatheringState === 'complete') done(); };
+    const t = setTimeout(done, ms || 2500);
+    pc.addEventListener('icegatheringstatechange', chk);
+  });
+}
+/* The crowd is four hundred and thirty positions and goes out eight times a
+   second. As JSON that is tens of kilobytes of decimal digits; as the
+   Int16Arrays it already is, it is two and a half. Text frames stay JSON. */
+function rtcPackCrowd(m){
+  const p = m.p, c = m.c;
+  const buf = new ArrayBuffer(12 + p.byteLength + c.byteLength);
+  const dv = new DataView(buf);
+  dv.setInt32(0, m.f | 0, true);
+  dv.setInt32(4, p.length, true);
+  dv.setInt32(8, c.length, true);
+  new Int16Array(buf, 12, p.length).set(p);
+  new Int16Array(buf, 12 + p.byteLength, c.length).set(c);
+  return buf;
+}
+function rtcUnpackCrowd(buf){
+  const dv = new DataView(buf);
+  const f = dv.getInt32(0, true), np = dv.getInt32(4, true), nc = dv.getInt32(8, true);
+  return { t: 'crowd', f,
+           p: new Int16Array(buf, 12, np),
+           c: new Int16Array(buf, 12 + np * 2, nc) };
+}
+function rtcLink(room, onMsg, onStat){
+  const L = { kind: 'net', mesh: true, chans: new Set(), socks: [], dead: false,
+              peers: 0, note: 'looking for the room' };
+  const ih = rtc20('ascii-city/' + room), me = rtcRand20();
+  const pending = new Map();                    // offer_id -> {pc, dc}
+  const seen = new Set();                        // peers already being answered
+  /* Two people announcing at once each answer the other, so a pair ends up
+     with a connection in each direction and every packet is sent twice. Both
+     ends have to drop the SAME one without asking each other, so the rule is
+     arbitrary and shared: the channel whose offerer sorts lower survives. */
+  const byPeer = new Map();                      // peer id -> the one channel
+
+  const stat = n => { L.note = n; if (onStat) onStat(L); };
+  const arm = (pc, dc, pid, offerer) => {
+    dc.binaryType = 'arraybuffer';
+    dc.__pid = pid; dc.__off = offerer;
+    dc.onopen = () => {
+      const who = dc.__pid;
+      if (who){
+        const prev = byPeer.get(who);
+        if (prev && prev !== dc && prev.readyState === 'open'){
+          const keepNew = (dc.__off || '') < (prev.__off || '');
+          if (!keepNew){ try { dc.close(); } catch (e){} return; }
+          try { prev.close(); } catch (e){}
+          L.chans.delete(prev);
+        }
+        byPeer.set(who, dc);
+      }
+      L.chans.add(dc); L.peers = byPeer.size || L.chans.size;
+      stat(L.peers + ' connected');
+    };
+    dc.onclose = () => {
+      L.chans.delete(dc);
+      if (dc.__pid && byPeer.get(dc.__pid) === dc) byPeer.delete(dc.__pid);
+      L.peers = byPeer.size || L.chans.size;
+      stat(L.peers ? L.peers + ' connected' : 'alone in the room');
+    };
+    dc.onmessage = ev => {
+      try {
+        if (typeof ev.data === 'string') onMsg(JSON.parse(ev.data));
+        else onMsg(rtcUnpackCrowd(ev.data));
+      } catch (e){}
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed'){
+        L.chans.delete(dc); L.peers = L.chans.size;
+        if (pid) seen.delete(pid);
+      }
+    };
+  };
+  async function freshOffer(){
+    const pc = new RTCPeerConnection(RTC_ICE);
+    const dc = pc.createDataChannel('c', { ordered: false, maxRetransmits: 2 });
+    arm(pc, dc);
+    await pc.setLocalDescription(await pc.createOffer());
+    await rtcGathered(pc);
+    const oid = rtcRand20();
+    pending.set(oid, { pc, dc });
+    return { offer_id: oid, offer: { type: 'offer', sdp: pc.localDescription.sdp } };
+  }
+  async function answerTo(sock, msg){
+    if (seen.has(msg.peer_id)) return;
+    seen.add(msg.peer_id);
+    const pc = new RTCPeerConnection(RTC_ICE);
+    pc.ondatachannel = ev => arm(pc, ev.channel, msg.peer_id, msg.peer_id);
+    await pc.setRemoteDescription(msg.offer);
+    await pc.setLocalDescription(await pc.createAnswer());
+    await rtcGathered(pc);
+    sock.send(JSON.stringify({ action: 'announce', info_hash: ih, peer_id: me,
+      to_peer_id: msg.peer_id, offer_id: msg.offer_id,
+      answer: { type: 'answer', sdp: pc.localDescription.sdp } }));
+  }
+  async function shout(sock){
+    if (L.dead || sock.readyState !== 1) return;
+    const offers = [];
+    try { offers.push(await freshOffer()); } catch (e){}
+    sock.send(JSON.stringify({ action: 'announce', info_hash: ih, peer_id: me,
+      numwant: 8, uploaded: 0, downloaded: 0, left: 0, event: 'started', offers }));
+  }
+  for (const url of RTC_TRACKERS){
+    let sock;
+    try { sock = new WebSocket(url); } catch (e){ continue; }
+    L.socks.push(sock);
+    sock.onopen = () => { stat('in the room, waiting'); shout(sock); };
+    sock.onmessage = async ev => {
+      let m; try { m = JSON.parse(ev.data); } catch (e){ return; }
+      if (m.info_hash !== ih || m.peer_id === me) return;
+      try {
+        if (m.offer) await answerTo(sock, m);
+        else if (m.answer && pending.has(m.offer_id)){
+          const e = pending.get(m.offer_id);
+          pending.delete(m.offer_id);
+          e.dc.__pid = m.peer_id; e.dc.__off = me;   // we offered this one
+          if (e.pc.signalingState !== 'closed') await e.pc.setRemoteDescription(m.answer);
+        }
+      } catch (e){}
+    };
+    sock.onerror = () => {};
+  }
+  // keep announcing: somebody who arrives later has to be able to find us
+  L.beat = setInterval(() => {
+    if (L.dead) return;
+    for (const s of L.socks) if (s.readyState === 1) shout(s);
+  }, 20000);
+
+  L.send = o => {
+    const outs = byPeer.size ? byPeer.values() : L.chans;
+    if (!byPeer.size && !L.chans.size) return;
+    const wire = (o.t === 'crowd' && o.p && o.p.buffer) ? rtcPackCrowd(o) : JSON.stringify(o);
+    for (const dc of outs){
+      if (dc.readyState !== 'open') continue;
+      try { dc.send(wire); } catch (e){}
+    }
+  };
+  L.close = () => {
+    L.dead = true;
+    clearInterval(L.beat);
+    for (const s of L.socks) { try { s.close(); } catch (e){} }
+    for (const dc of L.chans) { try { dc.close(); } catch (e){} }
+    L.chans.clear();
+  };
+  return L;
+}
+/* Both at once. A room is a room whether the other person is in the next tab
+   or the next country, so there is nothing to choose: BroadcastChannel finds
+   the tabs, WebRTC finds the machines, and a packet goes out over both.
+   Anybody reachable twice would hear everything twice, which is what the
+   sequence number on every packet is for. */
+function bothLink(room, onMsg, onStat){
+  const bc = bcLink(room, onMsg);
+  const rt = rtcLink(room, onMsg, onStat);
+  return { kind: 'both', mesh: true, rtc: rt,
+           get peers(){ return rt.peers; },
+           get note(){ return rt.note; },
+           send(o){ bc.send(o); rt.send(o); },
+           close(){ try { bc.close(); } catch (e){} rt.close(); } };
+}
 function netRoomCode(){
   const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no look-alikes
   let s = '';
@@ -19082,15 +19314,17 @@ function netStart(role, room){
   NET.id = role === 'host' ? 1 : 2 + ((Math.random() * 1e6) | 0);
   NET.name = (player.name || 'PLAYER') + '-' + NET.id;
   NET.error = '';
-  NET.seen.clear();
-  try { NET.link = bcLink(room, netOnMsg); }
-  catch (e){ NET.on = false; NET.status = 'off'; NET.error = 'no channel';
-             toast('netplay unavailable here'); return false; }
+  NET.seen.clear(); NET.lastQ.clear(); _netSeq = 0;
+  try { NET.link = bothLink(room, netOnMsg, () => {}); }
+  catch (e){
+    try { NET.link = bcLink(room, netOnMsg); }   // at least the tabs, then
+    catch (e2){ NET.on = false; NET.status = 'off'; NET.error = 'no channel';
+                toast('netplay unavailable here'); return false; }
+  }
   NET.status = role === 'host' ? 'hosting' : 'joining';
   ME.scene = SCENE;
-  if (role === 'guest')
-    netSend({ t: 'hi', name: NET.name, worn: player.worn,
-              skinC: player.skinC, shirtC: player.shirtC });
+  NET.helloT = 0;
+  if (role === 'guest'){ netHello(); toast('joining ' + room + ' - looking for the room'); }
   else toast('hosting - room ' + room);
   return true;
 }
@@ -19101,6 +19335,7 @@ function netStop(quiet){
   }
   NET.link = null; NET.on = false; NET.role = null; NET.status = 'off';
   NET.seen.clear();
+  NET.lastQ.clear();
   for (let i = PLAYERS.length - 1; i > 0; i--) dropPeer(PLAYERS[i].id);
   if (!quiet) toast('disconnected');
 }
@@ -19149,12 +19384,15 @@ function openRoomEntry(){
 }
 function openMultiplayerMenu(){
   const items = [];
-  items.push({ info: 'experimental. the city is a seed, so only people move' });
+  items.push({ info: 'the city is a seed - only people and the crowd travel' });
   items.push({ sep: true });
   items.push({ label: 'STATUS', value: () =>
     NET.on ? (NET.role === 'host' ? 'HOSTING ' + NET.room : 'JOINED ' + NET.room)
            : 'OFF' });
   items.push({ label: 'WITH YOU', value: () => NET.on ? String(netPeerCount()) : '-' });
+  items.push({ label: 'OVER THE WIRE',
+               value: () => !NET.on ? '-'
+                 : (NET.link && NET.link.rtc ? NET.link.rtc.note : 'this machine only') });
   items.push({ label: 'LAST ERROR', value: () => NET.error || 'none' });
   items.push({ sep: true });
   if (!NET.on){
@@ -19169,7 +19407,8 @@ function openMultiplayerMenu(){
                  act(){ netStop(); popMode(); } });
   }
   items.push({ sep: true });
-  items.push({ info: 'tabs on this machine share a room with no server at all' });
+  items.push({ info: 'the same code works across tabs and across machines' });
+  items.push({ info: 'no server: tabs meet directly, machines meet peer to peer' });
   items.push({ sep: true });
   items.push({ label: 'BACK', act(){ popMode(); } });
   pushMode(makeListMenu({ name: 'multiplayer', title: 'MULTIPLAYER', items }));
