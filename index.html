@@ -5450,7 +5450,16 @@ function openFloorMenu(){
 }
 function enterInterior(door){
   const own = homeAt(door.b);
-  if (player.corruption >= 3 && hash3(door.b, 999, 7) < 0.35 &&
+  /* The lock is a deadlock at the two doors that exist to get you out of it.
+     The fixer is the one man who deletes corruption, and his door was as
+     likely as any other to refuse you for having some - the more you needed
+     him the more certain you were to be turned away, and the phone that lets
+     you call him instead is bought FROM him, standing in that room. The
+     hideout is the same shape of trap with the main quest behind it. Neither
+     is ever barred. */
+  const openToYou = (FIXER && door.b === FIXER.bld) ||
+                    (HIDEOUT && door.b === HIDEOUT.bld);
+  if (player.corruption >= 3 && !openToYou && hash3(door.b, 999, 7) < 0.35 &&
       !(own && player.homes && player.homes[own.id])){   // your own door knows you
     if (invCount('shim')){                     // a mag-shim eats one refusal
       invTake('shim', 1);
@@ -15608,31 +15617,62 @@ function mapTileAt(wx, wy, sw, sh){
 function drawMapMode(m){
   const cols = R.cols, rows = R.rows;
   hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
-  const za = m.z * 1.8;                        // cells are tall; rows cover more
+  /* One map sample used to be one character cell, which meant the chart got
+     physically SMALLER the finer your glyph grid: on the seven-pixel grid the
+     whole city is drawn in seven-pixel marks, and the result is technically
+     complete and practically unreadable. A sample is a BLOCK of cells now,
+     sized so the chart stays about the same size on the glass whatever grid
+     you are on - four cells across at the finest, one at the coarsest. A
+     building becomes a solid mass instead of a speck, which is most of the
+     legibility on its own.
+
+     Everything else - labels, symbols, the player - is placed through the
+     same block lattice, so a door mark lands on the middle of its block
+     rather than a quarter of the way into the next one. */
+  const blk = clamp(Math.round(26 / R.cellW), 1, 4);
+  const bw = Math.max(8, (cols / blk) | 0);          // samples across
+  const bh = Math.max(6, ((rows - 3) / blk) | 0);    // and down
+  const ox0 = (cols - bw * blk) >> 1;                // centre the chart
+  const oy0 = 1;
+  const za = m.z * 1.8;                              // cells are tall
+  const half = blk >> 1;
   // Pin the sample lattice to the world rather than the screen, so panning
   // slides the map rigidly instead of resampling it under your thumb.
   const ox = Math.round(m.cx / m.z) * m.z, oy = Math.round(m.cy / za) * za;
-  for (let r = 1; r < rows - 1; r++){
-    const wy = oy + (r - rows / 2) * za;
-    for (let x = 0; x < cols; x++){
-      // east right, the same way round as the view and as every symbol that
-      // gets drawn on top of this - these two used to disagree, and the
-      // terrain was mirrored under the doors, landmarks and the player
-      const wx = ox + (x - cols / 2) * m.z;
+  // world -> sample -> the character cell at the middle of that sample
+  const sx = wx => ox0 + Math.round((wx - m.cx) / m.z + bw / 2) * blk + half;
+  const sy = wy => oy0 + Math.round((wy - m.cy) / za + bh / 2) * blk + half;
+  const onChart = (x, y) => x >= 1 && x < cols - 1 && y >= 2 && y < rows - 2;
+
+  // ---- the ground ------------------------------------------------------
+  for (let r = 0; r < bh; r++){
+    const wy = oy + (r - bh / 2) * za, y0 = oy0 + r * blk;
+    for (let c = 0; c < bw; c++){
+      // east right, the same way round as the view and as every symbol drawn
+      // on top of it - these two used to disagree, and the terrain came out
+      // mirrored under the doors, landmarks and the player
+      const wx = ox + (c - bw / 2) * m.z;
       const t = mapTileAt(wx, wy, m.z, za);
       if (t < 0) continue;
-      if (t === T_BLD) hudCell(x, r, '#', H_GRY);
-      else if (t === T_WATER) hudCell(x, r, '~', H_BLU);
-      else if (t === T_BRIDGE) hudCell(x, r, '=', H_DIM);
-      else if (t === T_ROAD || t === T_CROSS) hudCell(x, r, '.', H_DIM);
-      else if (t === T_WALK) hudCell(x, r, ':', H_DRK);
-      else if (t === T_PATH) hudCell(x, r, ',', H_GRN);
-      else if (t === T_LOT) hudCell(x, r, '"', H_DRK);
+      let ch = 0, col = 0;
+      if      (t === T_BLD)   { ch = '#'; col = H_GRY; }
+      else if (t === T_WATER) { ch = '~'; col = H_BLU; }
+      else if (t === T_BRIDGE){ ch = '='; col = H_WHT; }
+      else if (t === T_ROAD || t === T_CROSS){ ch = '.'; col = H_DIM; }
+      else if (t === T_WALK)  { ch = ':'; col = H_DRK; }
+      else if (t === T_PATH)  { ch = ','; col = H_GRN; }
+      else if (t === T_LOT)   { ch = '"'; col = H_DRK; }
+      if (!ch) continue;
+      const x0 = ox0 + c * blk;
+      for (let j = 0; j < blk; j++){
+        const yy = y0 + j;
+        if (yy < 1 || yy >= rows - 1) continue;
+        for (let i = 0; i < blk; i++) hudCell(x0 + i, yy, ch, col);
+      }
     }
   }
-  const sx = wx => ((wx - m.cx) / m.z + cols / 2) | 0;
-  const sy = wy => ((wy - m.cy) / za + rows / 2) | 0;
-  // intersection ids at close zoom
+
+  // ---- intersection ids at close zoom ----------------------------------
   if (m.z <= 2){
     for (let k = 1; k < NB; k++)
       for (let k2 = 1; k2 < NB; k2++){
@@ -15642,7 +15682,7 @@ function drawMapMode(m){
         hudStr(x + 1, y, xingId(k2, k), H_DIM);
       }
   }
-  // district names at far zoom - drawn whole and never over each other
+  // ---- district names at far zoom - drawn whole and never over each other
   if (m.z >= 4){
     const placed = [];
     for (const d of m.dlbl){
@@ -15653,12 +15693,11 @@ function drawMapMode(m){
       hudStr(x, y, d.name, H_PUR);
     }
   }
-  // every trade and venue announces itself at close zoom - a symbol per
-  // door, coloured by what is behind it
+  // ---- every trade announces itself at close zoom -----------------------
   if (m.z <= 2){
     for (const d of doors){
       const x = sx(d.x), y = sy(d.y);
-      if (x < 1 || x >= cols - 1 || y < 2 || y >= rows - 2) continue;
+      if (!onChart(x, y)) continue;
       const t = doorTag(d.b);
       if (t) hudCell(x, y, t[0], t[1]);
     }
@@ -15666,45 +15705,54 @@ function drawMapMode(m){
                 'B bodega  G goods  $ casino  X parlor  W condemned  H home  & fixer';
     hudStr(Math.max(1, (cols - leg.length) >> 1), rows - 2, leg.slice(0, cols - 2), H_DIM);
   }
-  // landmarks
-  if (m.z <= 4)
+  // ---- landmarks -------------------------------------------------------
+  if (m.z <= 4){
+    const named = [];
     for (const l of landmarks){
       const x = sx(l.x), y = sy(l.y);
-      if (x < 1 || x >= cols - 1 || y < 2 || y >= rows - 2) continue;
-      // A landmark may carry its own mark. Everything the city put there is
-      // a yellow star; the places that are somebody's rather than the city's
-      // get a glyph of their own, so you can pick the fixer's door out of a
+      if (!onChart(x, y)) continue;
+      // A landmark may carry its own mark. Everything the city put there is a
+      // yellow star; the places that are somebody's rather than the city's get
+      // a glyph of their own, so the fixer's door can be picked out of a
       // street of stars without reading every label.
-      hudCell(x, y, l.sym || '*', l.col !== undefined ? l.col : H_YEL);
-      if (m.z <= 2) hudStr(x + 2, y, l.name, l.col !== undefined ? l.col : H_YEL);
+      const col = l.col !== undefined ? l.col : H_YEL;
+      hudCell(x, y, l.sym || '*', col);
+      // names only while there is room for them, and never stacked on top of
+      // one another - a chart of overlapping words is worse than no words
+      if (m.z <= 2 && x + 2 + l.name.length < cols - 1 &&
+          !named.some(q => Math.abs(q.y - y) < 1 && x < q.x1 + 2 && x + 2 + l.name.length > q.x0 - 2)){
+        named.push({ x0: x + 2, x1: x + 2 + l.name.length, y });
+        hudStr(x + 2, y, l.name, col);
+      }
     }
-  // the player, and the trail you should follow
-  // the pan crosshair: where ENTER will drop the line
-  hudCell(cols >> 1, (rows >> 1), '+', H_DIM);
+  }
+
+  // ---- the crosshair, the waypoint, you --------------------------------
+  hudCell(ox0 + (bw >> 1) * blk + half, oy0 + (bh >> 1) * blk + half, '+', H_DIM);
   if (waypoint){
     const wxs = sx(waypoint.x), wys = sy(waypoint.y);
-    if (wxs >= 1 && wxs < cols - 1 && wys >= 2 && wys < rows - 2)
-      hudCell(wxs, wys, 'O', H_RED);
+    if (onChart(wxs, wys)) hudCell(wxs, wys, 'O', H_RED);
   }
   const px2 = sx(cam.x), py2 = sy(cam.y);
   if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
     const pc2 = ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT;
-    const ring = [[-3, 0, '('], [3, 0, ')'], [0, -2, '-'], [0, 2, '-'],
-                  [-2, -1, '.'], [2, -1, '.'], [-2, 1, '.'], [2, 1, '.']];
+    // the ring scales with the block, so it stays a ring rather than
+    // collapsing onto the mark it is supposed to be around
+    const rr2 = Math.max(2, blk + 1);
+    const ring = [[-rr2, 0, '('], [rr2, 0, ')'], [0, -(rr2 >> 1) - 1, '-'], [0, (rr2 >> 1) + 1, '-']];
     for (const [dx2, dy2, ch2] of ring){
       const rx2 = px2 + dx2, ry2 = py2 + dy2;
       if (rx2 >= 0 && rx2 < cols && ry2 >= 1 && ry2 < rows - 1) hudCell(rx2, ry2, ch2, pc2);
     }
-    // ang 0 is +x, which is EAST, which is now screen right
+    // ang 0 is +x, which is EAST, which is screen right
     const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
     hudCell(px2, py2, dirCh, pc2);
   }
-
   const qt = questTarget();
   if (qt){
     const pulse = ((Date.now() / 300) | 0) & 1;     // world is paused in here
     const x = sx(qt.x), y = sy(qt.y);
-    if (x >= 1 && x < cols - 1 && y >= 2 && y < rows - 2){
+    if (onChart(x, y)){
       hudCell(x, y, pulse ? '!' : '*', H_YEL);
       if (qt.name && x + 2 + qt.name.length < cols - 1)
         hudStr(x + 2, y, qt.name, H_YEL);
@@ -15715,7 +15763,7 @@ function drawMapMode(m){
       hudCell(cx2, cy2, pulse ? ch : '!', H_YEL);
     }
   }
-  // chrome
+  // ---- chrome ----------------------------------------------------------
   hudStr(2, 0, ' CITY MAP  x' + m.z + ' ', H_GRN);
   hudStr(cols - 8, 1, '[ + ]', H_GRN);
   hudStr(cols - 8, 3, '[ - ]', H_GRN);
