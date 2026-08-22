@@ -7409,6 +7409,7 @@ function toHideout(){ return HIDEOUT && { x: HIDEOUT.x, y: HIDEOUT.y, name: 'THE
 ============================================================================*/
 let RUN = null;                                 // null unless the run is live
 const RUN_RAMP_GAP = 26;                        // tiles between half-pipes
+const RUN_RAMP_MIN = 17;                        // ...and never closer than this
 const RUN_TRICK_BONUS = 2;                      // seconds a landed trick buys
 /* What she cruises at with a clear road, in tiles a second. SK_MAX is 14.3
    but that is a number you touch on a straight and give back at the corner -
@@ -7521,6 +7522,19 @@ function layRamps(path){
       const px = x + (alongX ? 0 : b), py = y + (alongX ? b : 0);
       if (!inMap(px, py) || !walkG[py * MAP + px]) return null;
     }
+    // A clear span of TILES is not a straight stretch of ROUTE. The two come
+    // apart exactly at a corner: the junction it turns through is wide open
+    // in both directions, passes every clearance test there is, and puts a
+    // nine-metre ramp across the bend you were going to lean into. So ask
+    // the route itself - it has to run near enough straight for half a dozen
+    // cells either side, or there is nowhere to line the thing up from.
+    for (let k = -6; k <= 6; k++){
+      const j = i + k;
+      if (j < 0 || j >= path.length) return null;
+      const cc = path[j];
+      const off = alongX ? Math.abs(((cc / MAP) | 0) - y) : Math.abs((cc % MAP) - x);
+      if (off > 1) return null;
+    }
     // The curve runs along your travel and the ramp is narrower across it.
     // footBox swaps the two on the odd quarter turns, so these yaws put the
     // long axis where the riding happens.
@@ -7528,15 +7542,24 @@ function layRamps(path){
              yaw: alongX ? (dx >= 0 ? 0 : Math.PI)
                          : (dy >= 0 ? Math.PI / 2 : -Math.PI / 2) };
   };
+  // Hunting either side of each spacing mark is what stops a pipe being
+  // dropped over one bad junction - but on its own it also lets one ramp
+  // hunt forward while the next hunts back, and they end up eight cells
+  // apart having been asked for twenty-six. The last position placed is
+  // remembered, and nothing lands inside RUN_RAMP_MIN of it.
+  let last = -1e9;
   for (let i = 8; i < path.length - 8; i += RUN_RAMP_GAP){
-    // if the exact spacing lands somewhere impossible, take the nearest
-    // place that works rather than dropping the ramp altogether
     let pr = null;
-    for (const off of [0, 3, -3, 6, -6, 9, -9]){
+    // Hunt wider than the old window did. Demanding a straight stretch of
+    // route rules out a lot of a real city, and a mark that finds nothing
+    // leaves a third of the run with no pipes on it. The minimum gap above
+    // is what makes searching this far safe - it could not have been before.
+    for (const off of [0, 3, -3, 6, -6, 9, -9, 12, -12, 15, -15, 18, -18, 21]){
       const j = i + off;
-      if (j < 4 || j > path.length - 5) continue;
+      if (j < 7 || j > path.length - 8) continue;
+      if (j - last < RUN_RAMP_MIN) continue;
       pr = fits(j);
-      if (pr) break;
+      if (pr){ last = j; break; }
     }
     if (!pr) continue;
     props.push(pr); out.push(pr);
@@ -7627,6 +7650,18 @@ function runCaught(){
     sfx('ui_select', { vol: 0.6, rate: 0.7 });
   });
 }
+/* Where you are along the route, searched near where you were rather than
+   over the whole thing - it only ever creeps forward a cell or two a frame. */
+function nearestOnRoute(path, from){
+  let bi = from, bd = 1e9;
+  const lo = Math.max(0, from - 6), hi = Math.min(path.length, from + 40);
+  for (let i = lo; i < hi; i++){
+    const c = path[i], dx = (c % MAP) + 0.5 - cam.x, dy = ((c / MAP) | 0) + 0.5 - cam.y;
+    const d = dx * dx + dy * dy;
+    if (d < bd){ bd = d; bi = i; }
+  }
+  return bi;
+}
 /*--- the frame -----------------------------------------------------------*/
 function runFrame(dt){
   if (!RUN){
@@ -7659,12 +7694,24 @@ function runFrame(dt){
        the corner slowly and winds up, which is what you are doing beside
        her, and she coasts down rather than stopping dead.
 
-       A lead you cannot see is not leading you anywhere, and one that keeps
-       vanishing round corners reads as knowing a different route rather than
-       riding a faster line. So the band is tight: easing off at twelve
-       tiles and letting the board roll to a stop by eighteen. */
-    const want = RUN_LEAD_CRUISE * (gap > 18 ? 0 : gap > 12 ? 0.5 : gap > 8 ? 0.78
-                                                : gap < 5 ? 1.12 : 0.95);
+       But a bare DISTANCE cannot tell being in front from being behind, and
+       that is the whole difference here. Ride well enough to pass her and
+       the gap opens exactly as it does when she pulls ahead - so she read it
+       as being too far in front and eased off, at the one moment she needed
+       to chase. Progress along the route settles it: whoever is further down
+       it is in front.
+
+       Leading, she holds a tight band - easing at twelve tiles, rolling to a
+       stop by eighteen - because a lead you cannot see is not leading you
+       anywhere. Trailing, she matches whatever you are doing and adds a
+       little, so a good rider gets a chase rather than an empty street. */
+    RUN.pidx = nearestOnRoute(RUN.path, RUN.pidx || 0);
+    const behind = RUN.pidx > RUN.idx + 2;
+    const yourSpeed = skating ? skV : 0;
+    const want = behind
+      ? Math.min(SK_MAX, Math.max(RUN_LEAD_CRUISE, yourSpeed * 1.12 + 1.5))
+      : RUN_LEAD_CRUISE * (gap > 18 ? 0 : gap > 12 ? 0.5 : gap > 8 ? 0.78
+                                        : gap < 5 ? 1.12 : 0.95);
     if (v.sv === undefined){ v.sv = 0; v.pushCd = 0; v.pushT = 0; }
     v.sv = Math.max(0, v.sv - v.sv * 0.30 * dt);      // rolling friction
     v.pushCd -= dt; v.pushT -= dt;
