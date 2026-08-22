@@ -4601,6 +4601,31 @@ function makeInteriorScene(bld, floor){
 /* Two people who walk into the same shop are in the same room, and see each
    other in it. The scene is built once, on the first one through the door,
    and torn down when the last one leaves. */
+/* A room is rebuilt from its seed every time somebody opens its door, which
+   is exactly right for the furniture and exactly wrong for the bodies.
+   Killing a keeper drops a till worth fifty to a hundred credits, so a shop
+   with no memory is an infinite wage: kill, step out, step back in, kill the
+   same person again. Outside, the dead stay dead - actors are only ever
+   spawned by newWorld - and a room should be no different. It also means a
+   floor you have cleared stays cleared, so the locks that open on an empty
+   room do not quietly shut behind you.
+
+   The cast spawns in the same order on every rebuild, because the room is
+   seeded by its building, so an ordinal is a stable name for a body. */
+function stampRoomCast(sceneId){
+  let n = 0;
+  for (let i = 0; i < actors.length; i++){
+    const a = actors[i];
+    if (a.interior !== 1) continue;             // not one this build put down
+    a.interior = sceneId; a.iidx = n++;
+  }
+  const gone = worldDelta.slain && worldDelta.slain[sceneId];
+  if (!gone) return;
+  for (let i = actors.length - 1; i >= 0; i--){
+    const a = actors[i];
+    if (a.interior === sceneId && gone[a.iidx]) actors.splice(i, 1);
+  }
+}
 function acquireScene(bld, floor){
   const k = sceneKey(bld.id, floor);
   let s = SCENES.get(k);
@@ -5390,8 +5415,7 @@ function gotoFloor(f){
     sF.inside = { name: nm, district: bldR.dist, exit: sF.room.exit,
                   stairs: sF.room.stairs, shop: sF.room.shop,
                   bld: bldR.id, door: door0, floor: f };
-    // the cast that buildInterior just put down belongs to THIS room
-    for (const a of actors) if (a.interior === 1) a.interior = sF.id;
+    stampRoomCast(sF.id);      // whose room this is, and who is not in it
   }
   inside = sF.inside;
   ME.scene = sF;
@@ -5450,8 +5474,7 @@ function enterInterior(door){
     indexProps(); indexSpriteProps();
     s.inside = { name: door.name, district: bld.dist, exit: s.room.exit,
                  stairs: s.room.stairs, shop: s.room.shop, bld: door.b, door, floor: 1 };
-    // the cast that buildInterior just put down belongs to THIS room
-    for (const a of actors) if (a.interior === 1) a.interior = s.id;
+    stampRoomCast(s.id);       // whose room this is, and who is not in it
   }
   const room = s.room;
   inside = s.inside;
@@ -6082,8 +6105,7 @@ function peerSetScene(p, sceneId){
         s.inside = { name: door ? door.name : 'INSIDE', district: bld.dist,
                      exit: s.room.exit, stairs: s.room.stairs, shop: s.room.shop,
                      bld: bld.id, door, floor: +m[2] };
-    // the cast that buildInterior just put down belongs to THIS room
-    for (const a of actors) if (a.interior === 1) a.interior = s.id;
+    stampRoomCast(s.id);       // whose room this is, and who is not in it
       });
       p.scene = s;
     }
@@ -13010,6 +13032,13 @@ function fireWeapon(){
   }
 }
 function killActor(a){
+  // a body in a room is remembered, or the room hands out its till again the
+  // moment the door shuts behind you
+  if (a.interior && a.interior !== 1 && a.iidx !== undefined){
+    if (!worldDelta.slain) worldDelta.slain = {};
+    const room = worldDelta.slain[a.interior] || (worldDelta.slain[a.interior] = {});
+    room[a.iidx] = 1;
+  }
   actors.splice(actors.indexOf(a), 1);
   if (typeof mqWorksKill === 'function') mqWorksKill(a);
   if (typeof spireKill === 'function') spireKill(a);
