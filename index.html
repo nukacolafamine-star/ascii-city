@@ -15514,20 +15514,28 @@ function openMap(){
   }
   pushMode({
     name: 'map', pausesWorld: true,
-    cx: cam.x, cy: cam.y, z: 2, dlbl,
+    cx: cam.x, cy: cam.y, zi: 1, dlbl,
     onKey(code){
-      // a tap nudges one tile; only a HELD key builds up speed
+      const L = mapLattice(this);
+      // A nudge moves one SAMPLE, and only a HELD key builds up speed. A nudge
+      // used to move one TILE, which at any zoom past the closest moved
+      // nothing at all: the lattice is pinned to the world in sample-sized
+      // steps, so the chart sat exactly where it was until the eighth press.
       const now = performance.now();
       if (now - (this.panT || 0) > 260) this.panN = 0;
-      const step = this.panN < 3 ? 1 : this.panN < 9 ? this.z * 2 : this.z * 6;
+      const k = this.panN < 3 ? 1 : this.panN < 9 ? 3 : 8;
       const pan = () => { this.panT = now; this.panN = (this.panN || 0) + 1; };
       switch (code){
-        case 'KeyW': case 'ArrowUp':    this.cy -= step; pan(); break;
-        case 'KeyS': case 'ArrowDown':  this.cy += step; pan(); break;
-        case 'KeyA': case 'ArrowLeft':  this.cx -= step; pan(); break;
-        case 'KeyD': case 'ArrowRight': this.cx += step; pan(); break;
-        case 'KeyQ': case 'BracketLeft':  this.z = Math.min(8, this.z * 2); sfx('ui_move', { vol: 0.4 }); break;
-        case 'KeyE': case 'BracketRight': this.z = Math.max(1, this.z / 2); sfx('ui_move', { vol: 0.4 }); break;
+        case 'KeyW': case 'ArrowUp':    this.cy -= k * L.za; pan(); break;
+        case 'KeyS': case 'ArrowDown':  this.cy += k * L.za; pan(); break;
+        case 'KeyA': case 'ArrowLeft':  this.cx -= k * L.z;  pan(); break;
+        case 'KeyD': case 'ArrowRight': this.cx += k * L.z;  pan(); break;
+        // + is closer in and - is further out, which is what the corner
+        // buttons have always said and the opposite of what they did
+        case 'KeyQ': case 'BracketLeft':
+          this.zi = Math.max(0, L.zi - 1); sfx('ui_move', { vol: 0.4 }); break;
+        case 'KeyE': case 'BracketRight':
+          this.zi = Math.min(L.nz - 1, L.zi + 1); sfx('ui_move', { vol: 0.4 }); break;
         case 'Enter':                          // drop the line at the crosshair
           setWaypoint(this.cx, this.cy); break;
         case 'KeyX':
@@ -15538,8 +15546,11 @@ function openMap(){
       this.cx = clamp(this.cx, 0, MAP); this.cy = clamp(this.cy, 0, MAP);
     },
     drag(dx, dy){                              // grab the paper and pull it
-      this.cx = clamp(this.cx - dx / R.cellW * this.z, 0, MAP);
-      this.cy = clamp(this.cy - dy / R.cellH * this.z * 1.8, 0, MAP);
+      const L = mapLattice(this);
+      // a cell of drag is a cell of chart, and a cell is a fraction of a
+      // sample - forgetting that made the paper slide four times too far
+      this.cx = clamp(this.cx - dx / (R.cellW * L.blk) * L.z,  0, MAP);
+      this.cy = clamp(this.cy - dy / (R.cellH * L.blk) * L.za, 0, MAP);
     },
     tap(cx, cy){
       if (cy <= 4 && cx >= R.cols - 8){         // the corner zoom buttons
@@ -15547,10 +15558,10 @@ function openMap(){
         return;
       }
       if (cy >= R.rows - 3){ this.onKey('Escape'); return; }
-      // anywhere else: that is where you want to go
-      const wx = this.cx + (cx - R.cols / 2) * this.z;
-      const wy = this.cy + (cy - R.rows / 2) * this.z * 1.8;
-      setWaypoint(wx, wy);
+      // anywhere else: that is where you want to go - read back through the
+      // same lattice the chart was drawn on, so the pin lands under the thumb
+      const L = mapLattice(this);
+      setWaypoint(clamp(L.wxAt(cx), 0, MAP - 1), clamp(L.wyAt(cy), 0, MAP - 1));
     },
     draw(){ drawMapMode(this); }
   });
@@ -15578,196 +15589,335 @@ function doorTag(bldId){
   if (u && USES[u] && USES[u].trade) return TRADE_TAG[USES[u].trade] || null;
   return u && !USES[u].kind ? ['?', H_DIM] : null;   // a door onto nothing yet
 }
-/* One map cell covers a patch of city, and at anything past the closest zoom
-   that patch is many tiles wide. Reading a single tile out of the middle of
-   it meant a tower was drawn only if the lattice happened to land on it - so
-   panning re-diced every block and the structures appeared to squirm. The
-   cell now takes the MAJORITY type under its whole footprint: a block stays
-   a block, a street stays a street, and the picture is the same picture
-   however you arrive at it. Ties go to the heavier structure. */
-const MAP_RANK = new Int8Array(16);
-(function(){ MAP_RANK[T_BLD] = 6; MAP_RANK[T_WATER] = 5; MAP_RANK[T_BRIDGE] = 4;
-             MAP_RANK[T_CROSS] = 3; MAP_RANK[T_ROAD] = 3; MAP_RANK[T_WALK] = 2;
-             MAP_RANK[T_PATH] = 1; MAP_RANK[T_LOT] = 0; })();
-const _mapCnt = new Int32Array(16), _mapSeen = new Int32Array(16);
-function mapTileAt(wx, wy, sw, sh){
-  const nx = sw < 2 ? 1 : sw < 3 ? 2 : sw < 4 ? 3 : 4;
-  const ny = sh < 2 ? 1 : sh < 3 ? 2 : sh < 4 ? 3 : 4;
-  if (nx === 1 && ny === 1){                   // one tile under it, one answer
-    const tx = (wx + sw * 0.5) | 0, ty = (wy + sh * 0.5) | 0;
-    return inMap(tx, ty) ? tType[ty * MAP + tx] : -1;
-  }
-  let best = -1, bn = 0, nt = 0;
+/* ---- one lattice, and a ladder that reaches --------------------------------
+   One map sample used to be one character cell, which meant the chart got
+   physically SMALLER the finer your glyph grid: on the seven-pixel grid the
+   whole city was drawn in seven-pixel marks. A sample is a BLOCK of cells
+   instead, sized so the chart stays about the same size on the glass whatever
+   grid you are on, and a building comes out a solid mass rather than a speck.
+
+   What that change missed is that it also quartered the number of samples
+   across the glass, while the zoom ladder stayed a fixed one that stopped at
+   eight tiles to a sample. The coarsest rung went from holding the whole city
+   to holding about a third of it, with nothing further to pull back to. The
+   ladder is computed now, from how many samples actually fit, and its last
+   rung is whatever it takes to put all 4 km2 on the glass at once.
+
+   The other half of the repair is that there is ONE lattice and every part of
+   the chart asks it for the same numbers - the ground, the marks on it, a
+   drag, a tap, one press of a pan key. They each used to work theirs out
+   separately, from slightly different origins, which is why the symbols slid
+   over the terrain as you panned, the crosshair sat off the player, a drag
+   pulled the paper four times too far, and a tap dropped the waypoint
+   somewhere you had not pointed. */
+function mapZoomRungs(bw, bh, asp){
+  // the last rung is the one where all of it fits - both ways round, since a
+  // chart wider than it is tall runs out of room top to bottom first
+  const fit = Math.max(MAP / bw, MAP / (bh * asp));
+  const r = [];
+  for (let z = 1; z < fit; z *= 2) r.push(z);
+  r.push(fit);
+  return r;
+}
+function mapLattice(m){
+  const cols = R.cols, rows = R.rows;
+  const blk = clamp(Math.round(26 / R.cellW), 1, 4);   // character cells to a sample
+  const bw = Math.max(8, (cols / blk) | 0);            // samples across
+  const bh = Math.max(6, ((rows - 3) / blk) | 0);      // and down
+  const asp = R.cellH / R.cellW;                       // cells are tall: rows cover more
+  const rungs = mapZoomRungs(bw, bh, asp);
+  const zi = clamp(m.zi | 0, 0, rungs.length - 1);
+  const z = rungs[zi], za = z * asp;                   // world tiles to a sample
+  const ox0 = (cols - bw * blk) >> 1, oy0 = 1, half = blk >> 1;
+  // Pin the lattice to the world rather than the screen, so panning slides the
+  // map rigidly instead of resampling it under your thumb.
+  const ox = Math.round(m.cx / z) * z, oy = Math.round(m.cy / za) * za;
+  return { cols, rows, blk, bw, bh, asp, zi, z, za, ox0, oy0, half, ox, oy,
+    nz: rungs.length,
+    // world -> the character cell at the middle of the sample holding it
+    sx: wx => ox0 + Math.floor((wx - ox) / z  + bw / 2) * blk + half,
+    sy: wy => oy0 + Math.floor((wy - oy) / za + bh / 2) * blk + half,
+    // and back again: a cell -> the middle of the ground it is showing you
+    wxAt: cx => ox + (Math.floor((cx - ox0) / blk) - bw / 2 + 0.5) * z,
+    wyAt: cy => oy + (Math.floor((cy - oy0) / blk) - bh / 2 + 0.5) * za };
+}
+/* What is actually under one sample. Reading a single tile out of the middle
+   of a footprint meant a tower was drawn only if the lattice happened to land
+   on it, so panning re-diced every block and the structures squirmed. This
+   counts the whole footprint and leaves the coverage fractions in _mapFrac,
+   which is what every rule below reads. */
+const _mapFrac = new Float32Array(16);
+function mapSample(wx, wy, sw, sh){
+  const nx = clamp(Math.ceil(sw), 1, 12), ny = clamp(Math.ceil(sh), 1, 12);
+  _mapFrac.fill(0);
+  let n = 0;
   for (let j = 0; j < ny; j++){
     const ty = (wy + (j + 0.5) * sh / ny) | 0;
     for (let i = 0; i < nx; i++){
       const tx = (wx + (i + 0.5) * sw / nx) | 0;
       if (!inMap(tx, ty)) continue;
-      const t = tType[ty * MAP + tx];
-      if (!_mapCnt[t]) _mapSeen[nt++] = t;
-      const c = ++_mapCnt[t];
-      if (c > bn || (c === bn && best >= 0 && MAP_RANK[t] > MAP_RANK[best])){
-        bn = c; best = t;
-      }
+      _mapFrac[tType[ty * MAP + tx]]++; n++;
     }
   }
-  while (nt) _mapCnt[_mapSeen[--nt]] = 0;      // clear only what we touched
-  return bn ? best : -1;
+  if (n) for (let t = 0; t < 16; t++) _mapFrac[t] /= n;
+  return n;
+}
+/* A roadway is six tiles wide. Once a sample is wider than that there is no
+   street grid left to draw, and asking for one anyway gives you moire - which
+   is exactly what the chart turned into when it was made to cover more ground
+   than it could resolve: a field of hash and quote marks that changed pattern
+   every time you nudged it and told you nothing either way.
+
+   So the chart draws STREETS while streets are resolvable and PLACES when
+   they are not. Past MAP_STREET_Z a sample takes the glyph and the colour of
+   the district that generated it - read straight off the field the city was
+   built from, rather than guessed at from a handful of tiles - and the city
+   separates into a bright core, a purple strip, a red mile, green housing and
+   tan farmland the moment you pull back far enough to want that. The river
+   and its bridges are terrain at every zoom, and sit on top of both. */
+const MAP_STREET_Z = 4;                     // world tiles to a sample
+const MAP_PLACE = [];                       // glyph, colour, and a short tag
+MAP_PLACE[D_DOWN]  = ['#', H_WHT,  'core'];  // the dense bright core
+MAP_PLACE[D_STRIP] = ['*', H_PUR,  'strip'];
+MAP_PLACE[D_RES]   = ['+', H_GRN,  'homes'];
+MAP_PLACE[D_IND]   = ['=', H_SKIN, 'works'];
+MAP_PLACE[D_SUB]   = ['-', H_DIM,  'subs'];
+MAP_PLACE[D_RURAL] = [',', H_GRY,  'farms'];
+MAP_PLACE[D_RED]   = ['*', H_RED,  'red'];
+const MAP_WILD = ['.', H_PNT];              // out past the last road
+const MAP_KEY = [D_DOWN, D_STRIP, D_RED, D_RES, D_IND, D_SUB, D_RURAL];
+/* The key is the chart's own glyphs, named. It gives back as many of its
+   words as the grid has room for and no more: on the coarsest glyph grid the
+   whole chart is fifty cells across, which is not a sentence, so it falls
+   back to short tags and then to the bare marks. Anything that does not fit
+   is worse than nothing - it lands on top of the footer. */
+function mapKeyParts(cols, street){
+  const wide = [], tags = [], bare = [];
+  const add = (g, col, name, tag) => {
+    wide.push([g + ' ' + name, col]); tags.push([g + tag, col]); bare.push([g, col]);
+  };
+  if (street){                              // only what you can actually see:
+    add('#', H_GRY, 'block',    'blk');     // the sidewalks and the open ground
+    add('.', H_DIM, 'street',   'st');      // are drawn to recede, and naming
+    add('~', H_BLU, 'water',    'wtr');     // them would be naming the dark
+    add('=', H_WHT, 'bridge',   'br');
+    add('*', H_YEL, 'landmark', 'lm');
+  } else {
+    for (const d of MAP_KEY){
+      const p = MAP_PLACE[d];
+      add(p[0], p[1], DISTRICT[d].name.toLowerCase(), p[2]);
+    }
+    add('~', H_BLU, 'water', 'river');
+  }
+  for (const [set, gap] of [[wide, 2], [tags, 1], [bare, 1]])
+    if (set.reduce((a, t) => a + t[0].length + gap, -gap) <= cols - 2) return [set, gap];
+  return [bare, 1];
+}
+// the same courtesy for the two lines of running text along the bottom
+function mapFitLine(cols, opts){
+  for (const t of opts) if (t.length <= cols - 2) return t;
+  return opts[opts.length - 1].slice(0, Math.max(0, cols - 2));
+}
+function mapPlace(x, y){
+  const bi = clamp((x / P) | 0, 0, NB - 1), bj = clamp((y / P) | 0, 0, NB - 1);
+  return zoneAt(bi, bj) >= 4 ? MAP_WILD : MAP_PLACE[distMap[bj * NB + bi]];
 }
 function drawMapMode(m){
-  const cols = R.cols, rows = R.rows;
+  const L = mapLattice(m);
+  const cols = L.cols, rows = L.rows, blk = L.blk, bw = L.bw, bh = L.bh;
+  const z = L.z, za = L.za, sx = L.sx, sy = L.sy;
+  const yTop = L.oy0, yBot = L.oy0 + bh * blk;         // the chart is [yTop, yBot)
+  const onChart = (x, y) => x >= 1 && x < cols - 1 && y >= yTop && y < yBot;
+  const streets = z <= MAP_STREET_Z;
   hudPanel(0, 0, cols, rows); hudPanel(0, 0, cols, rows);
-  /* One map sample used to be one character cell, which meant the chart got
-     physically SMALLER the finer your glyph grid: on the seven-pixel grid the
-     whole city is drawn in seven-pixel marks, and the result is technically
-     complete and practically unreadable. A sample is a BLOCK of cells now,
-     sized so the chart stays about the same size on the glass whatever grid
-     you are on - four cells across at the finest, one at the coarsest. A
-     building becomes a solid mass instead of a speck, which is most of the
-     legibility on its own.
-
-     Everything else - labels, symbols, the player - is placed through the
-     same block lattice, so a door mark lands on the middle of its block
-     rather than a quarter of the way into the next one. */
-  const blk = clamp(Math.round(26 / R.cellW), 1, 4);
-  const bw = Math.max(8, (cols / blk) | 0);          // samples across
-  const bh = Math.max(6, ((rows - 3) / blk) | 0);    // and down
-  const ox0 = (cols - bw * blk) >> 1;                // centre the chart
-  const oy0 = 1;
-  const za = m.z * 1.8;                              // cells are tall
-  const half = blk >> 1;
-  // Pin the sample lattice to the world rather than the screen, so panning
-  // slides the map rigidly instead of resampling it under your thumb.
-  const ox = Math.round(m.cx / m.z) * m.z, oy = Math.round(m.cy / za) * za;
-  // world -> sample -> the character cell at the middle of that sample
-  const sx = wx => ox0 + Math.round((wx - m.cx) / m.z + bw / 2) * blk + half;
-  const sy = wy => oy0 + Math.round((wy - m.cy) / za + bh / 2) * blk + half;
-  const onChart = (x, y) => x >= 1 && x < cols - 1 && y >= 2 && y < rows - 2;
 
   // ---- the ground ------------------------------------------------------
   for (let r = 0; r < bh; r++){
-    const wy = oy + (r - bh / 2) * za, y0 = oy0 + r * blk;
+    const wy = L.oy + (r - bh / 2) * za, cy0 = yTop + r * blk;
     for (let c = 0; c < bw; c++){
       // east right, the same way round as the view and as every symbol drawn
       // on top of it - these two used to disagree, and the terrain came out
       // mirrored under the doors, landmarks and the player
-      const wx = ox + (c - bw / 2) * m.z;
-      const t = mapTileAt(wx, wy, m.z, za);
-      if (t < 0) continue;
+      const wx = L.ox + (c - bw / 2) * z;
+      if (!mapSample(wx, wy, z, za)) continue;
+      const f = _mapFrac;
       let ch = 0, col = 0;
-      if      (t === T_BLD)   { ch = '#'; col = H_GRY; }
-      else if (t === T_WATER) { ch = '~'; col = H_BLU; }
-      else if (t === T_BRIDGE){ ch = '='; col = H_WHT; }
-      else if (t === T_ROAD || t === T_CROSS){ ch = '.'; col = H_DIM; }
-      else if (t === T_WALK)  { ch = ':'; col = H_DRK; }
-      else if (t === T_PATH)  { ch = ','; col = H_GRN; }
-      else if (t === T_LOT)   { ch = '"'; col = H_DRK; }
-      if (!ch) continue;
-      const x0 = ox0 + c * blk;
-      for (let j = 0; j < blk; j++){
-        const yy = y0 + j;
-        if (yy < 1 || yy >= rows - 1) continue;
-        for (let i = 0; i < blk; i++) hudCell(x0 + i, yy, ch, col);
+      // the river reads at every scale, so it is allowed a thinner share of a
+      // sample the further out you are - thirteen tiles of water is most of a
+      // close sample and a sliver of the widest one
+      if (f[T_WATER] >= (streets ? 0.25 : 0.10)){ ch = '~'; col = H_BLU; }
+      else if (f[T_BRIDGE] > 0){ ch = '='; col = H_WHT; }
+      else if (streets){
+        // the grid has to stay CONTINUOUS or the chart stops being navigable,
+        // so a footprint with road across much of it is road; a building only
+        // has to hold a fifth of one to be drawn, because buildings are what
+        // you steer by
+        if (f[T_ROAD] + f[T_CROSS] >= 0.40){ ch = '.'; col = H_DIM; }
+        else if (f[T_BLD]  >= 0.20){ ch = '#'; col = H_GRY; }
+        else if (f[T_PATH] >= 0.25){ ch = ','; col = H_GRN; }
+        else if (f[T_WALK] >= 0.30){ ch = ':'; col = H_DRK; }
+        else { ch = '"'; col = H_DRK; }
+      } else {
+        const p = mapPlace(wx + z * 0.5, wy + za * 0.5);
+        ch = p[0]; col = p[1];
       }
+      if (!ch) continue;
+      const x0 = L.ox0 + c * blk;
+      for (let j = 0; j < blk; j++)
+        for (let i = 0; i < blk; i++) hudCell(x0 + i, cy0 + j, ch, col);
     }
   }
 
-  // ---- intersection ids at close zoom ----------------------------------
-  if (m.z <= 2){
-    for (let k = 1; k < NB; k++)
-      for (let k2 = 1; k2 < NB; k2++){
-        if (zoneAt(k2, k) >= 4) continue;
-        const x = sx(k2 * P + RW / 2), y = sy(k * P + RW / 2);
-        if (y <= 2 || y >= rows - 2 || x < 1 || x >= cols - 5) continue;
-        hudStr(x + 1, y, xingId(k2, k), H_DIM);
-      }
-  }
-  // ---- district names at far zoom - drawn whole and never over each other
-  if (m.z >= 4){
-    const placed = [];
-    for (const d of m.dlbl){
-      const x = sx(d.x) - (d.name.length >> 1), y = sy(d.y);
-      if (y <= 1 || y >= rows - 2 || x < 1 || x + d.name.length > cols - 1) continue;
-      if (placed.some(p => Math.abs(p.y - y) < 2 && x < p.x1 + 2 && x + d.name.length > p.x0 - 2)) continue;
-      placed.push({ x0: x, x1: x + d.name.length, y });
-      hudStr(x, y, d.name, H_PUR);
+  /* ---- what is written on it ------------------------------------------
+     Nothing is printed over anything else: a chart of overlapping words is
+     worse than a chart with none. Everything wanting a line of text claims
+     its box here first, in order of how much you need it, and the player's
+     own mark claims one before any of them - so the name of the district you
+     are standing in can never land across your own position, which is what it
+     was doing. */
+  const taken = [];
+  const free  = (x, y, w) => !taken.some(p => p.y === y && x < p.x1 && x + w > p.x0);
+  const claim = (x, y, w, pad) => { taken.push({ x0: x - pad, x1: x + w + pad, y }); };
+  const word  = (x, y, s, col) => { claim(x, y, s.length, 1); hudStr(x, y, s, col); };
+  // The marks go down before the words do, so a word can never be printed
+  // through one: your own position first, then every pin on the chart.
+  const px2 = sx(cam.x), py2 = sy(cam.y);
+  const rr2 = Math.max(2, blk + 1);                   // the ring around you
+  for (let dy = -((rr2 >> 1) + 1); dy <= (rr2 >> 1) + 1; dy++)
+    claim(px2 - rr2, py2 + dy, rr2 * 2 + 1, 0);
+  claim(sx(m.cx), sy(m.cy), 1, 0);                    // the crosshair
+  if (waypoint) claim(sx(waypoint.x), sy(waypoint.y), 1, 0);
+  const qt = questTarget();
+  const qx = qt ? sx(qt.x) : 0, qy = qt ? sy(qt.y) : 0;
+  if (qt) claim(qx, qy, 1, 0);
+  const lmOn = z <= MAP_STREET_Z * 2;                 // landmarks are on show
+  if (lmOn)
+    for (const l of landmarks){
+      const x = sx(l.x), y = sy(l.y);
+      if (onChart(x, y)) claim(x, y, 1, 0);
+    }
+  if (qt && qt.name && onChart(qx, qy) && qx + 2 + qt.name.length < cols - 1 &&
+      free(qx + 2, qy, qt.name.length))
+    word(qx + 2, qy, qt.name, H_YEL);
+  // landmark names, while there is still a street under them to attach to
+  if (z <= 2){
+    for (const l of landmarks){
+      const x = sx(l.x), y = sy(l.y);
+      if (!onChart(x, y) || x + 2 + l.name.length >= cols - 1) continue;
+      if (!free(x + 2, y, l.name.length)) continue;
+      word(x + 2, y, l.name, l.col !== undefined ? l.col : H_YEL);
     }
   }
+  // the named places, once one of them is bigger than the glass
+  if (z >= 4){
+    for (const d of m.dlbl){
+      const x = sx(d.x) - (d.name.length >> 1), y = sy(d.y);
+      if (!onChart(x, y) || x < 1 || x + d.name.length > cols - 1) continue;
+      if (!free(x, y, d.name.length)) continue;
+      word(x, y, d.name, H_PUR);
+    }
+  }
+  // and the id painted on the corner itself, when you are close enough that a
+  // corner is a corner rather than a dot
+  if (z <= 2){
+    // only the crossings the chart is actually showing - walking all 2500 of
+    // them to place the four that are on screen is work for nothing
+    const kA  = Math.max(1, ((L.oy - bh * za / 2) / P) | 0);
+    const kB  = Math.min(NB - 1, Math.ceil((L.oy + bh * za / 2) / P));
+    const k2A = Math.max(1, ((L.ox - bw * z  / 2) / P) | 0);
+    const k2B = Math.min(NB - 1, Math.ceil((L.ox + bw * z  / 2) / P));
+    for (let k = kA; k <= kB; k++)
+      for (let k2 = k2A; k2 <= k2B; k2++){
+        if (zoneAt(k2, k) >= 4) continue;
+        const x = sx(k2 * P + RW / 2) + 1, y = sy(k * P + RW / 2);
+        const id = xingId(k2, k);
+        if (!onChart(x, y) || x + id.length > cols - 1 || !free(x, y, id.length)) continue;
+        word(x, y, id, H_DIM);
+      }
+  }
+
   // ---- every trade announces itself at close zoom -----------------------
-  if (m.z <= 2){
+  if (z <= 2){
     for (const d of doors){
       const x = sx(d.x), y = sy(d.y);
       if (!onChart(x, y)) continue;
       const t = doorTag(d.b);
       if (t) hudCell(x, y, t[0], t[1]);
     }
-    const leg = 'T tools  A arms  D disp  J gold  C threads  M market  ' +
-                'B bodega  G goods  $ casino  X parlor  W condemned  H home  & fixer';
-    hudStr(Math.max(1, (cols - leg.length) >> 1), rows - 2, leg.slice(0, cols - 2), H_DIM);
   }
   // ---- landmarks -------------------------------------------------------
-  if (m.z <= 4){
-    const named = [];
+  // A landmark may carry its own mark. Everything the city put there is a
+  // yellow star; the places that are somebody's rather than the city's get a
+  // glyph of their own, so the fixer's door can be picked out of a street of
+  // stars without reading every label.
+  if (lmOn){
     for (const l of landmarks){
       const x = sx(l.x), y = sy(l.y);
-      if (!onChart(x, y)) continue;
-      // A landmark may carry its own mark. Everything the city put there is a
-      // yellow star; the places that are somebody's rather than the city's get
-      // a glyph of their own, so the fixer's door can be picked out of a
-      // street of stars without reading every label.
-      const col = l.col !== undefined ? l.col : H_YEL;
-      hudCell(x, y, l.sym || '*', col);
-      // names only while there is room for them, and never stacked on top of
-      // one another - a chart of overlapping words is worse than no words
-      if (m.z <= 2 && x + 2 + l.name.length < cols - 1 &&
-          !named.some(q => Math.abs(q.y - y) < 1 && x < q.x1 + 2 && x + 2 + l.name.length > q.x0 - 2)){
-        named.push({ x0: x + 2, x1: x + 2 + l.name.length, y });
-        hudStr(x + 2, y, l.name, col);
-      }
+      if (onChart(x, y)) hudCell(x, y, l.sym || '*', l.col !== undefined ? l.col : H_YEL);
     }
   }
 
   // ---- the crosshair, the waypoint, you --------------------------------
-  hudCell(ox0 + (bw >> 1) * blk + half, oy0 + (bh >> 1) * blk + half, '+', H_DIM);
+  // the crosshair goes through the same lattice as everything else, so it sits
+  // on the player the moment the map opens and stays exactly where ENTER will
+  // drop the line
+  hudCell(sx(m.cx), sy(m.cy), '+', H_DIM);
   if (waypoint){
     const wxs = sx(waypoint.x), wys = sy(waypoint.y);
     if (onChart(wxs, wys)) hudCell(wxs, wys, 'O', H_RED);
   }
-  const px2 = sx(cam.x), py2 = sy(cam.y);
-  if (px2 >= 0 && px2 < cols && py2 >= 1 && py2 < rows - 1){
-    const pc2 = ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT;
-    // the ring scales with the block, so it stays a ring rather than
-    // collapsing onto the mark it is supposed to be around
-    const rr2 = Math.max(2, blk + 1);
-    const ring = [[-rr2, 0, '('], [rr2, 0, ')'], [0, -(rr2 >> 1) - 1, '-'], [0, (rr2 >> 1) + 1, '-']];
-    for (const [dx2, dy2, ch2] of ring){
-      const rx2 = px2 + dx2, ry2 = py2 + dy2;
-      if (rx2 >= 0 && rx2 < cols && ry2 >= 1 && ry2 < rows - 1) hudCell(rx2, ry2, ch2, pc2);
-    }
-    // ang 0 is +x, which is EAST, which is screen right
-    const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
-    hudCell(px2, py2, dirCh, pc2);
-  }
-  const qt = questTarget();
   if (qt){
     const pulse = ((Date.now() / 300) | 0) & 1;     // world is paused in here
-    const x = sx(qt.x), y = sy(qt.y);
-    if (onChart(x, y)){
-      hudCell(x, y, pulse ? '!' : '*', H_YEL);
-      if (qt.name && x + 2 + qt.name.length < cols - 1)
-        hudStr(x + 2, y, qt.name, H_YEL);
-    } else {                                        // off the edge: point at it
-      const cx2 = clamp(x, 1, cols - 2), cy2 = clamp(y, 2, rows - 3);
-      const dx2 = x - cx2, dy2 = y - cy2;
+    if (onChart(qx, qy)) hudCell(qx, qy, pulse ? '!' : '*', H_YEL);
+    else {                                          // off the edge: point at it
+      const cx2 = clamp(qx, 1, cols - 2), cy2 = clamp(qy, yTop, yBot - 1);
+      const dx2 = qx - cx2, dy2 = qy - cy2;
       const ch = Math.abs(dx2) >= Math.abs(dy2) ? (dx2 < 0 ? '<' : '>') : (dy2 < 0 ? '^' : 'v');
       hudCell(cx2, cy2, pulse ? ch : '!', H_YEL);
     }
   }
+  if (px2 >= 0 && px2 < cols && py2 >= yTop && py2 < yBot){
+    const pc2 = ((Date.now() / 280) | 0) & 1 ? H_YEL : H_WHT;
+    // the ring scales with the block, so it stays a ring rather than
+    // collapsing onto the mark it is supposed to be around
+    const ring = [[-rr2, 0, '('], [rr2, 0, ')'], [0, -(rr2 >> 1) - 1, '-'], [0, (rr2 >> 1) + 1, '-']];
+    for (const [dx2, dy2, ch2] of ring) hudCell(px2 + dx2, py2 + dy2, ch2, pc2);
+    // ang 0 is +x, which is EAST, which is screen right
+    const dirCh = '>v<^'[((Math.round(cam.ang / (Math.PI / 2)) % 4) + 4) % 4];
+    hudCell(px2, py2, dirCh, pc2);
+  }
+
+  // ---- the key ---------------------------------------------------------
+  // whichever of the two charts you are looking at is the one explained
+  if (z <= 2){
+    let leg = 'T tools  A arms  D disp  J gold  C threads  M market  ' +
+              'B bodega  G goods  $ casino  X parlor  W condemned  H home  & fixer';
+    if (leg.length > cols - 2){            // cut on a gap, never through a word
+      leg = leg.slice(0, cols - 2);
+      leg = leg.slice(0, Math.max(0, leg.lastIndexOf('  ')));
+    }
+    hudStr(Math.max(1, (cols - leg.length) >> 1), rows - 2, leg, H_DIM);
+  } else {
+    const [parts, gap] = mapKeyParts(cols, streets);
+    let x = Math.max(1, (cols - parts.reduce((a, t) => a + t[0].length + gap, -gap)) >> 1);
+    for (const [txt, col] of parts){       // each named in the colour it is drawn in
+      hudStr(x, rows - 2, txt, col);
+      x += txt.length + gap;
+    }
+  }
   // ---- chrome ----------------------------------------------------------
-  hudStr(2, 0, ' CITY MAP  x' + m.z + ' ', H_GRN);
+  // how much ground is on the glass, which is the only zoom readout that means
+  // anything to anybody - a tile is about two metres
+  const across = bw * z * 2;
+  const scale = across >= 1000 ? (across / 1000).toFixed(1) + ' km'
+                               : Math.round(across / 10) * 10 + ' m';
+  hudStr(2, 0, ' CITY MAP  ' + scale + ' across  ' + (L.zi + 1) + '/' + L.nz + ' ', H_GRN);
   hudStr(cols - 8, 1, '[ + ]', H_GRN);
   hudStr(cols - 8, 3, '[ - ]', H_GRN);
-  const foot = 'WASD pan   Q/E zoom   tap/ENTER set waypoint   X clear   M close';
+  const foot = mapFitLine(cols, [
+    'WASD pan   Q/E zoom   tap/ENTER set waypoint   X clear   M close',
+    'WASD pan  Q/E zoom  ENTER pin  X clear  M close',
+    'Q/E zoom  M close']);
   hudStr((cols - foot.length) >> 1, rows - 1, foot, H_DIM);
 }
 
