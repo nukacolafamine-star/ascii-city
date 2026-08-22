@@ -19459,6 +19459,135 @@ function rtcLink(room, onMsg, onStat){
   };
   return L;
 }
+/*------------------------------ the bus ------------------------------------
+  The guarantee. WebRTC is direct and fast and fails outright behind a
+  symmetric NAT, and every free public TURN relay that would have carried it
+  through has quietly died. So when no direct route can form, the game rides
+  a public MQTT broker instead: a message bus both ends dial OUTWARD over a
+  WebSocket, which passes any firewall that passes the web at all. There is
+  no NAT that stops it, because nobody is listening for anything - both sides
+  only ever place outgoing calls.
+
+  It costs a broker round trip of latency where WebRTC costs none, and the
+  game eases every body toward the wire rather than snapping, so slower reads
+  as slightly drunker interpolation - not as frozen. Slower beats absent.
+
+  All three transports run at once and every packet carries its author's
+  sequence number, so whatever arrives twice is dropped on arrival and the
+  fastest route simply wins. The bus is throttled out of respect: these are
+  shared test brokers, so positions go at five hertz instead of fifteen and
+  the crowd at three instead of eight, which is still fifteen times better
+  than a guest whose city stands frozen.
+
+  The client speaks just enough MQTT 3.1.1 to live: CONNECT, SUBSCRIBE on
+  one wildcard, PUBLISH at QoS 0, PINGREQ to stay alive. JSON rides one
+  topic; the crowd's Int16Arrays ride a second as raw bytes, because four
+  hundred and thirty positions as decimal digits is ten times the bytes of
+  the same positions as the binary they already are.
+--------------------------------------------------------------------------*/
+const MQTT_BROKERS = ['wss://broker.emqx.io:8084/mqtt',
+                      'wss://broker.hivemq.com:8884/mqtt'];
+function mqttHash(s){
+  s = 'ascii-city/' + s;
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(36);
+}
+function mqttLink(room, onMsg, onStat){
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  const base = 'asciicity/' + mqttHash(room);
+  const L = { kind: 'bus', mesh: true, state: 'connecting', broker: '-', dead: false };
+  let ws = null, acc = new Uint8Array(0), wait = 2000;
+  const stat = () => { if (onStat) onStat(L); };
+  const str = s => { const b = enc.encode(s), o = new Uint8Array(2 + b.length);
+    o[0] = b.length >> 8; o[1] = b.length & 255; o.set(b, 2); return o; };
+  const cat = (...as) => { let n = 0; for (const a of as) n += a.length;
+    const o = new Uint8Array(n); let p = 0;
+    for (const a of as){ o.set(a, p); p += a.length; } return o; };
+  const pkt = (h, body) => { const rl = []; let n = body.length;
+    do { let d = n & 127; n >>= 7; if (n) d |= 128; rl.push(d); } while (n);
+    return cat(Uint8Array.of(h), Uint8Array.from(rl), body); };
+  const publish = (suffix, payload) => {
+    if (L.dead || !ws || ws.readyState !== 1 || L.state !== 'on the bus') return;
+    try { ws.send(pkt(0x30, cat(str(base + suffix), payload))); } catch (e){}
+  };
+  /* One WebSocket frame is not one MQTT packet - accumulate, then peel off
+     every complete packet in turn. */
+  function feed(bytes){
+    acc = cat(acc, bytes);
+    for (;;){
+      if (acc.length < 2) return;
+      let rl = 0, mul = 1, i = 1;
+      for (;;){
+        if (i >= acc.length) return;             // the length is still arriving
+        const d = acc[i]; rl += (d & 127) * mul; mul *= 128; i++;
+        if (!(d & 128)) break;
+        if (i > 4){ acc = new Uint8Array(0); return; }   // not MQTT: start over
+      }
+      const hdr = i, total = i + rl;
+      if (acc.length < total) return;
+      const p = acc.subarray(0, total);
+      acc = acc.slice(total);
+      const type = p[0] >> 4;
+      if (type === 2){                           // CONNACK: ask for the room
+        try { ws.send(pkt(0x82, cat(Uint8Array.of(0, 1), str(base + '/+'), Uint8Array.of(0)))); }
+        catch (e){}
+      } else if (type === 9){                    // SUBACK: hearing everything now
+        L.state = 'on the bus'; wait = 2000; stat();
+      } else if (type === 3){                    // PUBLISH: somebody said something
+        const tl = (p[hdr] << 8) | p[hdr + 1];
+        const topic = dec.decode(p.subarray(hdr + 2, hdr + 2 + tl));
+        const body = p.subarray(hdr + 2 + tl);   // QoS 0 carries no packet id
+        try {
+          if (topic.charCodeAt(topic.length - 1) === 98)        // ...'/b': binary
+            onMsg(rtcUnpackCrowd(body.slice().buffer));
+          else onMsg(JSON.parse(dec.decode(body)));
+        } catch (e){}
+      }                                          // PINGRESP and the rest: noise
+    }
+  }
+  function dial(k){
+    if (L.dead) return;
+    const url = MQTT_BROKERS[k % MQTT_BROKERS.length];
+    L.broker = url.replace(/^wss:\/\//, '').split(/[.:]/)[1] || url;
+    let s;
+    try { s = new WebSocket(url, 'mqtt'); } catch (e){ return retry(k + 1); }
+    s.binaryType = 'arraybuffer';
+    ws = s; acc = new Uint8Array(0); L.state = 'connecting'; stat();
+    s.onopen = () => {
+      const cid = 'ac' + Math.random().toString(36).slice(2, 10);
+      try { s.send(pkt(0x10, cat(str('MQTT'), Uint8Array.of(4, 2, 0, 60), str(cid)))); }
+      catch (e){}
+    };
+    s.onmessage = ev => { if (ev.data instanceof ArrayBuffer) feed(new Uint8Array(ev.data)); };
+    s.onerror = () => {};
+    // brokers hang up; the next one is dialled rather than the same one hammered
+    s.onclose = () => { if (ws === s && !L.dead){ L.state = 'down'; stat(); retry(k + 1); } };
+  }
+  function retry(k){
+    if (L.dead) return;
+    setTimeout(() => dial(k), wait);
+    wait = Math.min(wait * 2, 30000);
+  }
+  const ping = setInterval(() => {
+    if (!L.dead && ws && ws.readyState === 1){
+      try { ws.send(Uint8Array.of(0xC0, 0)); } catch (e){}
+    }
+  }, 45000);
+  dial(0);
+  let lastMe = 0, lastCrowd = 0;
+  L.send = o => {
+    const now = Date.now();
+    if (o.t === 'me'){ if (now - lastMe < 200) return; lastMe = now; }
+    else if (o.t === 'crowd'){
+      if (now - lastCrowd < 300) return; lastCrowd = now;
+      if (o.p && o.p.buffer){ publish('/b', new Uint8Array(rtcPackCrowd(o))); return; }
+    }
+    publish('/j', enc.encode(JSON.stringify(o)));
+  };
+  L.close = () => { L.dead = true; clearInterval(ping); try { ws && ws.close(); } catch (e){} };
+  return L;
+}
 /* Both at once. A room is a room whether the other person is in the next tab
    or the next country, so there is nothing to choose: BroadcastChannel finds
    the tabs, WebRTC finds the machines, and a packet goes out over both.
@@ -19467,11 +19596,12 @@ function rtcLink(room, onMsg, onStat){
 function bothLink(room, onMsg, onStat){
   const bc = bcLink(room, onMsg);
   const rt = rtcLink(room, onMsg, onStat);
-  return { kind: 'both', mesh: true, rtc: rt,
+  const mq = mqttLink(room, onMsg, onStat);
+  return { kind: 'both', mesh: true, rtc: rt, bus: mq,
            get peers(){ return rt.peers; },
            get note(){ return rt.note; },
-           send(o){ bc.send(o); rt.send(o); },
-           close(){ try { bc.close(); } catch (e){} rt.close(); } };
+           send(o){ bc.send(o); rt.send(o); mq.send(o); },
+           close(){ try { bc.close(); } catch (e){} rt.close(); mq.close(); } };
 }
 function netRoomCode(){
   const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no look-alikes
@@ -19588,7 +19718,10 @@ function openMultiplayerMenu(){
     return !L ? '-' : L.ice; } });
   items.push({ label: 'RELAY', value: () => {
     const n = netExtraIce().length;
-    return n ? n + ' supplied' : 'none - LAN or open NAT only'; } });
+    return n ? n + ' supplied' : 'none (the bus covers strict NAT)'; } });
+  items.push({ label: 'BUS', value: () => {
+    const B = NET.on && NET.link && NET.link.bus;
+    return !B ? '-' : B.state + (B.state !== 'down' ? ' via ' + B.broker : ''); } });
   items.push({ label: 'LAST ERROR', value: () => NET.error || 'none' });
   items.push({ sep: true });
   if (!NET.on){
@@ -19605,7 +19738,8 @@ function openMultiplayerMenu(){
   items.push({ sep: true });
   items.push({ info: 'the same code works across tabs and across machines' });
   items.push({ info: 'no server: tabs meet directly, machines meet peer to peer' });
-  items.push({ info: 'strict NAT needs a relay - open the page with ?turn=URL|user|pass' });
+  items.push({ info: 'no direct route? packets ride a public message bus instead' });
+  items.push({ info: 'lower latency behind strict NAT: ?turn=URL|user|pass in the address' });
   items.push({ sep: true });
   items.push({ label: 'BACK', act(){ popMode(); } });
   pushMode(makeListMenu({ name: 'multiplayer', title: 'MULTIPLAYER', items }));
