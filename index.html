@@ -15611,9 +15611,12 @@ function doorTag(bldId){
    pulled the paper four times too far, and a tap dropped the waypoint
    somewhere you had not pointed. */
 function mapZoomRungs(bw, bh, asp){
-  // the last rung is the one where all of it fits - both ways round, since a
-  // chart wider than it is tall runs out of room top to bottom first
-  const fit = Math.max(MAP / bw, MAP / (bh * asp));
+  // The last rung is the one where all of it fits - both ways round, since a
+  // chart wider than it is tall runs out of room top to bottom first. With a
+  // little air on it: fitting the city to the exact tile puts its outermost
+  // streets on the edge of the paper, where a rounding error is enough to cut
+  // them off.
+  const fit = Math.max(MAP / bw, MAP / (bh * asp)) * 1.04;
   const r = [];
   for (let z = 1; z < fit; z *= 2) r.push(z);
   r.push(fit);
