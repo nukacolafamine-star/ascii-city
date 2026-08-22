@@ -18105,6 +18105,80 @@ function netSampleMe(dt){
   _nmx = cam.x; _nmy = cam.y;
 }
 function netSceneId(){ return SCENE === CITY ? 'city' : SCENE.id; }
+function netGuest(){ return NET.on && NET.role === 'guest'; }
+
+/*---------------------------- the crowd -----------------------------------
+  Four hundred and thirty pedestrians, and the honest way to make everybody
+  agree about them is for one machine to decide and the rest to be told.
+  Positions are quantised to an eighth of a tile into an Int16Array, which
+  is 2.5 kilobytes for the whole crowd and clones between tabs without ever
+  being turned into text.
+
+  Identity still costs nothing - pedIdentity is a pure function of the seed
+  and the index, so every client already knows who each one IS, and only
+  where they are has to travel.
+--------------------------------------------------------------------------*/
+const NET_PED_HZ = 8, PED_OFF = -32768;
+/* A guest is told THAT somebody is sitting, never which bench - the seat is
+   the host's bookkeeping and its occupancy count is meaningless here. One
+   shared marker stands in for it: the sprite pass only ever tests sit for
+   truth, and using a marker means a guest can never decrement the occupancy
+   of a real bench it does not manage. */
+const NET_SEAT = { occ: 0, marker: 1 };
+let _pedAcc = 0;
+function netSendCrowd(dt){
+  if (NET.role !== 'host' || !NET.on) return;
+  _pedAcc += dt;
+  if (_pedAcc < 1 / NET_PED_HZ) return;
+  _pedAcc = 0;
+  const n = peds.length, a = new Int16Array(n * 3);
+  for (let i = 0; i < n; i++){
+    const q = peds[i];
+    if (q.off){ a[i * 3] = PED_OFF; continue; }
+    a[i * 3]     = Math.round(q.x * 8);
+    a[i * 3 + 1] = Math.round(q.y * 8);
+    a[i * 3 + 2] = (Math.round(((Math.atan2(q.dy, q.dx) + Math.PI) / (Math.PI * 2)) * 255) & 255)
+                 | (q.moving ? 256 : 0) | (q.sit ? 512 : 0);
+  }
+  const m = cars.length, c = new Int16Array(m * 4);
+  for (let i = 0; i < m; i++){
+    const q = cars[i];
+    c[i * 4]     = Math.round(q.x * 8);
+    c[i * 4 + 1] = Math.round(q.y * 8);
+    c[i * 4 + 2] = Math.round((q.z || 0) * 32);
+    c[i * 4 + 3] = Math.round(((Math.atan2(q.dy, q.dx) + Math.PI) / (Math.PI * 2)) * 255) & 255;
+  }
+  netSend({ t: 'crowd', p: a, c: c });
+}
+function netApplyCrowd(m){
+  const a = m.p;
+  if (a) for (let i = 0, n = Math.min(peds.length, a.length / 3 | 0); i < n; i++){
+    const q = peds[i], qx = a[i * 3];
+    if (qx === PED_OFF){
+      if (!q.off){
+        if (q.sit && q.sit !== NET_SEAT) q.sit.occ--;   // only ever a real one
+        q.sit = null; q.off = 1; q.x = -999; q.y = -999;
+      }
+      continue;
+    }
+    q.off = 0;
+    q.x = qx / 8; q.y = a[i * 3 + 1] / 8;
+    const f = a[i * 3 + 2];
+    const ang = ((f & 255) / 255) * Math.PI * 2 - Math.PI;
+    q.dx = Math.cos(ang); q.dy = Math.sin(ang);
+    q.moving = (f & 256) ? 1 : 0;
+    if (f & 512) q.sit = q.sit || NET_SEAT;      // sat down, on something
+    else if (q.sit === NET_SEAT) q.sit = null;   // stood up again
+    q.path = null;                              // never re-path what we are told
+  }
+  const c = m.c;
+  if (c) for (let i = 0, n = Math.min(cars.length, c.length / 4 | 0); i < n; i++){
+    const q = cars[i];
+    q.x = c[i * 4] / 8; q.y = c[i * 4 + 1] / 8; q.z = c[i * 4 + 2] / 32;
+    const ang = ((c[i * 4 + 3] & 255) / 255) * Math.PI * 2 - Math.PI;
+    q.dx = Math.cos(ang); q.dy = Math.sin(ang);
+  }
+}
 /* placePlayer is a pure function of the seed, so everyone who rebuilds the
    same city lands on the same tile - and a joiner spawns standing INSIDE the
    host, whose body is then drawn on top of their own camera. Step off it,
@@ -18190,6 +18264,7 @@ function netOnMsg(m){
         netSend(Object.assign({}, m, { r: 1 }));
       return;
     }
+    case 'crowd': if (netGuest()) netApplyCrowd(m); return;
     case 'bye': dropPeer(m.f); NET.seen.delete(m.f); return;
     case 'ev': netEvent(m); return;
   }
@@ -18251,6 +18326,7 @@ function netTick(dt){
       dropPeer(p.id);
     }
   }
+  netSendCrowd(dt);
   NET.acc += dt;
   if (NET.acc < 1 / NET.hz) return;
   NET.acc = 0;
@@ -18392,10 +18468,21 @@ function simulate(dt){
     bindScene(CITY);
     gridClear(carGrid); for (let i = 0; i < cars.length; i++) gridAdd(carGrid, cars[i].x, cars[i].y, cars[i]);
     gridClear(pedGrid); for (let i = 0; i < peds.length; i++) gridAdd(pedGrid, peds[i].x, peds[i].y, peds[i]);
-    streamAgents();
-    serviceRepaths();
-    for (let i = 0; i < cars.length; i++) updateCar(cars[i], dt);
-    for (let i = 0; i < peds.length; i++) updatePed(peds[i], i, dt);
+    if (netGuest()){
+      /* The host decides where the crowd is and we are told; simulating it
+         as well would only be two cities disagreeing at eight hertz. The
+         walk cycle still runs locally, because a body that only animates
+         when a packet lands looks like it is stuttering. */
+      for (let i = 0; i < peds.length; i++){
+        const q = peds[i];
+        if (!q.off && q.moving) q.phase += q.spd * dt * 3.4;
+      }
+    } else {
+      streamAgents();
+      serviceRepaths();
+      for (let i = 0; i < cars.length; i++) updateCar(cars[i], dt);
+      for (let i = 0; i < peds.length; i++) updatePed(peds[i], i, dt);
+    }
     for (let i = 0; i < actors.length; i++){
       const a = actors[i];
       if (a.interior) continue;                 // his room is somewhere else
@@ -18522,7 +18609,11 @@ function frame(now){
   if (dt < 0) dt = 0;
   if (hitStopT > 0){ hitStopT -= dt; dt *= 0.08; }   // impact holds the world
   const w0 = performance.now();
-  if (!worldFrozen()){
+  /* A pause menu stops the world - which is exactly right alone and wrong
+     with other people in it. Your menu is yours: it takes your keys and your
+     screen, it does not stop their city. Input is gated by the mode stack
+     separately, so opening a menu still stops YOU moving. */
+  if (!worldFrozen() || NET.on){
     drugTick(dt);
     smokeGlow += ((smoking() ? 1 : 0) - smokeGlow) * Math.min(1, dt * 1.6);
     if (jamT > 0) jamT -= dt;
