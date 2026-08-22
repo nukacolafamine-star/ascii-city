@@ -16398,6 +16398,9 @@ function spritePass(){
     const q = PLAYERS[i];
     if (q.local || q.scene !== SCENE || q.dead) continue;
     const rx = q.cam.x - cam.x, ry = q.cam.y - cam.y;
+    // Somebody standing exactly where we are cannot be drawn sensibly - the
+    // volume wraps the camera and fills the screen with fragments of itself.
+    if (rx * rx + ry * ry < 0.16) continue;
     const f = rx * dirX + ry * dirY;
     if (f < -0.9 || f > MD) continue;
     if (Math.abs(dirY * rx - dirX * ry) > f * planeLen + 2) continue;
@@ -17888,6 +17891,10 @@ const NET = {
   kind: 'local'
 };
 const NET_TIMEOUT = 6;              // seconds of silence before somebody is gone
+/* Wall clock, deliberately not worldTime: a pause menu stops the world, and a
+   timeout measured against a stopped clock never fires - so nobody would ever
+   be noticed leaving while somebody stands in a menu. */
+function netNow(){ return performance.now() / 1000; }
 /* what a body is doing, in one byte */
 const NF_MOVE = 1, NF_RUN = 2, NF_SKATE = 4, NF_SIT = 8, NF_AIM = 16,
       NF_PUNCH = 32, NF_HURT = 64;
@@ -17927,16 +17934,41 @@ function netSampleMe(dt){
   _nmx = cam.x; _nmy = cam.y;
 }
 function netSceneId(){ return SCENE === CITY ? 'city' : SCENE.id; }
+/* placePlayer is a pure function of the seed, so everyone who rebuilds the
+   same city lands on the same tile - and a joiner spawns standing INSIDE the
+   host, whose body is then drawn on top of their own camera. Step off it,
+   onto ground that is actually walkable, fanned by id so a third and a fourth
+   arrival do not stack up either. */
+function netSpawnOffset(){
+  const seat = 1 + (NET.id % 8);
+  for (let k = 0; k < 40; k++){
+    const th = seat * 2.39996 + k * 0.61;       // golden angle: no two agree
+    const r = 3.0 + k * 0.55;                    // far enough not to be in a face
+    const x = cam.x + Math.cos(th) * r, y = cam.y + Math.sin(th) * r;
+    const ix = x | 0, iy = y | 0;
+    if (!inMap(ix, iy) || !walkG[iy * MAP + ix]) continue;
+    if (solidAt(x, y) || propBlocked(x, y, 0.5)) continue;
+    cam.x = x; cam.y = y;
+    return true;
+  }
+  return false;
+}
 
 /*---------------------------- the wire ------------------------------------*/
+/* Only stamp what we are the AUTHOR of. This used to sign everything it
+   touched with our own id, which is fine until a host forwards somebody
+   else's position - it went out signed as the host, and every guest watched
+   the host's body snap to wherever that guest was standing, fifteen times a
+   second, fighting the host's real packets in between. A relayed packet keeps
+   the id of whoever it came from. */
 function netSend(o){
   if (!NET.link) return;
-  o.f = NET.id;
+  if (o.f === undefined) o.f = NET.id;
   try { NET.link.send(o); } catch (e){ NET.error = String(e && e.message || e); }
 }
 function netOnMsg(m){
   if (!m || m.f === NET.id) return;             // never hear ourselves
-  NET.seen.set(m.f, worldTime);
+  NET.seen.set(m.f, netNow());
   switch (m.t){
     case 'hi':                                  // somebody knocking
       if (NET.role !== 'host') return;
@@ -17957,6 +17989,7 @@ function netOnMsg(m){
       worldDelta = m.delta || { taken: {} };
       applyDeltaToProps();
       tags = m.tags || {};
+      netSpawnOffset();                       // do not arrive inside somebody
       if (GL) glBuildPalette(); else buildAtlases();
       bgGrad = null; buildBackground(); fade = 1;
       NET.status = 'joined';
@@ -17976,9 +18009,13 @@ function netOnMsg(m){
       // first word from somebody: put them there rather than easing in from
       // wherever the object happened to be born
       if (!p.lastT){ p.cam.x = m.x; p.cam.y = m.y; p.cam.ang = m.a; }
-      p.lastT = worldTime;
-      // a host relays, so guests hear each other without meeting
-      if (NET.role === 'host') netSend(Object.assign({}, m, { r: 1 }));
+      p.lastT = netNow();
+      /* On a star transport the guests only have a line to the host, so it
+         forwards for them. On a mesh - BroadcastChannel is one, every tab
+         already hears every packet - forwarding is pure duplication. Never
+         relay a relay either way. */
+      if (NET.role === 'host' && NET.link && !NET.link.mesh && !m.r)
+        netSend(Object.assign({}, m, { r: 1 }));
       return;
     }
     case 'bye': dropPeer(m.f); NET.seen.delete(m.f); return;
@@ -18014,6 +18051,7 @@ function netBroadcastEvent(e, o){
 /*--------------------------- once a frame ---------------------------------*/
 function netTick(dt){
   if (!NET.on) return;
+  _netBeat = netNow();                           // frames are alive; stand down
   netSampleMe(dt);
   // ease every peer toward where the wire last put them. A body that jumps
   // fifteen times a second reads as broken even when every packet is perfect.
@@ -18035,7 +18073,7 @@ function netTick(dt){
   for (let i = PLAYERS.length - 1; i > 0; i--){
     const p = PLAYERS[i];
     const t = NET.seen.get(p.id);
-    if (t !== undefined && worldTime - t > NET_TIMEOUT){
+    if (t !== undefined && netNow() - t > NET_TIMEOUT){
       toast(p.name + ' dropped');
       NET.seen.delete(p.id);
       dropPeer(p.id);
@@ -18060,7 +18098,8 @@ function netTick(dt){
 function bcLink(room, onMsg){
   const ch = new BroadcastChannel('ascii-city:' + room);
   ch.onmessage = ev => { const m = ev.data; if (!m.to || m.to === NET.id) onMsg(m); };
-  return { kind: 'local', send(o){ ch.postMessage(o); },
+  // everybody on the channel hears everybody: no forwarding required
+  return { kind: 'local', mesh: true, send(o){ ch.postMessage(o); },
            close(){ try { ch.close(); } catch (e){} } };
 }
 function netRoomCode(){
@@ -18098,6 +18137,20 @@ function netStop(quiet){
   if (!quiet) toast('disconnected');
 }
 function netPeerCount(){ return PLAYERS.length - 1; }
+/* A tab in the background has its animation frames throttled to almost
+   nothing, so a player who alt-tabs simply stops broadcasting and is dropped
+   as gone. A timer is throttled too, but far less - keeping a slow heartbeat
+   means they go on existing, standing still rather than vanishing. */
+let _netBeat = 0;
+function netHeartbeat(){
+  if (!NET.on) return;
+  const now = netNow();
+  if (now - _netBeat < 0.25) return;             // frames are keeping up
+  const dt = Math.min(0.5, now - _netBeat);
+  _netBeat = now;
+  netTick(dt);
+}
+setInterval(netHeartbeat, 250);
 
 /*---------------------------- the menu ------------------------------------*/
 /* An info row renders as a plain string and a value() is re-read every frame,
