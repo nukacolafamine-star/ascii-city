@@ -1713,6 +1713,10 @@ const KERB_KIND = [];
                               PK_BENCH, PK_RACK]) KERB_KIND[k] = 1; })();
 const PIN_KIND = [];
 (function(){ for (const k of [PK_METRO, PK_STAIR, PK_ITEM]) PIN_KIND[k] = 1; })();
+// the carriageway, and the few things entitled to stand in it
+function onCarriageway(t){ return t === T_ROAD || t === T_CROSS || t === T_BRIDGE; }
+const ROAD_OK = [];
+(function(){ for (const k of [PK_RAIL, PK_TLIGHT, PK_CAM]) ROAD_OK[k] = 1; })();
 function isKerb(tx, ty){
   if (tileAt(tx, ty) !== T_WALK) return false;
   for (let d = 0; d < 4; d++){
@@ -1802,14 +1806,28 @@ function placeProps(){
     // the inner pavement outright, so a lamp two tiles from the kerb walks
     // out to it rather than sitting back in the middle of the footway. That
     // is what turns a scatter into a row.
+    /* A prop scattered out of a plaza or park centre can land on tarmac, and
+       the search below only ever looked for tiles matching the one it started
+       on - so a bench that began in the road stayed in the road, with nothing
+       to sit against and nothing to face, which is also why it pointed
+       whichever way its tiebreak hash fell. Fourteen hundred benches of three
+       thousand were out there, and three hundred blossoms with them.
+
+       Anything exiled from the carriageway searches wider and takes the first
+       pavement it can reach; if there is none it is dropped. Bridge railings
+       and the signals belong on a road and are left alone, as is anything
+       pinned. */
     const cand = [];
-    const maxRing = pin ? 0 : 2;
+    const exiled = !pin && !ROAD_OK[q.k] && onCarriageway(homeT);
+    const maxRing = pin ? 0 : (exiled ? 5 : 2);
     for (let dy = -maxRing; dy <= maxRing; dy++)
       for (let dx = -maxRing; dx <= maxRing; dx++){
         const ring = Math.max(Math.abs(dx), Math.abs(dy));
         const tx = hx + dx, ty = hy + dy;
         if (!inMap(tx, ty)) continue;
-        if (ring && tType[ty * MAP + tx] !== homeT) continue;   // stay on its surface
+        const tt = tType[ty * MAP + tx];
+        if (exiled){ if (onCarriageway(tt)) continue; }          // anywhere but there
+        else if (ring && tt !== homeT) continue;                 // stay on its surface
         cand.push([(wantKerb && !isKerb(tx, ty) ? 8 : 0) + ring, tx, ty]);
       }
     cand.sort((a, b) => a[0] - b[0]);
@@ -6208,14 +6226,13 @@ function onPress(code, key){
       if (sitting){ standUp(); break; }
       // on the deck: rolling or grinding it is an ollie, stopped at
       // something it is a hand. On foot a prompt wins, otherwise jump.
-      if (skating){
-        if (skV > 1 || grind || !lookTarget) ollie(); else tryInteract();
-        break;
-      }
+      // On the deck the controls belong to riding it: SPACE is always an
+      // ollie, never a conversation you did not mean to start.
+      if (skating){ ollie(); break; }
       if (lookTarget){ tryInteract(); break; }
       jump(); break;
     case 'KeyE':
-      if (sitting) break;
+      if (sitting || skating) break;         // step off the deck to touch anything
       tryInteract(); break;
     case 'KeyW': if (sitting) waitOnBench(); break;
     case 'Digit1': case 'Digit2': case 'Digit3': {
@@ -7055,6 +7072,17 @@ function openDialog(title, pages){
    An optional tree.entry() picks the opening node from game state, so one
    character greets you differently as their quest moves along. */
 function nodeText(n){ return typeof n.text === 'function' ? n.text() : n.text; }
+/* Resolved ONCE, when the node is entered, and cached on the mode. Several
+   nodes pick a random line - the shopkeepers' "anything worth knowing" is
+   one - while drawTree and pageDone both ask for the text every frame. An
+   unresolved one therefore re-rolled sixty times a second: the sentence
+   changed under the typewriter as it was being typed, and its length changed
+   with it, so the page could never count itself finished and the options
+   never arrived. Two different tree modes share this. */
+function treeText(m){
+  if (m._tn !== m.node){ m._tn = m.node; m._tt = nodeText(m.cur()); }
+  return m._tt;
+}
 function openTree(title, tree){
   payOwed(title);                             // settle before anything is said
   pushMode({
@@ -7064,7 +7092,7 @@ function openTree(title, tree){
     cur(){ return this.tree[this.node]; },
     visibleOpts(){ const n = this.cur(); return (n.opts || []).filter(o => !o.if || o.if()); },
     sig(opts){ return opts.map(o => o.t).join('\x1f'); },
-    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= nodeText(this.cur()).length; },
+    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= treeText(this).length; },
     go(id){
       if (!id || !this.tree[id]){ popMode(); sfx('ui_back', { vol: 0.5 }); return; }
       const same = id === this.node;
@@ -8889,7 +8917,7 @@ function openTheChoice(){
     cur(){ return this.tree[this.node]; },
     visibleOpts(){ const n = this.cur(); return (n.opts || []).filter(o => !o.if || o.if()); },
     sig(opts){ return opts.map(o => o.t).join('\x1f'); },
-    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= nodeText(this.cur()).length; },
+    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= treeText(this).length; },
     go(id){ if (!id || !this.tree[id]){ popMode(); return; } this.node = id; },
     onKey(code){
       const opts = this.pageDone() ? this.visibleOpts() : [];
@@ -17703,7 +17731,7 @@ function drawTree(m){
   const cols = R.cols, rows = R.rows;
   const w = Math.min(cols - 6, 74);
   const node = m.cur();
-  const lines = wrapText(nodeText(node), w - 6);
+  const lines = wrapText(treeText(m), w - 6);
   const done = m.pageDone();
   const opts = done ? m.visibleOpts() : [];
   if (m.cursor >= opts.length) m.cursor = Math.max(0, opts.length - 1);
@@ -17898,8 +17926,13 @@ function hudPass(){
     if (drug && drug.fx.ghost) chips.push('UNSEEN');
     if (jamT > 0) chips.push('JAM ' + Math.ceil(jamT));
     if (snifferT > 0) chips.push('SNIF ' + Math.ceil(snifferT));
-    if (invCount('saw') || invCount('camjack') || invCount('jammer')){
-      chips.push('EYES ' + flockEyes());     // what can see you, not what is near
+    {
+      // Shown while you carry anything that cares about cameras - and now
+      // also whenever one can actually see you, which is the moment the
+      // number is worth reading whether or not a tool is in your hands.
+      const eyes = flockEyes();
+      if (eyes > 0 || invCount('saw') || invCount('camjack') || invCount('jammer'))
+        chips.push('EYES ' + eyes);          // what can see you, not what is near
     }
     if (hideT > 0) chips.push('HIDING ' + hideT.toFixed(1));
     if (heli) chips.push(heli.lock > 0.5 ? 'SPOTLIT' : 'HELI');
@@ -18211,7 +18244,11 @@ function newWorld(seed){
   // underneath them. loadGame comes through here too, so this covers both.
   RUN = null;
   resetPlayer();
+  // Everything you were in the middle of belonged to the city being replaced.
+  // The deck was the one that survived it: rolling a new city while riding
+  // left skating true over a board that no longer existed, and no way off.
   sitting = null; vAnim = null;
+  skating = false; wasSkating = false; resetSkate();
   buildCity(seed);
   bakeKey = -1;                // force the palette to settle on the clock
   indexProps();
