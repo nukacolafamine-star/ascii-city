@@ -5342,6 +5342,7 @@ function gotoFloor(f){
                   bld: bldR.id, door: door0, floor: f };
   }
   inside = sF.inside;
+  ME.scene = sF;
   releaseScene(from);
   const room = sF.room;
   {
@@ -5400,6 +5401,7 @@ function enterInterior(door){
   }
   const room = s.room;
   inside = s.inside;
+  ME.scene = s;                                   // you are in this room now
   if (room.shop){                               // the map remembers trades you've seen
     if (!worldDelta.seen) worldDelta.seen = {};
     worldDelta.seen[door.b] = room.shop;
@@ -5420,6 +5422,7 @@ function exitInterior(){
   // props every time somebody opens a door.
   const left = SCENE;
   bindScene(CITY);
+  ME.scene = CITY;
   releaseScene(left);                               // torn down once it empties
   cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; cam.pitch = EXT.camPitch;
   if (wasSkating){ skating = true; wasSkating = false; toast('wheels down'); }
@@ -5902,6 +5905,123 @@ const cam = {
   x: 0, y: 0, z: 1.62, ang: 0, pitch: 0,
   bob: 0, riding: null, walkPhase: 0, rad: 0.32
 };
+/*========================= 13a0. WHO IS PLAYING ============================
+  There has only ever been one person in this city and the engine says so in
+  six hundred places. `cam` is not a viewpoint - it is the origin the world
+  is arranged around: the anchor the crowd is streamed to, the thing an
+  enforcer walks toward, the ear the audio is mixed for, the reason a room
+  gets built at all.
+
+  A peer is that same handful of facts about somebody else. The local player
+  is PLAYERS[0] and its cam IS the global cam - the same object, not a copy -
+  so every one of those six hundred reads goes on meaning "me" and needs no
+  edit at all. Everybody else is another entry alongside it, carrying where
+  they are, which scene they are standing in, what they are wearing and what
+  their body is doing. With netplay off the array has exactly one entry and
+  every loop over it is a branch.
+
+  Peers hold two positions: `cam` is where we DRAW them, `tx/ty/tang` is
+  where the last packet said they are. Drawing eases toward the wire instead
+  of snapping to it, because a body that teleports eight times a second
+  reads as broken even when the data is perfect.
+============================================================================*/
+let PLAYERS = [];
+const ME = { id: 0, local: true, name: 'YOU', cam,           // the one you drive
+             scene: null, worn: null, hp: 100, dead: false,
+             moving: 0, phase: 0, dx: 1, dy: 0, skate: 0, sit: null, hitT: 0 };
+PLAYERS.push(ME);
+
+function makePeer(id, o){
+  o = o || {};
+  return { id, local: false, name: o.name || ('PLAYER ' + id),
+           cam: { x: o.x || 0, y: o.y || 0, z: 1.62,
+                  ang: o.ang || 0, pitch: 0, rad: 0.32, riding: null },
+           scene: null, sceneId: o.sceneId || 'city',
+           worn: o.worn || [], skinC: o.skinC, shirtC: o.shirtC,
+           hp: o.hp === undefined ? 100 : o.hp, dead: false,
+           moving: 0, phase: 0, dx: 1, dy: 0, skate: 0, sit: null, hitT: 0,
+           tx: o.x || 0, ty: o.y || 0, tang: o.ang || 0, tz: 1.62,
+           lastT: 0 };
+}
+function playerById(id){
+  for (let i = 0; i < PLAYERS.length; i++) if (PLAYERS[i].id === id) return PLAYERS[i];
+  return null;
+}
+function addPeer(id, o){
+  let p = playerById(id);
+  if (p) return p;
+  p = makePeer(id, o);
+  p.scene = CITY;
+  PLAYERS.push(p);
+  return p;
+}
+function dropPeer(id){
+  for (let i = PLAYERS.length - 1; i > 0; i--)
+    if (PLAYERS[i].id === id){ releaseScene(PLAYERS[i].scene); PLAYERS.splice(i, 1); }
+}
+
+/* Everybody standing in the scene that is bound right now. The sprite pass
+   and the AI both want this and both run with a scene already bound. */
+const _ph = [];
+function playersHere(s){
+  const sc = s || SCENE;
+  _ph.length = 0;
+  for (let i = 0; i < PLAYERS.length; i++)
+    if (PLAYERS[i].scene === sc && !PLAYERS[i].dead) _ph.push(PLAYERS[i]);
+  return _ph;
+}
+/* The nearest person to a point - what everything that used to mean `cam`
+   means once there is more than one of us. Restricted to a scene, because a
+   guard on the fourth floor should not start walking toward the street. */
+function nearestPlayer(x, y, s){
+  const sc = s || SCENE;
+  let best = null, bd = Infinity;
+  for (let i = 0; i < PLAYERS.length; i++){
+    const p = PLAYERS[i];
+    if (p.scene !== sc || p.dead) continue;
+    const dx = p.cam.x - x, dy = p.cam.y - y, d = dx * dx + dy * dy;
+    if (d < bd){ bd = d; best = p; }
+  }
+  return best;
+}
+/* Distance to the closest person, or Infinity if the scene is empty of them.
+   Squared, because every caller is comparing it against a threshold. */
+function nearestPlayerD2(x, y, s){
+  const p = nearestPlayer(x, y, s);
+  if (!p) return Infinity;
+  const dx = p.cam.x - x, dy = p.cam.y - y;
+  return dx * dx + dy * dy;
+}
+/* Which scene a peer says it is in. Rooms are keyed by building and floor,
+   so a peer walking into a shop makes the room exist for us too - refcounted
+   exactly like our own trips through a door. */
+function peerSetScene(p, sceneId){
+  if (p.sceneId === sceneId && p.scene) return;
+  const old = p.scene;
+  p.sceneId = sceneId;
+  if (sceneId === 'city') p.scene = CITY;
+  else {
+    const m = /^b(\d+)f(\d+)$/.exec(sceneId);
+    const bld = m && buildings[+m[1]];
+    if (!bld){ p.scene = CITY; p.sceneId = 'city'; }
+    else {
+      const fresh = !SCENES.has(sceneId);
+      const s = acquireScene(bld, +m[2]);
+      if (fresh) withScene(s, () => {
+        const door = doors.find(d => d.b === bld.id) || null;
+        s.room = buildInterior(bld, door, +m[2], s.buf);
+        props = s.room.props; signs = [];
+        indexProps(); indexSpriteProps();
+        s.inside = { name: door ? door.name : 'INSIDE', district: bld.dist,
+                     exit: s.room.exit, stairs: s.room.stairs, shop: s.room.shop,
+                     bld: bld.id, door, floor: +m[2] };
+      });
+      p.scene = s;
+    }
+  }
+  if (old && old !== p.scene) releaseScene(old);
+}
+
 let worldTime = 0, paused = false, showHelp = true, showMap = true;
 
 let propGrid = makeGrid();          // per-scene: rebound by bindScene
@@ -17545,6 +17665,9 @@ function newWorld(seed){
   // cityWalk() and the save's outdoor position keep reading what they always
   // did while somebody is in a room.
   CITY = makeCityScene(); SCENE = CITY; EXT = CITY;
+  // everybody is put back on the street when the city is rebuilt under them
+  ME.scene = CITY;
+  for (let i = PLAYERS.length - 1; i > 0; i--){ PLAYERS[i].scene = CITY; PLAYERS[i].sceneId = 'city'; }
   buildBackground();
 }
 
