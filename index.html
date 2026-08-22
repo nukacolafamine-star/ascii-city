@@ -9810,7 +9810,8 @@ function playerBodyVol(worn, P){
   const R = ROLE;
   const legL = P.legL || 0, legR = P.legR || 0;
   const armL = P.armL || 0, armR = P.armR || 0;
-  const armInL = P.armInL || 0, armInR = P.armInR || 0;
+  const reachL = P.reachL || 0, reachR = P.reachR || 0;
+  const dropL = P.dropL || 0, dropR = P.dropR || 0;
   const lean = P.lean || 0, crouch = P.crouch || 0, raise = P.armRaise || 0;
   // the thigh pivots at the hip, so it trails the foot rather than matching it
   const thigh = P.thigh === undefined ? 0.5 : P.thigh;
@@ -9859,15 +9860,28 @@ function playerBodyVol(worn, P){
     }
     // --- the trunk ----------------------------------------------------
     slab(hip, tT, 4.2, 2.4, shirt || outer ? R.B : R.S, 0, lean);
-    slab(hip + 0.06 + raise, tT - 0.04 + raise, 1.2, 1.9, R.S, -5.2 + armInL, armL);
-    slab(hip + 0.06 + raise, tT - 0.04 + raise, 1.2, 1.9, R.S,  5.2 - armInR, armR);
+    /* An arm that HANGS is a tall post at the shoulder. An arm that HOLDS
+       something is a short one reaching forward from it. Those are two
+       shapes, not one shape nudged: the chest is wider than the shoulders
+       are apart, so sliding a hanging arm inward simply buries it inside the
+       torso - which is exactly why both arms disappeared the moment anybody
+       drew a weapon. Reaching arms get built forward instead. */
+    const shoulder = tT - 0.04 + raise, armLo = hip + 0.06 + raise;
+    const arm = (xoff, swing, reach, drop, role, hw) => {
+      if (reach > 0){
+        const top = shoulder - (drop || 0);
+        slab(top - 0.28, top, hw, reach * 0.5 + 0.9, role, xoff, reach * 0.5 + 0.7);
+      } else slab(armLo, shoulder, hw, 1.9, role, xoff, swing);
+    };
+    arm(-5.2, armL, reachL, dropL, R.S, 1.2);
+    arm( 5.2, armR, reachR, dropR, R.S, 1.2);
     slab(tT, nT, 2.0, 2.0, R.S, 0, lean);                    // neck
     slab(nT, hT, 3.0, 2.6, R.S, 0, lean);                    // head
     // --- what you put on ----------------------------------------------
     if (outer){                                              // the coat wins
       slab(hip - 0.02, tT + 0.04, 4.6, 2.7, R.K, 0, lean);
-      slab(hip + 0.04 + raise, tT - 0.02 + raise, 1.5, 2.1, R.K, -5.3 + armInL, armL);
-      slab(hip + 0.04 + raise, tT - 0.02 + raise, 1.5, 2.1, R.K,  5.3 - armInR, armR);
+      arm(-5.3, armL, reachL, dropL, R.K, 1.5);              // sleeves
+      arm( 5.3, armR, reachR, dropR, R.K, 1.5);
       if (outer === 'puffer'){                               // horizontal baffles
         for (let h = hip + 0.04; h < tT + 0.04; h += 0.16)
           slab(h, h + 0.05, 4.8, 2.8, R.W, 0, lean);
@@ -9888,8 +9902,18 @@ function playerBodyVol(worn, P){
     }
     if (has('shades')) slab(nT + 0.10, nT + 0.16, 3.1, 2.8, R.X, 0, lean);
     if (has('chain'))  slab(tT - 0.08, tT + 0.02, 2.6, 2.5, R.X, 0, lean);
-    if (has('ring'))   slab(hip + 0.14 + raise, hip + 0.20 + raise, 1.4, 2.0, R.X,  5.4 - armInR, armR);
-    if (has('watch'))  slab(hip + 0.20 + raise, hip + 0.26 + raise, 1.4, 2.0, R.X, -5.4 + armInL, armL);
+    // the hand end of whichever arm it is on, reaching or hanging
+    const handAt = (xoff, swing, reach, drop, h0, h1, role) => {
+      if (reach > 0){
+        const top = shoulder - (drop || 0);
+        slab(top - 0.24, top - 0.10, 1.3, 0.8, role, xoff, reach + 1.0);
+      } else slab(h0, h1, 1.4, 2.0, role, xoff, swing);
+    };
+    if (has('ring'))  handAt( 5.4, armR, reachR, dropR,
+                              hip + 0.14 + raise, hip + 0.20 + raise, R.X);
+    if (has('watch')) handAt(-5.4, armL, reachL, dropL,
+                              hip + 0.20 + raise, hip + 0.26 + raise, R.X);
+
     return v;
   };
 }
@@ -9901,6 +9925,134 @@ function playerBodyVol(worn, P){
   caches its own rasterisation on the art object, and a body's depth scale
   never changes, so each combination is built exactly once.
 --------------------------------------------------------------------------*/
+/*----------------------- what is in the hands -----------------------------
+  A weapon cannot live inside the body volume. That volume is 0.55 metres
+  deep across twelve voxels and a rifle is most of a metre - four times the
+  box meant to contain it. So a weapon is its own solid, set at the hands and
+  pointed the way the body faces, exactly as every prop in the city is drawn.
+
+  reach is how far each arm goes forward. A shouldered weapon puts the
+  leading hand well out under the barrel and keeps the trigger hand back,
+  which is the silhouette that says "rifle" from across a street; a pistol
+  puts both hands together out front; a blade goes up by the shoulder with
+  the hands high and close.
+
+  fwd is measured from the body's centre, and it wants to land on the FRONT
+  FACE of the body volume - about 0.27m - because that is as far forward as
+  a hand can possibly be drawn. The volume is only 0.55m deep, so an arm
+  cannot reach further than its own box no matter what reach says; putting
+  the weapon out at arm's length in metres instead left it floating in front
+  of the body with a gap where the forearm should have been.
+
+  th is deliberately fatter than a real barrel. A rifle 0.08m across, seen at
+  ten metres through a screen of 182 columns, is thinner than one column - it
+  renders as a few stray cells with gaps between them. Thickness here buys
+  legibility, not realism, which is the same bargain the whole game makes.
+--------------------------------------------------------------------------*/
+const WEAPON_HOLD = {
+  fist:     { reachL: 1.6, reachR: 1.6, armRaise: 0.10 },
+  knife:    { reachL: 1.2, reachR: 2.4, armRaise: 0.04,
+              gun: { len: 0.22, th: 0.09, col: 'X', fwd: 0.18, z: 1.16 } },
+  pipe:     { reachL: 1.0, reachR: 2.6, armRaise: 0.06,
+              gun: { len: 0.55, th: 0.12, col: 'T', fwd: 0.20, z: 1.14 } },
+  bat:      { reachL: 2.0, reachR: 2.2, armRaise: 0.16,
+              gun: { len: 0.80, th: 0.15, col: 'W', z: 1.16, up: 1 } },
+  katana:   { reachL: 2.2, reachR: 2.4, armRaise: 0.18,
+              gun: { len: 0.95, th: 0.09, col: 'W', z: 1.20, up: 1 } },
+  maul:     { reachL: 2.0, reachR: 2.4, armRaise: 0.16,
+              gun: { len: 0.85, th: 0.18, col: 'T', z: 1.14, up: 1 } },
+  holdout:  { reachL: 1.4, reachR: 2.8, armRaise: 0.12,
+              gun: { len: 0.16, th: 0.10, col: 'T', fwd: 0.20, z: 1.26 } },
+  pistol:   { reachL: 2.6, reachR: 3.0, armRaise: 0.12,
+              gun: { len: 0.26, th: 0.12, col: 'T', fwd: 0.20, z: 1.26 } },
+  revolver: { reachL: 2.6, reachR: 3.2, armRaise: 0.12,
+              gun: { len: 0.32, th: 0.14, col: 'T', fwd: 0.20, z: 1.26 } },
+  smg:      { reachL: 3.2, reachR: 2.2, armRaise: 0.10,
+              gun: { len: 0.46, th: 0.15, col: 'T', fwd: 0.20, z: 1.22 } },
+  nailer:   { reachL: 3.0, reachR: 2.2, armRaise: 0.10,
+              gun: { len: 0.42, th: 0.16, col: 'T', fwd: 0.20, z: 1.22 } },
+  arcgun:   { reachL: 3.2, reachR: 2.2, armRaise: 0.10,
+              gun: { len: 0.50, th: 0.16, col: 'T', fwd: 0.20, z: 1.22, tip: 'X' } },
+  shotgun:  { reachL: 3.8, reachR: 2.0, armRaise: 0.08,
+              gun: { len: 0.80, th: 0.15, col: 'T', fwd: 0.22, z: 1.20 } },
+  rifle:    { reachL: 4.0, reachR: 2.0, armRaise: 0.08,
+              gun: { len: 1.00, th: 0.14, col: 'T', fwd: 0.22, z: 1.20 } },
+  railgun:  { reachL: 4.0, reachR: 2.0, armRaise: 0.08,
+              gun: { len: 1.15, th: 0.16, col: 'T', fwd: 0.22, z: 1.18, tip: 'X' } }
+};
+/* A swing is the same hold with the leading arm thrown out and the body
+   turned into it. Guns recoil rather than swing, so they only lurch. */
+function weaponSwing(H){
+  const S = Object.assign({}, H);
+  const melee = H.gun && (H.gun.up || H.gun.col === 'X' || (H.gun.len || 0) <= 0.6);
+  S.reachL = Math.min(4.2, (H.reachL || 1.6) + (melee ? 2.2 : 0.5));
+  S.reachR = Math.max(0, (H.reachR || 1.6) - (melee ? 0.8 : 0.3));
+  S.lean = melee ? 1.1 : 0.5;
+  if (H.gun) S.gun = Object.assign({}, H.gun, { up: 0, fwd: (H.gun.fwd || 0.30) + 0.16 });
+  return S;
+}
+const _swingCache = new Map();
+function weaponHold(id, swinging){
+  const H = WEAPON_HOLD[id] || WEAPON_HOLD.fist;
+  if (!swinging) return H;
+  let S = _swingCache.get(id);
+  if (!S){ S = weaponSwing(H); _swingCache.set(id, S); }
+  return S;
+}
+/* One bar per colour, stretched to whatever length the weapon needs.
+
+   It has to be an AUTHORED volume rather than an inflated silhouette. The
+   inflation path fills depth where |ny| <= 1, and ny is scaled by the
+   silhouette's own width - so it always rounds a shape out to roughly a
+   circular cross-section no matter what depthScale says. Asking it for a
+   barrel produced a short stub adrift in the middle of a long empty box,
+   which on screen was a few cells of gun hanging in the air well clear of
+   the hand holding it. A vol() fills the box it is given. */
+const _tubeArt = {}, _tubeSl = {};
+function tubeArt(roleName){
+  if (!_tubeArt[roleName]){
+    const role = ROLE[roleName] === undefined ? ROLE.T : ROLE[roleName];
+    const a = { w: 3, h: 3, data: new Uint8Array(9) };
+    a.data.fill(role);
+    a.vol = function(aw, vd, ah){
+      const v = new Uint8Array(aw * vd * ah);
+      v.fill(role);
+      return v;
+    };
+    _tubeArt[roleName] = a;
+  }
+  return _tubeArt[roleName];
+}
+function tubeSlots(roleName){
+  if (!_tubeSl[roleName]){
+    const col = roleName === 'W' ? C.nWhite : roleName === 'X' ? C.tlAmb : C.tire;
+    const o = {}; o[roleName] = [col, roleName === 'T' ? 0.85 : 0.95];
+    _tubeSl[roleName] = slots(o);
+  }
+  return _tubeSl[roleName];
+}
+function drawHeldWeapon(x, y, yaw, H){
+  const G = H && H.gun;
+  if (!G) return;
+  const art = tubeArt(G.col), sl = tubeSlots(G.col);
+  const fx = Math.cos(yaw), fy = Math.sin(yaw);
+  if (G.up){
+    // carried upright, out past the shoulder rather than through the head
+    const sx = Math.cos(yaw + Math.PI * 0.5), sy = Math.sin(yaw + Math.PI * 0.5);
+    drawModel(x + fx * 0.10 + sx * 0.26, y + fy * 0.10 + sy * 0.26, G.z,
+              G.th, G.len, art, sl.base, sl.dens, 0, yaw + Math.PI / 2, 1, 1);
+    return;
+  }
+  const d = (G.fwd || 0.4) + G.len * 0.5;
+  drawModel(x + fx * d, y + fy * d, G.z, G.th, G.th, art, sl.base, sl.dens, 0,
+            yaw + Math.PI / 2, G.len / G.th, 1);
+  if (G.tip){                                     // a muzzle that catches light
+    const t = (G.fwd || 0.4) + G.len;
+    const ta = tubeArt(G.tip), ts = tubeSlots(G.tip);
+    drawModel(x + fx * t, y + fy * t, G.z, G.th * 1.2, G.th * 1.2, ta,
+              ts.base, ts.dens, 0, yaw + Math.PI / 2, 1.2, 1);
+  }
+}
 const BODY_CACHE = new Map();
 const BODY_CACHE_MAX = 192;
 function bodyWorn(p){ return (p && p.local === false ? p.worn : player.worn) || []; }
@@ -9919,29 +10071,47 @@ function bodyArtFor(p, poseName){
                     B: [shir, 0.86], K: [coat, 0.9],
                     X: [C.tlAmb, 1.0], W: [C.nWhite, 0.9] }),
         art: { w: BODY_GW, h: BODY_GH, data: new Uint8Array(BODY_GW * BODY_GH),
-               vol: playerBodyVol(worn, BODY_POSE[poseName] || BODY_POSE.idle) } };
+               vol: playerBodyVol(worn, bodyPose(poseName)) } };
   if (BODY_CACHE.size >= BODY_CACHE_MAX)          // oldest out; Map is insertion-ordered
     BODY_CACHE.delete(BODY_CACHE.keys().next().value);
   BODY_CACHE.set(key, e);
   return e;
 }
-/* What a body is doing, read off the same flags the first-person view uses. */
+/* Which weapon this body is holding. Ours comes from the inventory; theirs
+   comes off the wire, so the camjack still works with netplay off. */
+function bodyWeaponOf(p){
+  if (!p || p.local !== false) return typeof weaponId === 'function' ? weaponId() : 'fist';
+  return p.weapon || 'fist';
+}
+/* What a body is doing, read off the same flags the first-person view uses.
+   A hold and a swing carry the weapon in the key, because the arms are a
+   different shape for a rifle than for a knife. */
 function bodyPoseOf(p){
   if (p.sit) return 'sit';
   if (p.hitT > 0) return 'hurt';
   if (p.skate) return (p.pushT > 0 || ((p.phase | 0) & 1)) ? 'skate1' : 'skate0';
-  if (p.punchT > 0) return 'punch';
-  if (p.aiming) return 'aim';
+  const w = bodyWeaponOf(p);
+  if (p.punchT > 0) return 'sw:' + w;
+  if (p.aiming && w !== 'fist') return 'wp:' + w;
   if (p.moving) return (p.running ? 'run' : 'walk') + ((p.phase | 0) & 1);
   return 'idle';
+}
+/* A pose key resolves either to a plain stance or to a weapon hold. */
+function bodyPose(key){
+  const c = key.indexOf(':');
+  if (c < 0) return BODY_POSE[key] || BODY_POSE.idle;
+  return weaponHold(key.slice(c + 1), key.slice(0, c) === 'sw');
 }
 /* Draw anybody's body where they are standing - the camjack looking back at
    you, and everyone else in the room. */
 function drawBodyOf(p, x, y, yaw){
-  const e = bodyArtFor(p, bodyPoseOf(p));
+  const key = bodyPoseOf(p);
+  const e = bodyArtFor(p, key);
   drawModel(x, y, 0, BODY_W, BODY_H, e.art,
             p.hitT > 0 ? HIT_SB : e.sl.base, e.sl.dens, 0, yaw + Math.PI / 2,
             BODY_DEP / BODY_W, 0);
+  const c = key.indexOf(':');
+  if (c >= 0) drawHeldWeapon(x, y, yaw, weaponHold(key.slice(c + 1), key.slice(0, c) === 'sw'));
 }
 /* the camjack's view of you, left standing where you walked away from */
 function drawPlayerBody(){
@@ -17930,6 +18100,7 @@ function netSampleMe(dt){
   ME.aiming  = !!(typeof weaponId === 'function' && weaponId() &&
                   document.pointerLockElement === view);
   ME.hp = player.hp;
+  ME.weapon = typeof weaponId === 'function' ? weaponId() : 'fist';
   if (len > 1e-4){ ME.dx = dx / len; ME.dy = dy / len; }
   _nmx = cam.x; _nmy = cam.y;
 }
@@ -18004,6 +18175,7 @@ function netOnMsg(m){
       p.tx = m.x; p.ty = m.y; p.tang = m.a;
       p.hp = m.hp === undefined ? p.hp : m.hp;
       p.phase = m.ph || 0;
+      p.weapon = m.w || 'fist';
       netUnflag(p, m.fl | 0);
       if (m.s !== p.sceneId) peerSetScene(p, m.s);
       // first word from somebody: put them there rather than easing in from
@@ -18085,6 +18257,7 @@ function netTick(dt){
   netSend({ t: 'me', x: +cam.x.toFixed(2), y: +cam.y.toFixed(2),
             a: +cam.ang.toFixed(3), s: netSceneId(), fl: netFlags(ME),
             ph: +(ME.phase || 0).toFixed(1), hp: player.hp,
+            w: ME.weapon,
             name: NET.name, worn: player.worn, skinC: player.skinC,
             shirtC: player.shirtC });
 }
