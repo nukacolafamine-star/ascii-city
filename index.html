@@ -4464,6 +4464,117 @@ function updateActor(a, dt){
   }
 }
 
+/*========================= 12c0. SCENES ====================================
+  Collision, pathing, the crowd, the AI and every one of the renderer's
+  passes read the same handful of globals: tType, tH, tB, walkG, props,
+  signs, buildings, and the two spatial indexes built over them. An interior
+  used to be a straight swap of those globals for a second set - INTB,
+  allocated once and reused for every room you ever walked into. That works
+  perfectly for one player and cannot work at all for two, because there is
+  only one INTB, so there is only ever one room.
+
+  A scene is that set of globals lifted into an object. Exactly one is BOUND
+  at a time and the globals still hold it, so nothing downstream ever learns
+  a thing - the DDA, the sprite pass, propBlocked and astar all keep reading
+  the same names they always did. But there can now be as many scenes as
+  there are places people are standing, and binding is a dozen assignments,
+  which is cheap enough to do once per player per frame. The city is one
+  scene; every room with somebody in it is another.
+============================================================================*/
+let SCENE = null, CITY = null;
+const SCENES = new Map();                    // room key -> scene, while occupied
+function sceneKey(bldId, floor){ return 'b' + bldId + 'f' + floor; }
+
+/* Store writes the globals back into the outgoing scene BEFORE loading the
+   next one, because a great deal of code REASSIGNS these rather than
+   mutating them - placeProps replaces props wholesale, indexSpriteProps
+   rebuilds spriteGrid, sealPass splices and re-indexes. A scene that only
+   ever read its fields in would lose every one of those the moment anybody
+   walked through a door. */
+function sceneStore(s){
+  if (!s) return;
+  s.tType = tType; s.tH = tH; s.tB = tB; s.walkG = walkG;
+  s.props = props; s.signs = signs; s.buildings = buildings;
+  s.propGrid = propGrid; s.spriteGrid = spriteGrid; s.psgW = psgW;
+  s.inside = inside;
+}
+function sceneLoad(s){
+  tType = s.tType; tH = s.tH; tB = s.tB; walkG = s.walkG;
+  props = s.props; signs = s.signs; buildings = s.buildings;
+  propGrid = s.propGrid; spriteGrid = s.spriteGrid; psgW = s.psgW;
+  inside = s.inside;
+}
+function bindScene(s){
+  if (!s || SCENE === s) return s;
+  sceneStore(SCENE);
+  sceneLoad(s);
+  SCENE = s;
+  return s;
+}
+/* Run something with a scene bound and put back whatever was bound before.
+   The renderer draws one player at a time and each may be somewhere else. */
+function withScene(s, fn){
+  const prev = SCENE;
+  bindScene(s);
+  try { return fn(); } finally { bindScene(prev); }
+}
+
+/* The street. Wraps whatever newWorld has just built into the globals. */
+function makeCityScene(){
+  const s = { id: 'city', tType, tH, tB, walkG, props, signs, buildings,
+              propGrid, spriteGrid, psgW, inside: null, refs: 1 };
+  return s;
+}
+
+/* A room's tile arrays are eight megabytes a set at MAP=1000. A room is
+   small and is stamped near the array origin, but it is indexed y*MAP+x like
+   everything else, so it needs the full stride regardless. Pool them: at
+   most one set per person indoors, handed back the moment a room empties. */
+const intbPool = [];
+function takeIntb(){
+  return intbPool.pop() ||
+    { tType: new Uint8Array(MAP * MAP), tH: new Float32Array(MAP * MAP),
+      tB: new Int16Array(MAP * MAP), walkG: new Uint8Array(MAP * MAP) };
+}
+function freeIntb(b){ if (b && intbPool.length < 8) intbPool.push(b); }
+
+/* Rooms append their wall records to buildings, and used to do it to the
+   city's own array - then truncate back to EXT.bLen on the way out, which
+   only holds if exactly one room is ever open. Each scene gets its own
+   array instead: the city's entries by reference, its own rooms after. */
+function makeInteriorScene(bld, floor){
+  const buf = takeIntb();
+  const base = CITY ? CITY.buildings : buildings;
+  return { id: sceneKey(bld.id, floor), buf, bld: bld.id, floor,
+           tType: buf.tType, tH: buf.tH, tB: buf.tB, walkG: buf.walkG,
+           props: [], signs: [], buildings: base.slice(),
+           propGrid: makeGrid(), spriteGrid: [], psgW: 1,
+           inside: null, baseLen: base.length, room: null, refs: 0 };
+}
+/* Two people who walk into the same shop are in the same room, and see each
+   other in it. The scene is built once, on the first one through the door,
+   and torn down when the last one leaves. */
+function acquireScene(bld, floor){
+  const k = sceneKey(bld.id, floor);
+  let s = SCENES.get(k);
+  if (!s){ s = makeInteriorScene(bld, floor); SCENES.set(k, s); }
+  s.refs++;
+  return s;
+}
+function releaseScene(s){
+  if (!s || s === CITY) return;
+  if (--s.refs > 0) return;                  // somebody else is still in there
+  SCENES.delete(s.id);
+  freeIntb(s.buf);
+  s.buf = null; s.tType = s.tH = s.tB = s.walkG = null;
+  s.props = null; s.buildings = null; s.propGrid = null; s.spriteGrid = null;
+}
+/* A rebuilt city invalidates every room hanging off it. */
+function dropAllScenes(){
+  for (const s of SCENES.values()){ freeIntb(s.buf); s.buf = null; }
+  SCENES.clear();
+}
+
 /*======================== 12c. DOORS + INTERIORS ===========================
   Buildings have insides. The trick is that the renderer never finds out: the
   tile arrays (tType / tH / tB / walkG) are swapped by reference for a second
@@ -4614,11 +4725,11 @@ const DGN_LOCKS = ['guard', 'grate', 'magseal', 'camlock'];
 function dgnLock(b, floor){
   return DGN_LOCKS[(hash3(b.seed, floor, 73) * DGN_LOCKS.length) | 0];
 }
-function buildInterior(bld, door, floor){
+function buildInterior(bld, door, floor, S){
   floor = floor || 1;
-  if (!INTB) INTB = { tType: new Uint8Array(MAP * MAP), tH: new Float32Array(MAP * MAP),
-                      tB: new Int16Array(MAP * MAP), walkG: new Uint8Array(MAP * MAP) };
-  const S = INTB;
+  // The scene hands in its own tile buffer. INTB stays as the fallback for
+  // any caller that has not got one of its own.
+  if (!S){ if (!INTB) INTB = takeIntb(); S = INTB; }
   S.tType.fill(0); S.tH.fill(0); S.tB.fill(-1); S.walkG.fill(0);
   const keep = rngState;
   srand((((bld.seed ^ 0x51ab) + floor * 2654435761) >>> 0) || 1);
@@ -5218,11 +5329,21 @@ function gotoFloor(f){
   const stop = dgnBlocked(bld2, inside.floor, f);
   if (stop){ toast(stop); sfx('ui_back', { vol: 0.5, rate: 0.6 }); return; }
   for (let i = actors.length - 1; i >= 0; i--) if (actors[i].interior) actors.splice(i, 1);
-  buildings.length = EXT.bLen;
-  const room = buildInterior(buildings[inside.bld], inside.door, f);
-  props = room.props; signs = [];
-  indexProps(); indexSpriteProps();
-  inside.floor = f; inside.exit = room.exit; inside.stairs = room.stairs;
+  // A floor is a scene of its own: leave this one, take that one.
+  const bldR = buildings[inside.bld], door0 = inside.door, nm = inside.name;
+  const from = SCENE, freshF = !SCENES.has(sceneKey(bldR.id, f));
+  const sF = bindScene(acquireScene(bldR, f));
+  if (freshF){
+    sF.room = buildInterior(bldR, door0, f, sF.buf);
+    props = sF.room.props; signs = [];
+    indexProps(); indexSpriteProps();
+    sF.inside = { name: nm, district: bldR.dist, exit: sF.room.exit,
+                  stairs: sF.room.stairs, shop: sF.room.shop,
+                  bld: bldR.id, door: door0, floor: f };
+  }
+  inside = sF.inside;
+  releaseScene(from);
+  const room = sF.room;
   {
     const flsT = bldFloors(buildings[inside.bld]);
     if (f === flsT[flsT.length - 1]) mqDungeonTop();
@@ -5263,15 +5384,22 @@ function enterInterior(door){
     }
   }
   const bld = buildings[door.b];
-  EXT = { tType, tH, tB, walkG, props, signs,
-          camX: cam.x, camY: cam.y, camAng: cam.ang, camPitch: cam.pitch,
-          bLen: buildings.length };
-  const room = buildInterior(bld, door, 1);
-  tType = INTB.tType; tH = INTB.tH; tB = INTB.tB; walkG = INTB.walkG;
-  props = room.props; signs = [];
-  indexProps(); indexSpriteProps();
-  inside = { name: door.name, district: bld.dist, exit: room.exit,
-             stairs: room.stairs, shop: room.shop, bld: door.b, door, floor: 1 };
+  // where on the street you were standing, to be put back on the way out
+  EXT.camX = cam.x; EXT.camY = cam.y; EXT.camAng = cam.ang; EXT.camPitch = cam.pitch;
+  // The first one through the door builds the room; anybody after that walks
+  // into the room that is already there, which is how two people end up in
+  // the same shop rather than in two private copies of it.
+  const fresh = !SCENES.has(sceneKey(bld.id, 1));
+  const s = bindScene(acquireScene(bld, 1));
+  if (fresh){
+    s.room = buildInterior(bld, door, 1, s.buf);
+    props = s.room.props; signs = [];
+    indexProps(); indexSpriteProps();
+    s.inside = { name: door.name, district: bld.dist, exit: s.room.exit,
+                 stairs: s.room.stairs, shop: s.room.shop, bld: door.b, door, floor: 1 };
+  }
+  const room = s.room;
+  inside = s.inside;
   if (room.shop){                               // the map remembers trades you've seen
     if (!worldDelta.seen) worldDelta.seen = {};
     worldDelta.seen[door.b] = room.shop;
@@ -5287,10 +5415,12 @@ function enterInterior(door){
 }
 function exitInterior(){
   for (let i = actors.length - 1; i >= 0; i--) if (actors[i].interior) actors.splice(i, 1);
-  buildings.length = EXT.bLen;                      // drop the room's wall records
-  tType = EXT.tType; tH = EXT.tH; tB = EXT.tB; walkG = EXT.walkG;
-  props = EXT.props; signs = EXT.signs;
-  indexProps(); indexSpriteProps();
+  // The room keeps its own arrays and its own indexes, so stepping back out
+  // is a rebind rather than a rebuild - no re-indexing eighteen thousand
+  // props every time somebody opens a door.
+  const left = SCENE;
+  bindScene(CITY);
+  releaseScene(left);                               // torn down once it empties
   cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; cam.pitch = EXT.camPitch;
   if (wasSkating){ skating = true; wasSkating = false; toast('wheels down'); }
   inside = null; viewD = 30; fade = 1;              // the street eases back out
@@ -5774,7 +5904,7 @@ const cam = {
 };
 let worldTime = 0, paused = false, showHelp = true, showMap = true;
 
-const propGrid = makeGrid();
+let propGrid = makeGrid();          // per-scene: rebound by bindScene
 function indexProps(){
   gridClear(propGrid);
   for (const p of props) gridAdd(propGrid, p.x, p.y, p);
@@ -17378,11 +17508,11 @@ function placePlayer(){
   cam.riding = null; cam.z = 1.62; cam.pitch = 0;
 }
 function newWorld(seed){
-  if (inside){          // never rebuild the city into the room's arrays
-    tType = EXT.tType; tH = EXT.tH; tB = EXT.tB; walkG = EXT.walkG;
-    props = EXT.props; signs = EXT.signs;
-    inside = null;
-  }
+  // never rebuild the city into a room's arrays, and a rebuilt city
+  // invalidates every room hanging off it
+  if (SCENE && SCENE !== CITY) bindScene(CITY);
+  dropAllScenes();
+  inside = null;
   worldSeed = seed;
   worldDelta = { taken: {} };
   // A race is state held outside the save file, pinned to a route through a
@@ -17411,6 +17541,10 @@ function newWorld(seed){
   worldTime = 0;
   gridClear(carGrid); for (const c of cars) gridAdd(carGrid, c.x, c.y, c);
   gridClear(pedGrid); for (const p of peds) gridAdd(pedGrid, p.x, p.y, p);
+  // wrap what was just built as the street scene. EXT is that same object, so
+  // cityWalk() and the save's outdoor position keep reading what they always
+  // did while somebody is in a room.
+  CITY = makeCityScene(); SCENE = CITY; EXT = CITY;
   buildBackground();
 }
 
