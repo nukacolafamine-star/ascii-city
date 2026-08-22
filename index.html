@@ -1423,14 +1423,137 @@ function buildCity(seed){
   placeProps();
   stalls = props.filter(q => q.k === PK_STALL);   // the pass thins them; re-read
   placeWeaponCaches();
+  stampFlotsam();
+  // Solidity and reachability are settled BEFORE anything picks a door,
+  // because every one of those picks - your homes, the hideout, the fixer's
+  // office - wants to be somewhere you can actually walk to, and the flag
+  // that says so does not exist until this has run.
+  bakeSolidProps();
+  openSealedDoors();
   initHomes();
   initDealership();
   initMainQuest();
   initWorks();
   clearWaypoint(true);
   myCar = null;                                 // respawned lazily from the save
-  stampFlotsam();
+  // anything the inits put down gets the same treatment
   bakeSolidProps();
+  openSealedDoors();
+}
+/*======================= nothing may seal off a door =======================
+  A door is chosen for its walkability, and THEN the props go down. Most of
+  the time that is fine, because most doors face a street. But an alley with
+  one way out plus a market stall across the mouth of it is a room nobody
+  can reach - and the game will still happily pick that room as the nearest
+  TOOLS counter for a quest marker, whereupon the red line cannot route to
+  it and simply gives up.
+
+  It is not a marker bug and it is not a stall bug. It is that placement
+  never checked whether it had walled anything off. So: after everything is
+  down, find the doorsteps that no longer connect to the city, and take away
+  whatever is standing in the way. The prop loses; the door is the reason
+  the building exists.
+============================================================================*/
+function walkComponents(){
+  // label every walkable cell with its component, and report the biggest
+  const lab = new Int32Array(MAP * MAP).fill(-1);
+  const stack = new Int32Array(MAP * MAP);
+  let best = -1, bestN = 0, next = 0;
+  for (let i = 0; i < MAP * MAP; i++){
+    if (!walkG[i] || lab[i] >= 0) continue;
+    const id = next++;
+    let sp = 0, n = 0;
+    stack[sp++] = i; lab[i] = id;
+    while (sp > 0){
+      const c = stack[--sp]; n++;
+      const x = c % MAP, y = (c / MAP) | 0;
+      if (x > 0        && walkG[c - 1]   && lab[c - 1]   < 0){ lab[c - 1]   = id; stack[sp++] = c - 1; }
+      if (x < MAP - 1  && walkG[c + 1]   && lab[c + 1]   < 0){ lab[c + 1]   = id; stack[sp++] = c + 1; }
+      if (y > 0        && walkG[c - MAP] && lab[c - MAP] < 0){ lab[c - MAP] = id; stack[sp++] = c - MAP; }
+      if (y < MAP - 1  && walkG[c + MAP] && lab[c + MAP] < 0){ lab[c + MAP] = id; stack[sp++] = c + MAP; }
+    }
+    if (n > bestN){ bestN = n; best = id; }
+  }
+  return { lab, main: best, size: bestN };
+}
+/* the tile you actually stand on to use a door - one step out from the leaf */
+function doorStep(d){
+  return [clamp(Math.round(d.bx + d.nx), 0, MAP - 1),
+          clamp(Math.round(d.by + d.ny), 0, MAP - 1)];
+}
+/* which props are standing on a given cell */
+function propsOn(x, y, out){
+  for (const q of gridQuery(propGrid, x + 0.5, y + 0.5, 6, _q1)){
+    if (q.k === PK_ITEM || q.k === PK_CROP || q.k === PK_STAIR || q.k === PK_RAMP) continue;
+    const yaw = q.yaw === undefined ? propFacing(q) : q.yaw;
+    const fb = footBox(q.k, yaw);
+    if (Math.abs(q.x - (x + 0.5)) <= fb[0] * 0.5 + 0.5 &&
+        Math.abs(q.y - (y + 0.5)) <= fb[1] * 0.5 + 0.5) out.add(q);
+  }
+}
+function openSealedDoors(){
+  // a terrain-only reference, so we can tell "a wall is here" from
+  // "somebody parked a market stall here"
+  buildWalkGrid();
+  const terr = Uint8Array.from(walkG);
+  bakeSolidProps();
+  // Opening one pocket can reveal that it only ever led into another one, so
+  // this runs until it stops finding anything. Three is plenty - it has
+  // never needed a second on most maps.
+  for (let pass = 0; pass < 3; pass++) if (!sealPass(terr)) break;
+  // Whatever is still cut off is the terrain's doing - a walled private lot,
+  // not a misplaced bin - and is flagged so nothing sends you there.
+  const comp0 = walkComponents();
+  let left = 0;
+  for (const d of doors){
+    const [sx, sy] = doorStep(d);
+    const i = sy * MAP + sx;
+    d.sealed = (walkG[i] && comp0.lab[i] === comp0.main) ? 0 : 1;
+    if (d.sealed) left++;
+  }
+  return left;
+}
+/* one sweep: find every doorstep cut off from the city, tear down whatever
+   props form the wall around it, and rebuild. Returns how many it removed. */
+function sealPass(terr){
+  let comp = walkComponents();
+  const doomed = new Set();
+  const seen = new Uint8Array(MAP * MAP);
+  for (const d of doors){
+    const [sx, sy] = doorStep(d);
+    const i0 = sy * MAP + sx;
+    if (walkG[i0] && comp.lab[i0] === comp.main) continue;
+    /* Flood the pocket this doorstep is trapped in, then look at its EDGE.
+       Removing props near the door was the obvious thing and the wrong one:
+       the stall that seals an alley stands at the MOUTH of it, which can be
+       the length of the alley away from the door it strands. What matters is
+       the boundary between the pocket and everywhere else - cells that the
+       terrain says are walkable and the props say are not. Those are the
+       wall, and the props sitting on them are what built it. */
+    const stack = [i0];
+    let n = 0;
+    if (!walkG[i0]) propsOn(sx, sy, doomed);      // the doorstep itself
+    while (stack.length && n < 6000){
+      const c = stack.pop();
+      if (seen[c]) continue;
+      seen[c] = 1; n++;
+      const x = c % MAP, y = (c / MAP) | 0;
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){
+        const nx2 = x + ox, ny2 = y + oy;
+        if (!inMap(nx2, ny2)) continue;
+        const c2 = ny2 * MAP + nx2;
+        if (walkG[c2]){ if (!seen[c2]) stack.push(c2); }
+        else if (terr[c2]) propsOn(nx2, ny2, doomed);   // blocked by a THING
+      }
+    }
+  }
+  if (!doomed.size) return 0;
+  for (let i = props.length - 1; i >= 0; i--) if (doomed.has(props[i])) props.splice(i, 1);
+  indexProps(); indexSpriteProps();
+  stalls = props.filter(q => q.k === PK_STALL);
+  buildWalkGrid();
+  bakeSolidProps();
+  return doomed.size;
 }
 /* Rubbish on the water. Placed after placeProps so the street placer never
    sees it - it reasons about pavement and would either shove these onto the
@@ -7223,7 +7346,7 @@ function initHomes(){
     let best = null, bs = -1e9;
     for (const d of doors){
       const b = buildings.find(bb => bb.id === d.b);
-      if (!b || b.dist !== dist || isDungeon(b)) continue;
+      if (!b || d.sealed || b.dist !== dist || isDungeon(b)) continue;
       const sc = score(b);
       if (sc > bs){ bs = sc; best = { d, b }; }
     }
@@ -7420,7 +7543,7 @@ function initMainQuest(){
     const cand = [];
     for (const d of doors){
       const b = buildings[d.b];
-      if (!b || b.landmark || b.dist !== dist) continue;
+      if (!b || d.sealed || b.landmark || b.dist !== dist) continue;
       if (typeof isDungeon === 'function' && isDungeon(b)) continue;
       if (typeof homeAt === 'function' && homeAt(b.id)) continue;
       cand.push(d);
@@ -7501,7 +7624,7 @@ function initFixer(){
   let best = null, bs = -1;
   for (const d of doors){
     const b = buildings.find(bb => bb.id === d.b);
-    if (!b || isDungeon(b)) continue;
+    if (!b || d.sealed || isDungeon(b)) continue;
     if (HIDEOUT && b.id === HIDEOUT.bld) continue;   // not over ROOK's head
     const fls = bldFloors(b);
     if (fls.length < 2) continue;                    // he wants stairs
@@ -10255,7 +10378,7 @@ function mqDungeon(){
     let best = null, bd = 1e9;
     for (const d of doors){
       const b = buildings.find(bb => bb.id === d.b);
-      if (!b || !isDungeon(b)) continue;
+      if (!b || d.sealed || !isDungeon(b)) continue;
       const dd = Math.hypot(d.x - HIDEOUT.x, d.y - HIDEOUT.y);
       if (dd < bd){ bd = dd; mqDgnBld = { x: d.x, y: d.y }; }
     }
@@ -10380,7 +10503,7 @@ function nearestDepot(need){
   let best = null, bd = 1e9, alt = null, ad = -1;
   for (const d of doors){
     const b = buildings[d.b];
-    if (!b || buildingUse(b) !== 'depot') continue;
+    if (!b || d.sealed || buildingUse(b) !== 'depot') continue;
     const dd = Math.abs(d.x - cam.x) + Math.abs(d.y - cam.y);
     const left = depotScrapLeft(b);
     if (!need || left >= need){
@@ -10397,7 +10520,11 @@ function nearestShopFor(item){
   let best = null, bd = 1e9;
   for (const d of doors){
     const b = buildings[d.b];
-    if (!b) continue;
+    // A doorstep with no route to it is not the nearest anything. Some lots
+    // are walled pockets the street never reaches, and sending a marker to
+    // one is how you get a quest arrow pointing at a place the red line
+    // cannot draw to.
+    if (!b || d.sealed) continue;
     const u = buildingUse(b);
     const tr = u && USES[u] && USES[u].trade;
     if (!tr || !SHOP_TYPES[tr] || SHOP_TYPES[tr].stock.indexOf(item) < 0) continue;
