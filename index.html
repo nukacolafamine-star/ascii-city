@@ -4370,6 +4370,7 @@ const INT_FLAVOR = {
            'Everything here belongs to somebody who forgot it.'] },
   empty:   { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [] },
   hideout: { keeper: 'NOBODY', floorA: C.dataDk, floorB: C.tire, lines: [] },
+  fixer:   { keeper: 'NOBODY', floorA: C.dataDk, floorB: C.worktop, lines: [] },
   casino:  { keeper: 'PIT BOSS', floorA: 0, floorB: 0, lines: [
            'Play or make room for somebody who will.',
            'The odds are on the wall. Reading them is free. Only that is.'] },
@@ -4498,6 +4499,7 @@ function buildInterior(bld, door, floor){
   const myHome = homeAt(bld.id);
   if (myHome && player.homes && player.homes[myHome.id] && floor === 1)
     kind = 'myhome';
+  if (FIXER && bld.id === FIXER.bld && floor === FIXER.floor) kind = 'fixer';
   const trade = kind === 'shop' ? (uDef && uDef.trade) || 'general' : null;
   const F = INT_FLAVOR[kind];
   const TF = trade && SHOP_FLAVOR[trade];
@@ -4911,6 +4913,20 @@ function buildInterior(bld, door, floor){
         tree: companionTree(theme, comp) });
       a.interior = 1;
     }
+  } else if (kind === 'fixer'){
+    /* A back office that is mostly other people's paperwork. Desks against
+       two walls, a rack of somebody else's records, and a man who deals in
+       forgetting standing in the middle of it where you can reach him. */
+    wall('n', 0.22, 'desk');
+    wall('n', 0.68, 'desk');
+    wall('e', 0.30, 'shelfunit');
+    wall('w', 0.35, 'cabinet');
+    if (rnd() < 0.7) wall('s', 0.24, 'cratepile');
+    wall('w', 0.74, 'floorlamp');
+    const fx2 = spawnClear('citizen', IOX + (rw >> 1) + 0.5, IOY + (rh >> 1) + 0.5,
+                           { name: 'THE FIXER', brain: 'still', shirt: C.nPink,
+                             skin: C.skinB, tree: fixerTree() });
+    fx2.interior = 1; fx2.range = 2;
   } else if (kind === 'hideout'){
     /* No sign, no counter, no stock. Somebody has been sleeping here: a bed
        in the corner, crates for chairs, a shelf of things you do not leave
@@ -5499,39 +5515,9 @@ function spawnActors(){
       ck.dx = bay.fx; ck.dy = bay.fy; ck.pinned = 1;
     }
   }
-  // the fixer keeps a corner on the red mile - or failing that, any corner
-  let fx0 = null;
-  for (const b of buildings) if (b.redlight){ fx0 = [(b.x0 + b.x1) >> 1, b.y1 + 3]; break; }
-  const fspot = fx0 && walkG[fx0[1] * MAP + fx0[0]] ? fx0
-              : randWalkNear(cam.x, cam.y, 12, 24);
-  if (fspot) spawnActor('citizen', fspot[0] + 0.5, fspot[1] + 0.5, {
-    name: 'THE FIXER', brain: 'still', shirt: C.nPink, skin: C.skinB,
-    tree: {
-      entry: () => questStage('quiet') === 2 ? 'collect' : 'start',
-      start: { text: () => 'Corruption ' + player.corruption + ' of 10. The system remembers everything - unless somebody pays it to forget. Forty a point.',
-        opts: [{ t: 'Pay 40 cr - clean one point',
-                 if: () => player.corruption > 0 && player.credits >= 40,
-                 do(){ player.credits -= 40; player.corruption--; toast('one entry deleted'); },
-                 next: 'start' },
-               { t: 'Any work?', if: () => questStage('quiet') === undefined, next: 'work' },
-               { t: 'Who are you?', next: 'who' },
-               { t: 'Leave' }] },
-      work: { text: 'The flock over the mile sees too much and forgets nothing. Thin it. Three cameras. There is a tools counter under a TOOLS sign - ask for the hacksaw.',
-        opts: [{ t: 'Deal',
-                 do(){ mqBase('quietBase', 'camCut'); startQuest('quiet'); },
-                 next: 'deal' },
-               { t: 'Not my fight' }] },
-      deal: { text: 'Cameras first, questions never. The saw pays for itself in scrap anyway.' },
-      collect: { text: 'Three blind corners. Ninety credits - and the vandal flags from the job are mine to eat.',
-        opts: [{ t: 'Take the pay',
-                 do(){ player.credits += 90;
-                       player.corruption = Math.max(0, player.corruption - 1);
-                       advanceQuest('quiet'); toast('+90 cr, one flag eaten'); },
-                 next: 'after' },
-               { t: 'Later' }] },
-      after: { text: 'The mile breathes easier in the dark. So do I.' },
-      who: { text: 'A janitor. The mess I clean is in the records.' }
-    } });
+  // The fixer is not on a corner any more - he has a room upstairs on the
+  // mile, built by buildInterior, and his tree lives on its own so the flip
+  // phone can open the same conversation from anywhere in the city.
   // the belt has teeth: razors prowl the industrial district streets
   let packed = 0;
   for (let i = 0; i < 4000 && packed < 14; i++){
@@ -7456,7 +7442,85 @@ function initMainQuest(){
     HIDEOUT = { x: cam.x + 12, y: cam.y + 12, bld: -1 };
   }
   landmarks.push({ name: 'THE HIDEOUT', x: HIDEOUT.x, y: HIDEOUT.y, hidden: 1 });
+  initFixer();
 }
+/*--------------------------- the fixer's office ----------------------------
+  He used to stand on a corner, which is a strange way to run a business
+  whose whole product is not being on the record. He has a room now: upstairs
+  on the red mile, in a building tall enough to have an upstairs, behind a
+  door that says something other than what is behind it.
+============================================================================*/
+let FIXER = null;
+/* The phone. It opens exactly the conversation the room does, minus the one
+   line that only makes sense stood in front of him - you cannot buy a phone
+   down a phone. A call costs power, so the thing that makes corruption
+   payable from anywhere is itself something you have to keep supplied. */
+function callFixer(){
+  if (!drawPower('phone')) return false;
+  openTree('THE FIXER  (CALL)', fixerTree());
+  return true;
+}
+function fixerTree(){
+  return {
+    entry: () => questStage('quiet') === 2 ? 'collect' : 'start',
+    start: { text: () => 'Corruption ' + player.corruption + ' of 10. The system remembers everything - unless somebody pays it to forget. Forty a point.',
+      opts: [{ t: 'Pay 40 cr - clean one point',
+               if: () => player.corruption > 0 && player.credits >= 40,
+               do(){ player.credits -= 40; player.corruption--; toast('one entry deleted'); },
+               next: 'start' },
+             { t: 'Any work?', if: () => questStage('quiet') === undefined, next: 'work' },
+             { t: 'Sell me a way to call you - 130 cr',
+               if: () => !invCount('phone') && player.credits >= 130 && atFixer(),
+               do(){ player.credits -= 130; invAdd('phone', 1);
+                     setCharge('phone', POWERED.phone);
+                     toast('a flip phone, one number in it'); },
+               next: 'sold' },
+             { t: 'Who are you?', next: 'who' },
+             { t: 'Leave' }] },
+    sold: { text: 'One number in it, and it is mine. Do not give it out, do not lose it, and do not call me from inside a police station. It eats a cell every few calls - that is the encryption, not the phone.' },
+    work: { text: 'The flock over the mile sees too much and forgets nothing. Thin it. Three cameras. There is a tools counter under a TOOLS sign - ask for the hacksaw.',
+      opts: [{ t: 'Deal',
+               do(){ mqBase('quietBase', 'camCut'); startQuest('quiet'); },
+               next: 'deal' },
+             { t: 'Not my fight' }] },
+    deal: { text: 'Cameras first, questions never. The saw pays for itself in scrap anyway.' },
+    collect: { text: 'Three blind corners. Ninety credits - and the vandal flags from the job are mine to eat.',
+      opts: [{ t: 'Take the pay',
+               do(){ player.credits += 90;
+                     player.corruption = Math.max(0, player.corruption - 1);
+                     advanceQuest('quiet'); toast('+90 cr, one flag eaten'); },
+               next: 'after' },
+             { t: 'Later' }] },
+    after: { text: 'The mile breathes easier in the dark. So do I.' },
+    who: { text: 'A janitor. The mess I clean is in the records.' }
+  };
+}
+function initFixer(){
+  FIXER = null;
+  let best = null, bs = -1;
+  for (const d of doors){
+    const b = buildings.find(bb => bb.id === d.b);
+    if (!b || isDungeon(b)) continue;
+    if (HIDEOUT && b.id === HIDEOUT.bld) continue;   // not over ROOK's head
+    const fls = bldFloors(b);
+    if (fls.length < 2) continue;                    // he wants stairs
+    // the red mile first; a tall building anywhere else if the mile has none
+    const sc = (b.redlight ? 1000 : b.dist === D_RED ? 800 : 0)
+             + fls.length * 10 + hash3(b.id, 77, 2);
+    if (sc > bs){ bs = sc; best = { d, b, fls }; }
+  }
+  if (!best) return;
+  // second floor up, or as high as the building goes
+  const fl = best.fls[Math.min(1, best.fls.length - 1)];
+  FIXER = { bld: best.b.id, floor: fl, x: best.d.x, y: best.d.y };
+  best.d.name = 'ACCOUNTS';                    // it is, in a way
+  // His own mark. NOT a dollar - the map already spends that on casinos, and
+  // there is a legend at the bottom of it saying so.
+  landmarks.push({ name: 'THE FIXER', x: best.d.x, y: best.d.y,
+                   sym: '&', col: H_PUR });
+}
+function atFixer(){ return !!(FIXER && inside && inside.bld === FIXER.bld &&
+                              inside.floor === FIXER.floor); }
 /* being AT the hideout now means being in the room, not near the doorstep -
    except when you are still outside, where the doorstep is the whole point */
 function atHideout(r){
@@ -9060,6 +9124,10 @@ const ITEMS = {
              hint: 'cells for the powered tools - jammer, cam-jack, sniffer' },
   credchip:{ name: 'CREDIT CHIP', pcol: C.nAmber, stack: 1, cat: 'misc', price: 0,
              hint: 'spends itself the moment you lift it' },
+  phone:   { name: 'FLIP PHONE', pcol: C.nCyan, stack: 1, cat: 'misc', price: 130,
+             keep: 1,
+             hint: 'one number in it, and it is THE FIXER - five calls a cell',
+             use(){ return callFixer(); } },
   deck:    { name: 'KICKDECK', pcol: C.nMag, stack: 1, cat: 'misc', price: 120,
              hint: 'press V away from traffic to ride; SPACE ollies, Q/E flip' }
 };
@@ -9488,7 +9556,7 @@ function startJammer(){
    is a broadcast and eats one for two, the cam-jack sips at four rides, the
    sniffer chip gets six sweeps out of the same cell.
    Charge lives in qvar, so it saves with the player and survives a rewind. */
-const POWERED = { jammer: 2, camjack: 4, sniffer: 6 };
+const POWERED = { jammer: 2, camjack: 4, sniffer: 6, phone: 5 };
 function charge(id){
   const c = player.qvar.chg || (player.qvar.chg = {});
   return c[id] === undefined ? 0 : c[id];
@@ -9841,10 +9909,15 @@ const QUESTS = {
         auto(){ return invCount('saw') > 0; } },
       { log: 'cut 3 flock cams (face one and press E)', tool: 'saw',
         auto(){ return (player.qvar.camCut || 0) - (player.qvar.quietBase || 0) >= 3; } },
-      { log: 'collect from the fixer',
+      { log: () => invCount('phone')
+          ? 'collect from the fixer - the door marked ACCOUNTS, or just call him'
+          : 'collect from the fixer - upstairs on the mile, the door marked ACCOUNTS',
+        // he is in a room now, so the marker wants his DOOR. Looking for him
+        // among the actors only finds him on the floor he is standing on.
         target(){
           const a = actors.find(x => x.name === 'THE FIXER');
-          return a && { x: a.x, y: a.y, name: 'THE FIXER' };
+          if (a && !!a.interior === !!inside) return { x: a.x, y: a.y, name: 'THE FIXER' };
+          return FIXER && { x: FIXER.x, y: FIXER.y, name: 'ACCOUNTS' };
         } }
     ]
   },
@@ -14025,7 +14098,7 @@ function drawMapMode(m){
       if (t) hudCell(x, y, t[0], t[1]);
     }
     const leg = 'T tools  A arms  D disp  J gold  C threads  M market  ' +
-                'B bodega  G goods  $ casino  X parlor  W condemned  H home';
+                'B bodega  G goods  $ casino  X parlor  W condemned  H home  & fixer';
     hudStr(Math.max(1, (cols - leg.length) >> 1), rows - 2, leg.slice(0, cols - 2), H_DIM);
   }
   // landmarks
@@ -14033,8 +14106,12 @@ function drawMapMode(m){
     for (const l of landmarks){
       const x = sx(l.x), y = sy(l.y);
       if (x < 1 || x >= cols - 1 || y < 2 || y >= rows - 2) continue;
-      hudCell(x, y, '*', H_YEL);
-      if (m.z <= 2) hudStr(x + 2, y, l.name, H_YEL);
+      // A landmark may carry its own mark. Everything the city put there is
+      // a yellow star; the places that are somebody's rather than the city's
+      // get a glyph of their own, so you can pick the fixer's door out of a
+      // street of stars without reading every label.
+      hudCell(x, y, l.sym || '*', l.col !== undefined ? l.col : H_YEL);
+      if (m.z <= 2) hudStr(x + 2, y, l.name, l.col !== undefined ? l.col : H_YEL);
     }
   // the player, and the trail you should follow
   // the pan crosshair: where ENTER will drop the line
