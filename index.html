@@ -8615,7 +8615,30 @@ function runClock(path){
   return clamp(Math.round(tiles / RUN_PACE * RUN_TIGHT), 40, 150);
 }
 /*--- starting it ---------------------------------------------------------*/
+/* A set piece two people are standing in has to be the same set piece. One
+   of us used to take off and the other was left holding nothing but the
+   quest log line: no clock, no route, no pipes, still on foot, and being
+   beaten by enforcers that existed on one screen only.
+
+   Everything the run builds is a pure function of the seed - runRoute is
+   astar between two seeded points, layRamps rolls no dice, runClock counts
+   tiles - so the wire only has to say GO, and every client raises the
+   identical route, the identical pipes and the identical clock.
+
+   The chase is deliberately NOT shared, and it cannot be: spawnActor hands
+   out ids above CAST0, and nothing above CAST0 ever streams. Both the four
+   enforcers and VESPER herself are local bodies. So every rider raises their
+   own leader and their own pursuit, on their own screen - which is the right
+   answer anyway, because VESPER paces the rider she can see, and a leader
+   waiting up for somebody else's gap would be no leader at all. What keeps
+   it one race is that the stage underneath is identical, and hostileBrain
+   refuses to let an unstreamed body land a blow on anyone else's screen. */
 function startRun(){
+  netBroadcastEvent('run', {});
+  beginRun();
+}
+function beginRun(){
+  if (RUN || inside) return;              // already riding, or not out on the street
   const path = runRoute();
   const secs = runClock(path);
   RUN = { t: secs, max: secs, tricks: 0, gained: 0, path: path || [],
@@ -8633,7 +8656,7 @@ function startRun(){
     const t = randWalkNear(cam.x, cam.y, 10, 18);
     if (t){ const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
       { name: 'ENFORCER', brain: 'hostile', hp: 40, shirt: C.carC, skin: C.dataDk });
-      a.aggro = 1; a.atk = 9; a.spd = 2.9; }
+      a.aggro = 1; a.atk = 9; a.spd = 2.9; a.runCast = 1; }
   }
   if (!skating && invCount('deck') && !inside) toggleRide();
   advanceQuest('mq8');                          // beat 2 -> beat 3
@@ -8718,6 +8741,8 @@ function runFrame(dt){
   // is her PACE, not her place in the route. Pushing her index instead sends
   // her at a node fifty tiles away, which she then makes for in a straight
   // line, straight through the buildings in between.
+  // Her body is this client's own - spawnRunVesper puts her past CAST0, so
+  // she never streams and there is nobody else's copy to fight over.
   const v = RUN.lead;
   if (v && RUN.path.length){
     const gap = Math.hypot(v.x - cam.x, v.y - cam.y);
@@ -8797,10 +8822,12 @@ function runFrame(dt){
 function endRun(){
   clearRamps();
   RUN = null;
+  /* Only what the run itself put down. This used to take every enforcer
+     standing outdoors, which is the seeded ten as well - and those ARE
+     streamed cast, so with the run now ending on every client at once it
+     would have deleted the city's enforcers for everybody, twice over. */
   for (let i = actors.length - 1; i >= 0; i--)
-    if (!actors[i].interior &&
-        (actors[i].kind === 'enforcer' || actors[i].name === 'VESPER'))
-      actors.splice(i, 1);
+    if (!actors[i].interior && actors[i].runCast) actors.splice(i, 1);
 }
 /* she is waiting on the corner when you get there, and has been a while */
 function spawnRunVesper(){
@@ -8814,7 +8841,7 @@ function spawnRunVesper(){
   const t = randWalkNear(d.x, d.y, 1, 4) || [d.x | 0, d.y | 0];
   const v = spawnActor('citizen', t[0] + 0.5, t[1] + 0.5, {
     name: 'VESPER', brain: 'still', shirt: C.nViolet, tree: runVesperTree() });
-  v.range = 3;
+  v.range = 3; v.runCast = 1;
   return v;
 }
 function runVesperTree(){
@@ -13759,8 +13786,14 @@ function hostileBrain(a, dt){
     if (a.windup <= 0 && pr <= 1.6){
       // only the blow that lands on US goes through our own damage path;
       // a peer's health is the host's to decide, not ours
+      /* A body only this client can see must not be able to hurt somebody
+         who cannot see it. Locally-spawned muscle - run enforcers, quest
+         ambushes, anything spawned past CAST0 - never streams, so a blow it
+         lands on a peer is damage with no attacker on their screen and
+         nothing to hit back at. Their client spawns their own. */
       if (tgt.local){ if (player.hp > 0) damagePlayer(a.pendAtk || 5); }
-      else { tgt.hitT = 0.2; netBroadcastEvent('pdam', { to: tgt.id, d: a.pendAtk || 5 }); }
+      else if (actorNetSynced(a)){
+        tgt.hitT = 0.2; netBroadcastEvent('pdam', { to: tgt.id, d: a.pendAtk || 5 }); }
       a.windup = 0;
     }
   } else if (a.atkCool <= 0 && (tgt.local ? player.hp > 0 : tgt.hp > 0)){
@@ -19679,6 +19712,7 @@ function netEvent(m){
       if (!worldDelta.seen) worldDelta.seen = {};
       worldDelta.seen[m.b] = m.s;
       return;
+    case 'run': beginRun(); return;             // somebody took off; the street is everybody's
     case 'clk': {                               // somebody slept, or worked a shift
       if (netGuest() || !(m.h > 0)) return;
       const dh = Math.min(m.h, 48);
