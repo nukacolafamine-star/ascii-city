@@ -4840,10 +4840,20 @@ function buildInterior(bld, door, floor, S){
   srand((((bld.seed ^ 0x51ab) + floor * 2654435761) >>> 0) || 1);
   const use = buildingUse(bld);
   const uDef = use && USES[use];
+  /* A condemned tower is condemned all the way up. The street floor is still
+     the depot it was, but every storey above it belongs to whoever is living
+     in it now - which is the whole point of the building being picked. This
+     line was missing, so `kind` could never be 'dungeon': isDungeon chose the
+     towers, the signage called them SEALED, dgnLock locked every stairwell
+     and mqDungeon sent you to one, and then you climbed an ordinary block of
+     flats to the top and the keycard flag fired with nothing in your way.
+     The locks were no-ops for the same reason - `guard` waits for a hostile
+     that was never spawned, `camlock` for a camera the same branch places. */
   let kind = floor === 1
     ? (use === 'dungeon' ? 'depot'
        : use === 'casino' || use === 'parlor' ? use
        : uDef && uDef.kind ? uDef.kind : 'empty')
+    : use === 'dungeon' ? 'dungeon'
     : ['office', 'apts', 'storage'][(hash3(bld.seed, floor, 91) * 3) | 0];
   const myHome = homeAt(bld.id);
   if (myHome && player.homes && player.homes[myHome.id] && floor === 1)
@@ -4900,20 +4910,29 @@ function buildInterior(bld, door, floor, S){
     }
     return true;
   };
-  const clearSpot = (x, y) => {
-    if (S.walkG[(y | 0) * MAP + (x | 0)] && furnFree(x, y)) return [x, y];
+  const clearSpot = (x, y, free) => {
+    const ok = (px, py) => S.walkG[(py | 0) * MAP + (px | 0)] && furnFree(px, py) &&
+                           (!free || free(px, py));
+    if (ok(x, y)) return [x, y];
     for (let r = 0.7; r <= 3.2; r += 0.6)
       for (let a = 0; a < 8; a++){
         const nx = x + Math.cos(a * Math.PI / 4) * r;
         const ny = y + Math.sin(a * Math.PI / 4) * r;
         if (nx < IOX + 0.6 || ny < IOY + 0.6 ||
             nx > IOX + rw - 0.6 || ny > IOY + rh - 0.6) continue;
-        if (S.walkG[(ny | 0) * MAP + (nx | 0)] && furnFree(nx, ny)) return [nx, ny];
+        if (ok(nx, ny)) return [nx, ny];
       }
     return [x, y];
   };
+  /* Bodies have to mind each other as well as the furniture. clearSpot on its
+     own asks about walls and wardrobes, so two residents whose hashed spots
+     were both taken walked the same spiral out and stood in the same half
+     metre - three squatters on one tile, reading as one. Anything this build
+     has already put down is still interior 1, which is exactly the set to
+     avoid: another room's cast shares these coordinates and is not here. */
   const spawnClear = (kind2, x, y, o) => {
-    const sp = clearSpot(x, y);
+    const sp = clearSpot(x, y, (px, py) => !actors.some(a =>
+      a.interior === 1 && Math.hypot(a.x - px, a.y - py) < 0.9));
     return spawnActor(kind2, sp[0], sp[1], o);
   };
   /* Furniture wants its back to something. A fridge, a shelf, a wardrobe, a
