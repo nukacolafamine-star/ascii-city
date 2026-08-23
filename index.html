@@ -5789,8 +5789,13 @@ function tryInteract(){
       else crimeEvent(Math.max(1, Math.ceil(cost / 100)), 'theft');   // scaled to the take
     }
     invAdd(t.p.item, want);
-    claimProp(t.p);
-    props.splice(props.indexOf(t.p), 1);
+    claimProp(t.p);                          // the claim already lifts it out of props
+    // ...so indexOf is -1 by the time we get here, and splice(-1, 1) does not
+    // "remove nothing" - it eats the LAST prop in the scene. A shelf, a lamp,
+    // the next pickup along: gone, unclaimed, with nothing in the delta to say
+    // so. Guard it, the way the credchip branch above already does.
+    const pi = props.indexOf(t.p);
+    if (pi >= 0) props.splice(pi, 1);
     indexProps(); indexSpriteProps();
     sfx('ui_select', { rate: 1.35, vol: 0.6 });
     toast((paid ? '-' + paid + ' cr   ' : '') + '+ ' + def.name);
@@ -19581,7 +19586,14 @@ function netApplyQuests(q, qv, track){
     player.qvar[k] = (k !== 'heatFrac' && typeof qv[k] === 'number' && typeof local === 'number')
       ? Math.max(local, qv[k]) : qv[k];
   }
-  if (track && !player.track) player.track = track;
+  /* Their tracker must not yank yours off an ACTIVE job - but sitting on a
+     FINISHED one is not a choice worth defending. Whoever drove the stage ran
+     mqStart and moved their own track; a partner who only watched keeps
+     pointing at the thing that is already done, questLeg() goes empty, and
+     the objective line and the whole tracker blank out for the rest of the
+     session. Adopt theirs when ours has nothing left to say. */
+  if (track && (!player.track || player.quests[player.track] === 'done'))
+    player.track = track;
   _qSig = qSignature();                         // do not echo what we were told
   netQuestEffects();
   if (moved){ toast(moved); sfx('ui_select', { vol: 0.5, rate: 0.9 }); }
