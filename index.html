@@ -4623,9 +4623,15 @@ function makeInteriorScene(bld, floor){
 
    The cast spawns in the same order on every rebuild, because the room is
    seeded by its building, so an ordinal is a stable name for a body. */
-function stampRoomCast(sceneId){
+function stampRoomCast(sceneId, from){
   let n = 0;
-  for (let i = 0; i < actors.length; i++){
+  /* Only the bodies THIS build just pushed. Muscle spawned into the room we
+     are standing in carries interior 1 as well, so a room built for somebody
+     ELSE - a peer opening a door two districts away - used to adopt it and
+     rename our ambush into their shop. It also left iidx deterministic only
+     by luck: one stray local body ahead of the cast shifted every ordinal,
+     and ordinals are how the wire names a room's dead. */
+  for (let i = from | 0; i < actors.length; i++){
     const a = actors[i];
     if (a.interior !== 1) continue;             // not one this build put down
     a.interior = sceneId; a.iidx = n++;
@@ -4657,6 +4663,16 @@ function releaseScene(s){
   freeIntb(s.buf);
   s.buf = null; s.tType = s.tH = s.tB = s.walkG = null;
   s.props = null; s.buildings = null; s.propGrid = null; s.spriteGrid = null;
+}
+/* Muscle spawned into a room AFTER its cast was stamped never got a name of
+   its own - it is interior 1, which reads as "wherever we are standing". So
+   walking out has to take it with us. Left behind it would follow us into
+   the next room and be reachable from every room after that, which is the
+   same coordinate collision the named cast used to have. The room's own
+   cast is releaseScene's business; this is only ever ours. */
+function dropLocalRoomCast(){
+  for (let i = actors.length - 1; i >= 0; i--)
+    if (actors[i].interior === 1) actors.splice(i, 1);
 }
 /* A rebuilt city invalidates every room hanging off it. */
 function dropAllScenes(){
@@ -5397,7 +5413,7 @@ function dgnBlocked(bld, from, to){
   if (!isDungeon(bld) || to <= from) return null;   // descent is always free
   const lock = dgnLock(bld, from);
   if (lock === 'guard'){
-    if (actors.some(a => a.interior && a.brain === 'hostile' && a.hp > 0))
+    if (actors.some(a => a.interior && actorHere(a) && a.brain === 'hostile' && a.hp > 0))
       return 'the stairwell is held - clear the floor first';
   } else if (lock === 'grate'){
     if (!invCount('saw')) return 'a welded grate seals the stairs - a HACKSAW would open it';
@@ -5419,16 +5435,18 @@ function gotoFloor(f){
   if (stop){ toast(stop); sfx('ui_back', { vol: 0.5, rate: 0.6 }); return; }
   // A floor is a scene of its own: leave this one, take that one.
   const bldR = buildings[inside.bld], door0 = inside.door, nm = inside.name;
+  dropLocalRoomCast();            // what we spawned on this floor stays on it
   const from = SCENE, freshF = !SCENES.has(sceneKey(bldR.id, f));
   const sF = bindScene(acquireScene(bldR, f));
   if (freshF){
+    const cast0 = actors.length;
     sF.room = buildInterior(bldR, door0, f, sF.buf);
     props = sF.room.props; signs = [];
     indexProps(); indexSpriteProps();
     sF.inside = { name: nm, district: bldR.dist, exit: sF.room.exit,
                   stairs: sF.room.stairs, shop: sF.room.shop,
                   bld: bldR.id, door: door0, floor: f };
-    stampRoomCast(sF.id);      // whose room this is, and who is not in it
+    stampRoomCast(sF.id, cast0);   // whose room this is, and who is not in it
   }
   inside = sF.inside;
   ME.scene = sF;
@@ -5491,12 +5509,13 @@ function enterInterior(door){
   const fresh = !SCENES.has(sceneKey(bld.id, 1));
   const s = bindScene(acquireScene(bld, 1));
   if (fresh){
+    const cast0 = actors.length;
     s.room = buildInterior(bld, door, 1, s.buf);
     props = s.room.props; signs = [];
     indexProps(); indexSpriteProps();
     s.inside = { name: door.name, district: bld.dist, exit: s.room.exit,
                  stairs: s.room.stairs, shop: s.room.shop, bld: door.b, door, floor: 1 };
-    stampRoomCast(s.id);       // whose room this is, and who is not in it
+    stampRoomCast(s.id, cast0);    // whose room this is, and who is not in it
   }
   const room = s.room;
   inside = s.inside;
@@ -5523,6 +5542,7 @@ function exitInterior(){
   // The room keeps its own arrays and its own indexes, so stepping back out
   // is a rebind rather than a rebuild - no re-indexing eighteen thousand
   // props every time somebody opens a door.
+  dropLocalRoomCast();            // and what we spawned in there stays in there
   const left = SCENE;
   bindScene(CITY);
   ME.scene = CITY;
@@ -5557,7 +5577,7 @@ function probeInteract(){
   if (sitting || cam.riding) return;         // nothing to reach from a bench or the air
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
-    if ((!a.dialog && !a.tree) || !!a.interior !== !!inside) continue;
+    if ((!a.dialog && !a.tree) || !actorHere(a)) continue;
     probeConsider(a.x, a.y, { kind: 'actor', a, prompt: '[E]  TALK - ' + a.name });
   }
   // the courier drop: a place you have to actually put your hands on
@@ -5605,7 +5625,7 @@ function probeInteract(){
     else if (p.k === PK_FURN && inside && p.fid === 'terminal'){
       if (mqLive('mq29') && WORKS && inside.bld === WORKS.bld &&
           !player.qvar.betrayed && !player.qvar.ended &&
-          !actors.some(a => a.interior && a.brain === 'hostile' && a.hp > 0))
+          !actors.some(a => a.interior && actorHere(a) && a.brain === 'hostile' && a.hp > 0))
         probeConsider(p.x, p.y, { kind: 'theswitch', prompt: '[E]  THE SWITCH' });
       else
         probeConsider(p.x, p.y, { kind: 'shift', desk: 1,
@@ -6131,13 +6151,21 @@ function peerSetScene(p, sceneId){
       const s = acquireScene(bld, +m[2]);
       if (fresh) withScene(s, () => {
         const door = doors.find(d => d.b === bld.id) || null;
+        const cast0 = actors.length;
         s.room = buildInterior(bld, door, +m[2], s.buf);
         props = s.room.props; signs = [];
         indexProps(); indexSpriteProps();
-        s.inside = { name: door ? door.name : 'INSIDE', district: bld.dist,
+        /* The GLOBAL as well as the field. withScene puts the previous
+           scene back on the way out, and bindScene stores the globals into
+           the outgoing scene first - so a room whose descriptor was only
+           ever written to the object had `inside` copied straight back over
+           it with the null the scene was born holding. The next person
+           through that door then stood in a room with no `inside`: no exit
+           prompt, no stairs, no room cast, nothing to reach at all. */
+        inside = s.inside = { name: door ? door.name : 'INSIDE', district: bld.dist,
                      exit: s.room.exit, stairs: s.room.stairs, shop: s.room.shop,
                      bld: bld.id, door, floor: +m[2] };
-    stampRoomCast(s.id);       // whose room this is, and who is not in it
+    stampRoomCast(s.id, cast0);    // whose room this is, and who is not in it
       });
       p.scene = s;
     }
@@ -6686,7 +6714,7 @@ function updateCam(dt){
     } else {
       let ax = 0, ay = 0;
       for (const a of actors){
-        if (!a.solid || !!a.interior !== !!inside) continue;
+        if (!a.solid || !actorHere(a)) continue;
         const dx = cam.x - a.x, dy = cam.y - a.y;
         const rr = cam.rad + a.r, d2 = dx * dx + dy * dy;
         if (d2 < rr * rr && d2 > 1e-6){
@@ -11069,6 +11097,12 @@ function dropKey(){
 function actorScene(a){
   return !a.interior ? 'city' : (a.interior === 1 ? netSceneId() : a.interior);
 }
+/* Indoors is not one place. Every room is stamped at the same array origin,
+   so two people in two different shops stand on the same coordinates - and
+   `has an interior, yes or no` let each of them see, reach, bump into and
+   shoot the other room's cast. Which room, not whether. Alone this is the
+   test it always was: one room is ever live, and the city is 'city'. */
+function actorHere(a){ return actorScene(a) === netSceneId(); }
 function sceneById(sid){
   return sid === 'city' ? CITY : (SCENES.get(sid) || null);
 }
@@ -11320,7 +11354,7 @@ const QUESTS = {
         // among the actors only finds him on the floor he is standing on.
         target(){
           const a = actors.find(x => x.name === 'THE FIXER');
-          if (a && !!a.interior === !!inside) return { x: a.x, y: a.y, name: 'THE FIXER' };
+          if (a && actorHere(a)) return { x: a.x, y: a.y, name: 'THE FIXER' };
           return FIXER && { x: FIXER.x, y: FIXER.y, name: 'ACCOUNTS' };
         } }
     ]
@@ -13178,7 +13212,7 @@ function hostileInSights(maxD, halfW){
   let best = null, bd = 1e9;
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
-    if (a.brain !== 'hostile' || !!a.interior !== !!inside) continue;
+    if (a.brain !== 'hostile' || !actorHere(a)) continue;
     const rx = a.x - cam.x, ry = a.y - cam.y;
     const f = rx * vx + ry * vy;
     if (f < 0.3 || f > wd) continue;
@@ -13196,7 +13230,7 @@ function characterInSights(maxD, halfW){
     const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
     const wd = Math.min(bd, wallDist(maxD));
     for (const a of actors){
-      if (a.brain === 'hostile' || !!a.interior !== !!inside) continue;
+      if (a.brain === 'hostile' || !actorHere(a)) continue;
       if (!actorTargetable(a)) continue;
       const rx = a.x - cam.x, ry = a.y - cam.y;
       const f = rx * vx + ry * vy;
@@ -13323,7 +13357,7 @@ function strikeLand(){
       dealActorDamage(a, dmg);
     };
     for (const a of actors){
-      if (!!a.interior !== !!inside || a.hp === undefined || a.hp <= 0) continue;
+      if (!actorHere(a) || a.hp === undefined || a.hp <= 0) continue;
       const rx = a.x - cam.x, ry = a.y - cam.y, f = rx * vx + ry * vy;
       if (f < 0.2 || f > m.reach) continue;
       if (Math.abs(vy * rx - vx * ry) > 1.6) continue;
@@ -13352,7 +13386,7 @@ function strikeLand(){
   const hit = characterInSights(m.reach, 0.7);
   if (m.aoe && hit){                           // the maul: the floor answers too
     for (const a of actors){
-      if (a === hit.a || !!a.interior !== !!inside) continue;
+      if (a === hit.a || !actorHere(a)) continue;
       if (a.hp === undefined || a.hp <= 0) continue;
       const d2 = (a.x - cam.x) ** 2 + (a.y - cam.y) ** 2;
       if (d2 > m.aoe * m.aoe) continue;
@@ -13529,7 +13563,7 @@ function fireWeapon(){
       for (let c = 0; c < G.chain; c++){
         let nb = null, bd = 36, nbPed = false;
         for (const a of actors){
-          if (struck.has(a) || !!a.interior !== !!inside) continue;
+          if (struck.has(a) || !actorHere(a)) continue;
           if (a.hp === undefined || a.hp <= 0) continue;
           const d2 = (a.x - from.x) ** 2 + (a.y - from.y) ** 2;
           if (d2 < bd){ bd = d2; nb = a; nbPed = false; }
@@ -13680,7 +13714,11 @@ function respawn(){
   player.hp = player.maxHp;
   cam.riding = null; cam.z = 1.62; sitting = null; skating = false; resetSkate();
   drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // you wake up sober
-  if (inside) exitInterior();
+  /* ME.scene is the fact; `inside` only describes it. Waking on the platform
+     with a room still bound read the street's coordinates out of a room's
+     tile arrays - bare ground, no buildings, no props, no crowd, and no way
+     back to the city at all. */
+  if (inside || ME.scene !== CITY) exitInterior();
   let best = null, bd = 1e9;
   for (const m of metroStops){
     const d = Math.hypot(m.x - cam.x, m.y - cam.y);
@@ -17619,6 +17657,7 @@ function spritePass(){
   }
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
+    if (!actorHere(a)) continue;               // another room, the same coordinates
     const rx = a.x - cam.x, ry = a.y - cam.y;
     const f = rx * dirX + ry * dirY;
     if (f < -0.6 || f > MD) continue;
