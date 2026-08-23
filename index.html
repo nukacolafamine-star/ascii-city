@@ -4448,6 +4448,13 @@ const ACTORDEF = {
 };
 let actors = [];
 let CAST0 = 0;         // how many of them the seed placed; the rest are local
+/* The same line drawn through the traffic. The crowd packet streams cars BY
+   INDEX, and a player's own runner is pushed onto the end of the same array -
+   so once two people each had one, index N on the host was the host's car and
+   index N on the guest was the guest's, and every packet dragged your runner
+   to wherever theirs was flying. Only the seeded fleet is ambient; anything
+   past this line belongs to somebody. */
+let CARS0 = 0;
 function spawnActor(kind, x, y, o){
   o = o || {};
   const def = ACTORDEF[kind];
@@ -4623,6 +4630,8 @@ function stampRoomCast(sceneId){
     if (a.interior !== 1) continue;             // not one this build put down
     a.interior = sceneId; a.iidx = n++;
   }
+  // and whatever was left on this floor is still on it
+  applyDeltaToProps();
   const gone = worldDelta.slain && worldDelta.slain[sceneId];
   if (!gone) return;
   for (let i = actors.length - 1; i >= 0; i--){
@@ -5494,7 +5503,12 @@ function enterInterior(door){
   ME.scene = s;                                   // you are in this room now
   if (room.shop){                               // the map remembers trades you've seen
     if (!worldDelta.seen) worldDelta.seen = {};
-    worldDelta.seen[door.b] = room.shop;
+    if (worldDelta.seen[door.b] !== room.shop){
+      worldDelta.seen[door.b] = room.shop;
+      // the handshake hands a joiner the whole map already; keeping it live
+      // is what stops one of us walking a block the other has already walked
+      netBroadcastEvent('seen', { b: door.b, s: room.shop });
+    }
   }
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
   if (mqLive('mq10') && bld.dist === D_DOWN) player.qvar.mq10seen = 1;   // recon done
@@ -5703,7 +5717,7 @@ function tryInteract(){
       const i = props.indexOf(t.p);
       if (i >= 0) props.splice(i, 1);
       indexProps(); indexSpriteProps();
-      if (t.p.key){ worldDelta.taken[t.p.key] = 1; netBroadcastEvent('took', { key: t.p.key }); }
+      claimProp(t.p);
       sfx('ui_select', { rate: 1.5, vol: 0.65 });
       toast('+' + v + ' cr');
       return;
@@ -5727,8 +5741,7 @@ function tryInteract(){
       else crimeEvent(Math.max(1, Math.ceil(cost / 100)), 'theft');   // scaled to the take
     }
     invAdd(t.p.item, want);
-    if (t.p.key){ worldDelta.taken[t.p.key] = 1;   // dropped loot has no key
-      netBroadcastEvent('took', { key: t.p.key }); }
+    claimProp(t.p);
     props.splice(props.indexOf(t.p), 1);
     indexProps(); indexSpriteProps();
     sfx('ui_select', { rate: 1.35, vol: 0.6 });
@@ -6516,8 +6529,7 @@ function devExec(line){
     case 'drop': {
       if (!ITEMS[A[1]]){ devOut('no such item (try: items)'); break; }
       const sp = freeSpotNear(cam.x + Math.cos(cam.ang) * 2.5, cam.y + Math.sin(cam.ang) * 2.5);
-      props.push({ x: sp[0], y: sp[1], k: PK_ITEM, s: 0, r: 0, item: A[1], qty: num(2, 1) });
-      indexProps(); indexSpriteProps();
+      dropAt(netSceneId(), sp[0], sp[1], A[1], { qty: num(2, 1) });
       devOut('dropped ' + A[1] + ' ahead'); break; }
     case 'credits': player.credits = Math.max(0, num(1, 0) | 0);
       devOut('credits = ' + player.credits); break;
@@ -7792,11 +7804,8 @@ function workShift(desk){
   if (player.hp <= cost + 8){ toast('you are in no state to work'); return; }
   player.hp -= cost;
   player.credits += pay;
-  clock += 6;
-  while (clock >= 24){ clock -= 24; dayTick(); }
+  passHours(6);
   fade = 1;
-  wxUpdate(6 * 60);
-  updateClock(0);
   hurtT = Math.max(hurtT, 0.4);
   sfx('ui_select', { vol: 0.5, rate: 0.6 });
   toast((desk ? 'six hours of forms. ' : 'six hours of lifting. ') +
@@ -7806,12 +7815,9 @@ function sleepToMorning(){
   let target = 8;
   if (clock >= 8) target = 8 + 24;
   const dh = target - clock;
-  clock = target;
-  while (clock >= 24){ clock -= 24; dayTick(); }
+  passHours(dh);
   player.hp = player.maxHp;
   fade = 1;
-  wxUpdate(dh * 60);
-  updateClock(0);
   toast('morning. ' + clockStr() + ' - you slept like the paid-for');
   sfx('ui_select', { vol: 0.5, rate: 0.7 });
 }
@@ -10816,6 +10822,12 @@ function burnTag(){
       const spanN = ok2 ? 2 : 1;
       tags[ky * MAP + kx] = { art, day: dayCount, seg: 0, spanN };
       if (ok2) tags[sy2 * MAP + sx2] = { art, day: dayCount, seg: 1, spanN };
+      // a wall is a wall on everybody's screen. `tags` rode the handshake and
+      // nothing after it, so a piece burned in mid-session was yours alone -
+      // and the spire line asks you to burn over your OWN work, on a wall the
+      // other player could not see had ever been marked
+      netBroadcastEvent('tag', { a: art, d: dayCount, n: spanN,
+                                 i: ky * MAP + kx, j: ok2 ? sy2 * MAP + sx2 : -1 });
       toast('burned in - ' + art.toUpperCase() + ' holds for a few days');
       sfx('ui_select', { rate: 0.6, vol: 0.7 });
       sfx('ui_move', { rate: 0.4, vol: 0.4 });
@@ -11030,13 +11042,109 @@ function placeStreetItems(){
   // food no longer lies in the street - the stalls SELL it. What is left on
   // the ground is the weapon caches, quest drops, and what the dead let go.
 }
+/* ---- what is lying on the ground ----------------------------------------
+   The delta used to record only what had been REMOVED from the world, which
+   left everything the world puts down at runtime - a till off a body, the
+   float out of a keeper's counter, whatever the dev console throws at your
+   feet - as a bare props.push on one machine. That is wrong three times
+   over: nobody else ever saw it, a joiner arriving afterwards was handed a
+   street with nothing on it, and a save taken and reloaded lost it too, in
+   single player, with nobody else involved at all.
+
+   A drop is part of the delta now, keyed, and tagged with the scene it fell
+   in. That one record covers all three: the handshake carries it, the save
+   carries it, and a room rebuilt from its seed puts its takings back on the
+   floor. The 'drop' event is only the live half of the same fact.
+--------------------------------------------------------------------------*/
+let _dropN = 0;
+function dropKey(){
+  if (!worldDelta.drops) worldDelta.drops = {};
+  let k;
+  do { k = 'd' + NET.id + '_' + (++_dropN); } while (worldDelta.drops[k]);
+  return k;
+}
+/* Which scene a body is standing in, named the way the wire names it. An
+   actor put down by a room build carries interior 1 until stampRoomCast
+   gives the room its name, so anything spawned after that is simply here. */
+function actorScene(a){
+  return !a.interior ? 'city' : (a.interior === 1 ? netSceneId() : a.interior);
+}
+function sceneById(sid){
+  return sid === 'city' ? CITY : (SCENES.get(sid) || null);
+}
+/* Lay one down. `sc` is the scene it falls in, which is NOT necessarily the
+   one we are standing in - a guest handling the host's report of a kill may
+   be three floors up, or out on the street. */
+function dropAt(sc, x, y, item, o){
+  o = o || {};
+  const d = { sc, x, y, item, key: o.key || dropKey() };
+  if (o.qty) d.qty = o.qty;
+  if (o.cval) d.cval = o.cval;
+  if (o.z) d.z = o.z;
+  if (!worldDelta.drops) worldDelta.drops = {};
+  worldDelta.drops[d.key] = d;
+  placeDrop(d);
+  if (NET.on && !o.quiet) netBroadcastEvent('drop', d);
+  return d;
+}
+function placeDrop(d){
+  const sc = sceneById(d.sc);
+  if (!sc || !sc.props) return;                 // nobody has that room open
+  withScene(sc, () => {
+    for (const q of props) if (q.key === d.key) return;
+    props.push({ x: d.x, y: d.y, z: d.z, k: PK_ITEM, s: 0, r: 0,
+                 item: d.item, qty: d.qty, cval: d.cval, key: d.key });
+    indexProps(); indexSpriteProps();
+  });
+}
+/* One place that says "this is gone". A cache the generator knows how to
+   build is remembered as TAKEN for good, or every rebuild puts it back; a
+   runtime drop is simply forgotten, which is what keeps the delta from
+   growing a permanent line for every till anybody has ever picked up. The
+   prop itself may be lying in a room we are not standing in. */
+function forgetProp(key){
+  if (!key) return;
+  if (worldDelta.drops && worldDelta.drops[key]) delete worldDelta.drops[key];
+  else worldDelta.taken[key] = 1;
+  const sweep = sc => {
+    if (!sc || !sc.props) return;
+    withScene(sc, () => {
+      let hit = false;
+      for (let i = props.length - 1; i >= 0; i--)
+        if (props[i].key === key){ props.splice(i, 1); hit = true; }
+      if (hit){ indexProps(); indexSpriteProps(); }
+    });
+  };
+  sweep(CITY);
+  for (const sc of SCENES.values()) sweep(sc);
+}
+/* Taking something is a claim, and the claim has to travel or two people
+   both bank the same chip. */
+function claimProp(p){
+  if (!p.key) return;
+  forgetProp(p.key);
+  netBroadcastEvent('took', { key: p.key });
+}
+/* Reconcile the scene that is bound against the delta, both directions:
+   lift what somebody has taken, lay back what is still lying here. */
 function applyDeltaToProps(){
-  let removed = false;
+  let ch = false;
   for (let i = props.length - 1; i >= 0; i--){
     const p = props[i];
-    if (p.k === PK_ITEM && p.key && worldDelta.taken[p.key]){ props.splice(i, 1); removed = true; }
+    if (p.k === PK_ITEM && p.key && worldDelta.taken[p.key]){ props.splice(i, 1); ch = true; }
   }
-  if (removed){ indexProps(); indexSpriteProps(); }
+  const sid = SCENE === CITY ? 'city' : (SCENE && SCENE.id);
+  if (worldDelta.drops) for (const k in worldDelta.drops){
+    const d = worldDelta.drops[k];
+    if (d.sc !== sid) continue;
+    let here = false;
+    for (const q of props) if (q.key === k){ here = true; break; }
+    if (here) continue;
+    props.push({ x: d.x, y: d.y, z: d.z, k: PK_ITEM, s: 0, r: 0,
+                 item: d.item, qty: d.qty, cval: d.cval, key: d.key });
+    ch = true;
+  }
+  if (ch){ indexProps(); indexSpriteProps(); }
 }
 
 /* ---- saves: seed + camera + player + delta, three slots -------------------
@@ -12952,32 +13060,76 @@ function corruptionTick(){                    // polled every half second
     }
   } else if (heli && c < 4){ heli = null; }
 }
-/* peds can be hurt; the ledger fills accordingly */
+/* Emptying a block is the host's, because the crowd is: a guest that ran
+   panicHere locally would have it written back over by the next snapshot.
+   Everything that wants to scatter the street goes through here. */
+function netPanic(x, y, secs){
+  if (netGuest()){ netBroadcastEvent('scat', { x: +x.toFixed(2), y: +y.toFixed(2), s: secs | 0 }); return; }
+  panicHere(x, y, secs);
+}
+/* peds can be hurt; the ledger fills accordingly.
+
+   Your ledger is yours wherever you swing, but the crowd is not. The host
+   decides where all four hundred and thirty of them are and says so eight
+   times a second, and netApplyCrowd writes that snapshot straight over x, y
+   and the path - so a guest that dropped one locally watched the very next
+   packet stand it back up, a tenth of a second later, exactly where it had
+   been walking. Peds were immortal for everybody who was not hosting.
+
+   The blow travels instead. The spark, the sound and your own name on the
+   assault are ours to keep; the hp, the falling and the panic belong to the
+   machine that owns the crowd - the same rule dealActorDamage already works
+   by, for the same reason. */
 function damagePed(p, d){
-  if (p.hp === undefined) p.hp = 10;
-  p.hp -= d;
   addFx(p.x, p.y, 1.2);
   sfx('hit', { vol: 0.6 });
-  panicHere(cam.x, cam.y, 120);
   if (!p.assaulted){
     p.assaulted = 1;
     player.qvar.assaults = (player.qvar.assaults || 0) + 1;
     if (player.qvar.assaults % 3 === 0) pedCrime(1, 'assault');
   }
-  if (p.hp <= 0){
-    pedCrime(1, 'murder');
-    if (Math.random() < 0.4){                   // some of them carried something
-      props.push({ x: p.x, y: p.y, k: PK_ITEM, s: 0, r: 0,
-                   item: 'credchip', cval: 4 + ((Math.random() * 12) | 0) });
-      indexProps(); indexSpriteProps();
-    }
-    if (p.sit){ p.sit.occ--; p.sit = null; }
-    const t = randWalkNear(cam.x, cam.y, 60, STREAM_R * 0.8);   // the crowd renews
+  if (netGuest()){
+    // scattering the block is the host's too, and it scatters from where WE
+    // are standing rather than from wherever the host happens to be
+    netBroadcastEvent('phit', { i: p.pid, d: d | 0, x: cam.x, y: cam.y });
+    return;
+  }
+  pedWound(p, d, cam.x, cam.y, NET.id);
+}
+/* The half only the machine that owns the crowd may run. `by` is whoever
+   swung: the murder goes on THEIR name and the till drops for them, not for
+   whoever happens to be hosting. */
+function pedWound(p, d, ax, ay, by){
+  if (!p || p.off || netGuest()) return;
+  if (p.hp === undefined) p.hp = 10;
+  p.hp -= d;
+  panicHere(ax, ay, 120);
+  if (p.hp > 0) return;
+  const o = { i: p.pid, x: p.x, y: p.y, by };
+  // some of them carried something. The till goes through the drop ledger,
+  // so it lies on every floor, rides the handshake and survives a save
+  if (Math.random() < 0.4)
+    dropAt('city', p.x, p.y, 'credchip', { cval: 4 + ((Math.random() * 12) | 0) });
+  pedDown(o);                                   // here
+  if (NET.on) netBroadcastEvent('pdown', o);    // and on every other screen
+  /* And the walker itself goes back into the far side of the stream. That
+     is ours alone: on a guest the next snapshot would only put it back. */
+  if (p.sit){ p.sit.occ--; p.sit = null; }
+  withScene(CITY, () => {                       // a room's walkG is not the city's
+    const t = randWalkNear(ax, ay, 60, STREAM_R * 0.8);   // the crowd renews
     if (t && !inPanicZone(t[0], t[1])){ p.x = t[0] + 0.5; p.y = t[1] + 0.5; }
-    p.hp = undefined; p.assaulted = 0; p.path = null; p.pi = 0; p.cool = rnd() * 2;
-    p.flee = 0;
+  });
+  p.path = null; p.pi = 0; p.cool = rnd() * 2; p.flee = 0;
+}
+/* A body going down, on every screen at once. The crime and the line about
+   it are the killer's; the till the host rolled travels as a drop. */
+function pedDown(o){
+  const p = peds[o.i];
+  if (!NET.on || o.by === NET.id){
+    pedCrime(1, 'murder');
     toast('they drop. the street empties around you');
   }
+  if (p){ p.hp = undefined; p.assaulted = 0; }
 }
 const SPARK_SL = slots({ X: [-1, 1.0] });
 function addFx(x, y, z){ fxs.push({ x, y, z, t: 0.12 }); }
@@ -13210,6 +13362,8 @@ function strikeLand(){
       a.stunT = Math.max(a.stunT || 0, 0.6);
       addFx(a.x, a.y, 0.8);
     }
+    // the shock goes through the pavement, and the pavement is everybody's
+    netPanic(cam.x, cam.y, 30);
     flash = Math.max(flash, 0.25);             // the shock reads on screen
     cam.pitch -= 1.4;
   }
@@ -13365,14 +13519,35 @@ function fireWeapon(){
     if (hit){
       wound(hit.a, hit.ped, roll());
       // the bolt leaps: nearest others within six tiles, weakening each hop
+      /* The bolt leaps to the nearest body, and a body is a body: it used to
+         see only the named cast, so a shot fired into a packed crowd
+         conducted nothing at all, the other player standing in the middle of
+         it was not there either, and the `a.interior` test meant that indoors
+         - where every actor has one - it never leapt even once. */
       let from = hit.a, dmg = roll();
       const struck = new Set([hit.a]);
       for (let c = 0; c < G.chain; c++){
-        let nb = null, bd = 36;
+        let nb = null, bd = 36, nbPed = false;
         for (const a of actors){
-          if (struck.has(a) || a.interior || a.hp === undefined || a.hp <= 0) continue;
+          if (struck.has(a) || !!a.interior !== !!inside) continue;
+          if (a.hp === undefined || a.hp <= 0) continue;
           const d2 = (a.x - from.x) ** 2 + (a.y - from.y) ** 2;
-          if (d2 < bd){ bd = d2; nb = a; }
+          if (d2 < bd){ bd = d2; nb = a; nbPed = false; }
+        }
+        if (!inside) for (const q of gridQuery(pedGrid, from.x, from.y, 6, _q1)){
+          if (q.off || struck.has(q)) continue;
+          const d2 = (q.x - from.x) ** 2 + (q.y - from.y) ** 2;
+          if (d2 < bd){ bd = d2; nb = q; nbPed = true; }
+        }
+        for (const q of PLAYERS){
+          if (q.local || q.dead || q.scene !== SCENE) continue;
+          const px = q._hitProxy || (q._hitProxy = { player: q });
+          if (struck.has(px)) continue;
+          const d2 = (q.cam.x - from.x) ** 2 + (q.cam.y - from.y) ** 2;
+          if (d2 < bd){
+            px.x = q.cam.x; px.y = q.cam.y; px.hp = q.hp;
+            bd = d2; nb = px; nbPed = false;
+          }
         }
         if (!nb) break;
         struck.add(nb);
@@ -13380,7 +13555,7 @@ function fireWeapon(){
         addFx((from.x + nb.x) / 2, (from.y + nb.y) / 2, 0.7);
         addFx(nb.x, nb.y, 1.0);
         sfx('hit', { vol: 0.4, rate: 2.2 });
-        wound(nb, false, dmg);
+        wound(nb, nbPed, dmg);
         from = nb;
       }
     } else {
@@ -13411,17 +13586,26 @@ function fireWeapon(){
 function dealActorDamage(a, dmg){
   a.aggro = 1; a.hitT = 0.15;
   if (netGuest() && actorNetSynced(a)){
-    const o = { d: dmg | 0 };
+    // the panic anchor rides along: the block empties around US, not around
+    // wherever the host happens to be standing when it applies this
+    const o = { d: dmg | 0, x: +cam.x.toFixed(2), y: +cam.y.toFixed(2) };
     if (a.interior){ o.s = a.interior; o.i = a.iidx; } else o.c = a.id;
     netBroadcastEvent('ahit', o);
     return false;
   }
   if (a.hp === undefined){ a.hp = 30; a.maxHp = 30; }
   a.hp -= dmg;
-  if (a.hp <= 0){ killActor(a); return true; }
+  if (a.hp <= 0){ killActor(a, NET.id); return true; }
   return false;
 }
-function killActor(a){
+/* `by` is whoever swung. The blow may have arrived from another machine, in
+   which case the body falls HERE - this is the client that owns it - but the
+   murder goes on THEIR name and the till drops through the delta so it lies
+   on every floor exactly once. */
+function killActor(a, by){
+  if (by === undefined) by = NET.id;
+  const mine = !NET.on || by === NET.id;
+  const sc = actorScene(a);
   // a body in a room is remembered, or the room hands out its till again the
   // moment the door shuts behind you
   if (a.interior && a.interior !== 1 && a.iidx !== undefined){
@@ -13429,11 +13613,11 @@ function killActor(a){
     const room = worldDelta.slain[a.interior] || (worldDelta.slain[a.interior] = {});
     room[a.iidx] = 1;
     // a body in a room falls on every screen, not only on one
-    netBroadcastEvent('slain', { s: a.interior, i: a.iidx });
+    netBroadcastEvent('slain', { s: a.interior, i: a.iidx, by, m: a.brain !== 'hostile' ? 1 : 0 });
   } else if (!a.interior && a.id !== undefined && a.id < CAST0){
     // the seeded cast shares ids everywhere; local spawns (enforcers, quest
     // muscle) do not, and are never named on the wire
-    netBroadcastEvent('slain', { c: a.id });
+    netBroadcastEvent('slain', { c: a.id, by, m: a.brain !== 'hostile' ? 1 : 0 });
   }
   actors.splice(actors.indexOf(a), 1);
   if (typeof mqWorksKill === 'function') mqWorksKill(a);
@@ -13441,21 +13625,19 @@ function killActor(a){
   if (a.brain !== 'hostile'){
     // a working person, murdered for the till: the till is real, and so is
     // what it does to your name
-    props.push({ x: a.x, y: a.y, k: PK_ITEM, s: 0, r: 0,
-                 item: 'credchip', cval: 50 + ((Math.random() * 51) | 0) });
-    indexProps(); indexSpriteProps();
-    crimeEvent(3, 'murder');
-    panicHere(cam.x, cam.y, 120);
+    dropAt(sc, a.x, a.y, 'credchip', { cval: 50 + ((Math.random() * 51) | 0) });
+    netPanic(a.x, a.y, 120);
     sfx('hit', { vol: 0.8, rate: 0.55 });
-    toast(a.name.toLowerCase() + ' drops the till - and the city saw');
+    if (mine){
+      crimeEvent(3, 'murder');
+      toast(a.name.toLowerCase() + ' drops the till - and the city saw');
+    }
     return;
   }
   const roll = Math.random();
-  props.push({ x: a.x, y: a.y, k: PK_ITEM, s: 0, r: 0,
-               item: roll < 0.6 ? 'ammo' : 'scrap', qty: roll < 0.6 ? 3 : 1 });
-  indexProps(); indexSpriteProps();
+  dropAt(sc, a.x, a.y, roll < 0.6 ? 'ammo' : 'scrap', { qty: roll < 0.6 ? 3 : 1 });
   sfx('hit', { vol: 0.8, rate: 0.6 });
-  toast('the ' + (a.kind === 'enforcer' ? 'enforcer' : 'razor') + ' drops');
+  if (mine) toast('the ' + (a.kind === 'enforcer' ? 'enforcer' : 'razor') + ' drops');
 }
 /* who a bullet or a blade may touch: hostiles always; working actors too,
    unless the story needs them alive */
@@ -13610,7 +13792,10 @@ function puddleAt(ix, iy){
 function updateClock(dt){
   clock += dt / 60;
   wetLevel = clamp(wetLevel + (WET_RATE[weather] || 0) * (dt / 60), 0, 1);
-  if (clock >= 24){ clock -= 24; dayTick(); }
+  // A guest runs the minute hand for smoothness and is corrected a second at
+  // a time, so it must not also turn the DAY over - netApplySky does that,
+  // once, when the host says the date changed.
+  if (clock >= 24){ clock -= 24; if (!netGuest()) dayTick(); }
   const t = timeBlend();
   const dom = t.u < 0.5 ? t.a : t.b;
   if (dom !== CFG.timeMode){                // the gameplay flags snap here
@@ -13643,6 +13828,20 @@ function clockStr(){
   return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
 }
 
+/* Hours you spend are hours the city spends. A bench, a bed and a shift all
+   push the same one clock, so in company a guest ASKS - and the answer comes
+   back down the sky stream, which is also how the other player finds out
+   they have just lost the night. We move our own hands at the same time so
+   the line about what o'clock it is does not read as a lie. */
+function passHours(dh){
+  if (!(dh > 0)) return;
+  dh = Math.min(dh, 48);
+  if (netGuest()) netBroadcastEvent('clk', { h: +dh.toFixed(3) });
+  clock += dh;
+  while (clock >= 24){ clock -= 24; if (!netGuest()) dayTick(); }
+  if (!netGuest()) wxUpdate(dh * 60);
+  updateClock(0);
+}
 /* ---- weather drifts on its own: dwell in a state, then move on ---------- */
 let wxT = 4000;
 function applyWeather(n){
@@ -13654,6 +13853,10 @@ function applyWeather(n){
   wxT = [rr(6500, 15000), rr(180, 420), rr(90, 200), rr(240, 480)][n];
 }
 function wxUpdate(dt){
+  /* The weather rolls dice. Two clients rolling their own put two people in
+     the same street under different skies within a few minutes - one in fog,
+     one under stars. One sky, and it is the host's. */
+  if (netGuest()) return;
   wxT -= dt;
   if (wxT > 0) return;
   // most days stay dry; a spell always opens with plain rain, storms only
@@ -13688,11 +13891,8 @@ function waitOnBench(){
   let next = edges.find(e => e > clock + 0.02);
   if (next === undefined) next = edges[0] + 24;
   const dh = next - clock;                 // a game hour is 60 real seconds
-  clock = next;
-  if (clock >= 24){ clock -= 24; dayTick(); }
+  passHours(dh);                           // the sky moves on while you doze
   fade = 1;
-  wxUpdate(dh * 60);                       // the sky moves on while you doze
-  updateClock(0);
   toast('time passes - ' + clockStr());
 }
 
@@ -18899,6 +19099,7 @@ function newWorld(seed){
      person everywhere. Everything after it (enforcers, quest muscle) is
      spawned locally and its ids diverge, so it is never named on the wire. */
   CAST0 = actors.length;
+  CARS0 = cars.length;
   worldTime = 0;
   gridClear(carGrid); for (const c of cars) gridAdd(carGrid, c.x, c.y, c);
   gridClear(pedGrid); for (const p of peds) gridAdd(pedGrid, p.x, p.y, p);
@@ -19028,7 +19229,8 @@ function netSendActors(dt){
     Math.round(Math.atan2(a.dy, a.dx) * 40),
     (a.moving ? 1 : 0) | (a.aggro ? 2 : 0),
     a.hp === undefined ? -1 : Math.max(0, a.hp | 0),
-    Math.round((a.windup || 0) * 100), Math.round((a.hitT || 0) * 100)];
+    Math.round((a.windup || 0) * 100), Math.round((a.hitT || 0) * 100),
+    Math.round((a.stunT || 0) * 100)];
   const c = [], r = {};
   for (const a of actors){
     if (!actorNetSynced(a)) continue;
@@ -19050,6 +19252,8 @@ function netApplyActors(m){
     a.moving = v[4] & 1; a.aggro = (v[4] & 2) ? 1 : 0;
     if (v[5] >= 0) a.hp = v[5];
     a.windup = v[6] / 100; a.hitT = v[7] / 100;
+    // a body held still by a maul was held on one screen only
+    if (v[8] !== undefined) a.stunT = v[8] / 100;
   };
   if (m.c)
     for (const v of m.c)
@@ -19060,6 +19264,37 @@ function netApplyActors(m){
       for (const v of m.r[sid])
         for (const a of actors)
           if (a.interior === sid && a.iidx === v[0]){ put(a, v); break; }
+}
+/*----------------------------- the sky ------------------------------------
+  clock, day and weather were every client's own business, which held for
+  about as long as it took somebody to open a pause menu: the world stops
+  for them and not for us, and the two clocks never meet again. wxUpdate
+  rolls Math.random on top of that, so the skies parted company within
+  minutes. The host keeps the sky; a guest still runs the minute hand
+  between packets, because a clock that only moves once a second reads as
+  broken, and takes a correction a second at a time.
+--------------------------------------------------------------------------*/
+let _skyAcc = 0;
+function netSendSky(dt){
+  if (NET.role !== 'host' || !NET.on) return;
+  _skyAcc += dt;
+  if (_skyAcc < 1) return;
+  _skyAcc = 0;
+  netSend({ t: 'sky', c: +clock.toFixed(3), d: dayCount, w: weather,
+            f: +fogLevel.toFixed(3), we: +wetLevel.toFixed(3) });
+}
+function netApplySky(m){
+  while (dayCount < (m.d | 0)) dayTick();       // the date turned over for us too
+  dayCount = m.d | 0;
+  clock = m.c;
+  const w = m.w | 0;
+  if (w !== weather){
+    applyWeather(w);                            // rebuilds the palette on its own
+    toast('the weather turns: ' + ['clear', 'rain', 'storm', 'fog'][w]);
+  }
+  if (m.f !== undefined) fogLevel = m.f;
+  if (m.we !== undefined) wetLevel = m.we;
+  updateClock(0);                               // and the light follows the hour
 }
 /*---------------------------- the crowd -----------------------------------
   Four hundred and thirty pedestrians, and the honest way to make everybody
@@ -19094,7 +19329,7 @@ function netSendCrowd(dt){
     a[i * 3 + 2] = (Math.round(((Math.atan2(q.dy, q.dx) + Math.PI) / (Math.PI * 2)) * 255) & 255)
                  | (q.moving ? 256 : 0) | (q.sit ? 512 : 0);
   }
-  const m = cars.length, c = new Int16Array(m * 4);
+  const m = Math.min(cars.length, CARS0), c = new Int16Array(m * 4);
   for (let i = 0; i < m; i++){
     const q = cars[i];
     c[i * 4]     = Math.round(q.x * 8);
@@ -19126,7 +19361,7 @@ function netApplyCrowd(m){
     q.path = null;                              // never re-path what we are told
   }
   const c = m.c;
-  if (c) for (let i = 0, n = Math.min(cars.length, c.length / 4 | 0); i < n; i++){
+  if (c) for (let i = 0, n = Math.min(cars.length, CARS0, c.length / 4 | 0); i < n; i++){
     const q = cars[i];
     q.x = c[i * 4] / 8; q.y = c[i * 4 + 1] / 8; q.z = c[i * 4 + 2] / 32;
     const ang = ((c[i * 4 + 3] & 255) / 255) * Math.PI * 2 - Math.PI;
@@ -19325,6 +19560,7 @@ function netOnMsg(m){
         netSend(Object.assign({}, m, { r: 1 }));
       return;
     }
+    case 'sky': if (netGuest()) netApplySky(m); return;
     case 'crowd': if (netGuest()) netApplyCrowd(m); return;
     case 'act': if (netGuest()) netApplyActors(m); return;
     case 'q': netApplyQuests(m.quests, m.qvar, m.track); return;
@@ -19336,8 +19572,16 @@ function netOnMsg(m){
 function netEvent(m){
   switch (m.e){
     case 'took':                                // somebody claimed ground loot
-      if (m.key){ worldDelta.taken[m.key] = 1; applyDeltaToProps(); }
+      forgetProp(m.key);
       return;
+    case 'drop': {                              // and somebody put one down
+      if (!m.key || !m.item || !ITEMS[m.item]) return;
+      if (!worldDelta.drops) worldDelta.drops = {};
+      worldDelta.drops[m.key] = { sc: m.sc, x: m.x, y: m.y, item: m.item,
+                                  qty: m.qty, cval: m.cval, z: m.z, key: m.key };
+      placeDrop(worldDelta.drops[m.key]);
+      return;
+    }
     case 'cut':
       if (!worldDelta.cut) worldDelta.cut = {};
       worldDelta.cut[m.i] = 1;
@@ -19349,7 +19593,7 @@ function netEvent(m){
       if (q) q.fireT = 0.09;                    // THEIR muzzle, not ours
       // the crowd is the host's to scatter; a guest doing it too would only
       // be overwritten by the next snapshot
-      if (NET.role === 'host' && m.x !== undefined) panicHere(m.x, m.y, 90);
+      if (!netGuest() && m.x !== undefined) panicHere(m.x, m.y, 90);
       sfx('shot', { vol: 0.5 });
       return;
     }
@@ -19362,10 +19606,52 @@ function netEvent(m){
                               : (a.interior === m.s && a.iidx === m.i)){
           a.aggro = 1; a.hitT = 0.15;
           a.hp = (a.hp === undefined ? 30 : a.hp) - m.d;
-          if (a.hp <= 0) killActor(a);
+          // the kill is ours to call, but it was not our swing
+          if (a.hp <= 0) killActor(a, m.f);
+          else if (m.x !== undefined) panicHere(m.x, m.y, 60);
           return;
         }
       }
+      return;
+    }
+    case 'phit': {
+      // a guest's blow against the crowd, which is the host's to keep: the
+      // hp and the falling happen here and the stream carries the result back
+      if (netGuest() || m.d === undefined) return;
+      if (!(m.i >= 0 && m.i < peds.length)) return;
+      pedWound(peds[m.i], m.d, m.x, m.y, m.f);
+      return;
+    }
+    case 'pdown': {
+      // the host called it: credit whoever swung, lay the till, let the next
+      // assault on this one count again
+      if (!(m.i >= 0 && m.i < peds.length)) return;
+      pedDown(m);
+      return;
+    }
+    case 'tag': {                               // somebody marked a wall
+      if (!m.a || !TAG_ART[m.a]) return;
+      tags[m.i] = { art: m.a, day: m.d | 0, seg: 0, spanN: m.n | 0 };
+      if (m.j >= 0) tags[m.j] = { art: m.a, day: m.d | 0, seg: 1, spanN: m.n | 0 };
+      return;
+    }
+    case 'seen':                                // and walked into a trade
+      if (m.b === undefined) return;
+      if (!worldDelta.seen) worldDelta.seen = {};
+      worldDelta.seen[m.b] = m.s;
+      return;
+    case 'clk': {                               // somebody slept, or worked a shift
+      if (netGuest() || !(m.h > 0)) return;
+      const dh = Math.min(m.h, 48);
+      clock += dh;
+      while (clock >= 24){ clock -= 24; dayTick(); }
+      wxUpdate(dh * 60);
+      updateClock(0);
+      return;
+    }
+    case 'scat': {                              // a guest asks the block to empty
+      if (netGuest() || m.x === undefined) return;
+      panicHere(m.x, m.y, m.s || 120);
       return;
     }
     case 'pdam': {
@@ -19377,6 +19663,10 @@ function netEvent(m){
       return;
     }
     case 'slain': {
+      /* Somebody else called it. If it was OUR swing that reached them, the
+         record is ours to answer for - the body fell on their machine, but
+         a razor is not a murder and only a working person's death is. */
+      if (m.m && m.by !== undefined && m.by === NET.id) crimeEvent(3, 'murder');
       if (m.s !== undefined && m.i !== undefined){
         if (!worldDelta.slain) worldDelta.slain = {};
         (worldDelta.slain[m.s] = worldDelta.slain[m.s] || {})[m.i] = 1;
@@ -19471,6 +19761,7 @@ function netTick(dt){
   }
   netSendCrowd(dt);
   netSendActors(dt);
+  netSendSky(dt);
   NET.acc += dt;
   if (NET.acc < 1 / NET.hz) return;
   NET.acc = 0;
