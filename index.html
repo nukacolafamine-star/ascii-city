@@ -5566,7 +5566,16 @@ function exitInterior(){
   bindScene(CITY);
   ME.scene = CITY;
   releaseScene(left);                               // torn down once it empties
-  cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; cam.pitch = EXT.camPitch;
+  /* Only if there is somewhere to go back TO. EXT is the city scene itself
+     and camX is written on the way IN, so any exit that did not follow an
+     enterInterior - respawn reaching this through the scene-level guard, a
+     world rebuilt under us - wrote undefined straight into the camera. A NaN
+     camera does not fail where you can see it: the gradient builder raises
+     out of buildBackground, the probe matches nothing and every key looks
+     dead, which reads as the whole game locking up. */
+  if (typeof EXT.camX === 'number' && isFinite(EXT.camX)){
+    cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; cam.pitch = EXT.camPitch;
+  }
   if (wasSkating){ skating = true; wasSkating = false; toast('wheels down'); }
   inside = null; viewD = 30; fade = 1;              // the street eases back out
   buildBackground();
@@ -7145,7 +7154,8 @@ function makeListMenu(def){
 function openDialog(title, pages){
   pushMode({
     name: 'dialog', pausesWorld: true, title, pages, idx: 0, t0: performance.now(),
-    pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.06 >= this.pages[this.idx].length; },
+    pageDone(){ const p = this.pages[this.idx];
+      return this.t0 < 0 || !p || (performance.now() - this.t0) * 0.06 >= p.length; },
     onKey(code){
       switch (code){
         case 'Space': case 'Enter':
@@ -7171,7 +7181,16 @@ function openDialog(title, pages){
    no `next` ends the talk. Node text may be a function for live counters.
    An optional tree.entry() picks the opening node from game state, so one
    character greets you differently as their quest moves along. */
-function nodeText(n){ return typeof n.text === 'function' ? n.text() : n.text; }
+/* Always a string. A node the tree has not got, or one whose text function
+   returns nothing, used to travel as undefined into pageDone's `.length` -
+   and pageDone is the FIRST thing the tree's key handler runs, so the throw
+   took the escape hatch with it. The mode kept the keyboard, every key
+   raised, and the only way out of the conversation was to reload the page. */
+function nodeText(n){
+  if (!n) return '';
+  const t = typeof n.text === 'function' ? n.text() : n.text;
+  return typeof t === 'string' ? t : '';
+}
 /* Resolved ONCE, when the node is entered, and cached on the mode. Several
    nodes pick a random line - the shopkeepers' "anything worth knowing" is
    one - while drawTree and pageDone both ask for the text every frame. An
@@ -7203,6 +7222,12 @@ function openTree(title, tree){
       else this.cursor = Math.max(0, Math.min(this.cursor, this.visibleOpts().length - 1));
     },
     onKey(code){
+      // the way out is read first, and from nothing that can raise
+      if (code === 'Escape' || code === 'Backspace'){
+        if (performance.now() - this.openedT >= 250){ popMode(); sfx('ui_back', { vol: 0.5 }); }
+        return;
+      }
+      if (!this.cur()){ popMode(); return; }   // nothing here to say: let them go
       const opts = this.pageDone() ? this.visibleOpts() : [];
       switch (code){
         case 'KeyW': case 'ArrowUp':
