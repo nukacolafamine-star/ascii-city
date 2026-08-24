@@ -10672,6 +10672,10 @@ function openSettingsMenu(){
         hint: 'the air as a medium: thicker in rain and fog, and cut into ' +
               'shafts by whatever is standing in the light',
         adj(){ FOGV.on = !FOGV.on; } },
+      { label: 'SOLID CULLING', value: () => HIZ.on ? 'ON' : 'OFF',
+        hint: 'drop a whole pedestrian or prop that the buildings already hide, ' +
+              'instead of finding that out one cell at a time',
+        adj(){ HIZ.on = !HIZ.on; } },
       { label: 'FLOOR CULLING', value: () => FOCC.on ? 'ON' : 'OFF',
         hint: 'stop shading road that a building is standing in front of',
         adj(){ FOCC.on = !FOCC.on; } },
@@ -20048,6 +20052,10 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   // a close, tall solid can cover the screen; drop its reflection rows
   // rather than dropping the solid itself
   if ((c1 - c0 + 1) * (r1 - r0 + 1) > 40000 && r0 < 0) r0 = 0;
+  /* Everything below this line is per-cell work against a box the frame may
+     already have buried. Rows above the screen are exempt: they are marched
+     for reflections and never meet the depth test this stands in for. */
+  if (hizLive && r0 >= 0 && hizHidden(c0, c1, r0, r1, tNear)) return;
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
   // camera in the solid's own frame
   const ex = cam.x - ox, ey = cam.y - oy;
@@ -20429,10 +20437,66 @@ function propYaw(o){                          // square to the nearer roadway
   const dy = ry < RW ? 0 : Math.min(ry - RW, P - ry);
   return dx <= dy ? 0 : Math.PI / 2;
 }
+/*------------- the depth buffer, read coarsely, before the march -----------
+  Profiled on a crowded street at the finest grid, spritePass was 13.7ms of a
+  25.8ms frame - more than half of it - and 420 of its 503 drawModel calls
+  wrote no cell at all. They were not free: each one walked its whole screen
+  box, and every cell in that box tested `dBuf[idx] < t0 - 0.02` and gave up.
+  A pedestrian standing behind a tower is rejected thirty thousand times, once
+  per cell, when the frame already knew it was behind a tower.
+
+  So make the same test once. This is a max-depth pyramid: one tile per 8x8
+  cells holding the FURTHEST depth any of them reached. If even the furthest
+  thing in a tile is nearer than the closest a solid could possibly be, then
+  every cell under that tile would have failed the per-cell test - so the
+  whole solid can be dropped without marching a single ray.
+
+  It is the identical rejection, not an approximation of it. drawModel already
+  computes tNear as the lower bound on t0 across its whole box, and the test
+  below is `maxDepth < tNear - 0.02`, which implies `dBuf[idx] < t0 - 0.02`
+  for every cell in the box because t0 >= tNear everywhere in it. Untouched
+  sky sits at 1e30, so a solid against the sky is never culled.
+
+  Two limits, both deliberate. Rows above the top of the screen are marched
+  for their REFLECTIONS and are not depth-tested, so a box that starts off the
+  top is left alone. And the pyramid is only live inside spritePass: the held
+  weapon and the inventory previews call drawModel at other moments, against
+  whatever dBuf happens to hold, and must never consult it.
+---------------------------------------------------------------------------*/
+const HIZ = { on: true, shift: 3 };            // 8x8 cells to a tile
+let hizD = null, hizW = 0, hizH = 0, hizLive = false;
+function hizBuild(){
+  hizLive = false;
+  if (!HIZ.on) return;
+  const S = HIZ.shift, T = 1 << S, cols = R.cols, rows = R.rows;
+  const w = (cols + T - 1) >> S, h = (rows + T - 1) >> S;
+  if (!hizD || hizW !== w || hizH !== h){ hizD = new Float32Array(w * h); hizW = w; hizH = h; }
+  hizD.fill(0);
+  for (let r = 0; r < rows; r++){
+    const off = r * cols, trOff = (r >> S) * w;
+    for (let tx = 0; tx < w; tx++){
+      const x0 = tx << S, x1 = Math.min(cols, x0 + T);
+      let mx = 0;
+      for (let x = x0; x < x1; x++){ const d = dBuf[off + x]; if (d > mx) mx = d; }
+      if (mx > hizD[trOff + tx]) hizD[trOff + tx] = mx;
+    }
+  }
+  hizLive = true;
+}
+function hizHidden(c0, c1, r0, r1, tNear){
+  const S = HIZ.shift, lim = tNear - 0.02;
+  const y1 = r1 >> S, x1 = c1 >> S;
+  for (let y = r0 >> S; y <= y1; y++){
+    const off = y * hizW;
+    for (let x = c0 >> S; x <= x1; x++) if (hizD[off + x] >= lim) return false;
+  }
+  return true;
+}
 const drawList = [];
 const HIT_SB = new Int16Array(NROLE).fill(C.nWhite);   // struck: white silhouette
 const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
 function spritePass(){
+  hizBuild();                    // the walls are down; read what they buried
   drawList.length = 0;
   const MD = viewD;
   /* A solid whose CENTRE is beside you still has half of itself in front of
@@ -20627,6 +20691,10 @@ function spritePass(){
       _noRef = 0;
     }
   }
+  /* The pyramid describes THIS frame's walls at THIS moment. The held weapon
+     and the inventory previews draw through the same function later, against
+     a different buffer, and must not be measured against it. */
+  hizLive = false;
 }
 
 /*----------------------------- readable signage ----------------------------
