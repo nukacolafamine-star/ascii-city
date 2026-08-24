@@ -12023,6 +12023,7 @@ function burnTag(){
       let ok2 = inMap(wx2, wy2) && tH[wy2 * MAP + wx2] > 1.6;
       const spanN = ok2 ? 2 : 1;
       tags[ky * MAP + kx] = { art, day: dayCount, seg: 0, spanN };
+      tagEpoch++;                                // the GPU wall pass reads a copy
       if (ok2) tags[sy2 * MAP + sx2] = { art, day: dayCount, seg: 1, spanN };
       // a wall is a wall on everybody's screen. `tags` rode the handshake and
       // nothing after it, so a piece burned in mid-session was yours alone -
@@ -13932,6 +13933,7 @@ function pedCrime(n, why){
 function dayTick(){                           // called once per day rollover
   dayCount++;
   for (const k in tags) if (dayCount - tags[k].day > 3) delete tags[k];
+  tagEpoch++;                                  // and a piece fades on its second day
   sweepBodies();                              // and the pavement is washed
   // one clean day a point, where it used to be two - the ladder above is
   // steep enough that waiting it out should not be most of an evening
@@ -15459,6 +15461,7 @@ function updateClock(dt){
     CFG.timeMode = dom;
     for (const b of buildings)
       b.litP = clamp(curTime().lit * (0.45 + hash3(b.id, 3, 9)), 0.05, 0.95);
+    bldEpoch++;      // the GPU wall pass holds a copy of every building record
   }
   const key = t.a * 1000 + t.b * 100 + ((t.u * 24) | 0)
             + (drug && (drug.fx.hue || drug.fx.hueC || drug.fx.sat || drug.fx.warm)
@@ -21447,6 +21450,9 @@ function glInit(){
     G.pWorld = mkProg(VS_FULL, FS_WORLD);
     G.uW = {};
     for (const k of ['uCol','uRow','uTile','uLampG','uLamps','uDist','uFont','uBld','uWay',
+                     'uHgt','uTags','uTagArt','uDomeF',
+                     'uProjRows','uDeckT','uGBar','uWorldTime','uWTick','uDome','uDomeC',
+                     'uEmis','uWallM','uWallM2','uLvT',
                      'uGrid','uCam','uCamI','uCamF','uCamM','uCamH',
                      'uHorizon','uHz','uR0','uRMAX','uStages',
                      'uViewD','uMap','uP','uRW','uNB','uDensK',
@@ -21785,12 +21791,8 @@ function glLightPass(){
   and uploaded. What is left to drift is only the arithmetic between them.
 ============================================================================*/
 const GPUW = {
-  /* Off by default until the walls move too. Sky and ground alone are a
-     wash: they are 4.6ms of CPU replaced by 4.8ms of pass, because the
-     readback and the unpack are a fixed toll that does not care how much
-     work was moved. It only pays once the third pass is on the card. */
-  on:     false,
-  stages: 3,     // bit 0 sky, bit 1 floor, bit 2 walls
+  on:     true,
+  stages: 7,     // bit 0 sky, bit 1 floor, bit 2 walls
   max:    7
 };
 const GW = { qa: null, qa32: null, qb: null, qb32: null, colD: null, rowD: null, ran: 0 };
@@ -21811,6 +21813,10 @@ uniform sampler2D uDist;     // per block: district
 uniform sampler2D uFont;     // the 3x5 pixel font the crossings are numbered in
 uniform sampler2D uBld;      // per building: eight texels of what it is made of
 uniform sampler2D uWay;      // per map tile: the red line home
+uniform sampler2D uHgt;      // per map tile: the heightfield
+uniform sampler2D uTags;     // per map tile: art+1, segment, span, faded
+uniform sampler2D uTagArt;   // 10 x 32: four stencils of eight rows
+uniform sampler2D uDomeF;    // the dome's current frame, one bit a cell
 
 uniform vec2  uGrid;         // cols, rows
 uniform vec3  uCam;
@@ -21843,6 +21849,15 @@ uniform float uLineW;
 uniform float uWet, uWayOn, uRiverY, uRiverDepth, uRural;
 uniform vec4  uWave;         // the four water phases, already wrapped
 uniform vec4  uLamp;         // night, reach, gain, steps
+// walls
+uniform float uProjRows, uDeckT, uGBar, uWorldTime;
+uniform vec2  uWTick;        // floor(worldTime*17), floor(worldTime*19)
+uniform vec4  uDome;         // frame w, frame h, scrolls, scroll offset
+uniform vec2  uDomeC;        // the frame's two colours
+uniform uvec2 uEmis;         // which of the first 64 materials give off light
+uniform vec4  uWallM;        // trunk, -, winDark, nCyan
+uniform vec4  uWallM2;       // nMag, metal, dataDk, tire
+uniform float uLvT[8];       // where each fog level starts, as a fraction of view
 uniform float uMat[32];
 #define M_CAMRED   0
 #define M_NAMBER   1
@@ -21859,6 +21874,7 @@ uniform float uMat[32];
 #define M_ASPHALT 12
 #define M_BANK    13
 #define M_POOL0   14
+#define M_SIGNBACK 15
 #define T_ROAD   0
 #define T_CROSS  1
 #define T_WALK   2
@@ -21894,7 +21910,16 @@ int trunc0(float x){ return int(x); }
 float levelOf(float t){
   if (t <= 0.0) return 0.0;
   if (t >= 1.0) return 7.0;
-  return min(7.0, floor(pow(t, 0.90) * 8.0));
+  /* The CPU writes this as floor(pow(t, 0.90) * 8), and pow in GLSL is
+     exp2(y*log2(x)) - a few ulp out, in a consistent direction. A fog level is
+     a TRUNCATION, so a few ulp at a boundary is a whole step, and a wall face
+     shares one level down its entire height: the disagreement would land as a
+     block of the frame at the wrong fog rather than as a stray cell. So the
+     eight boundaries are solved once in double precision on the CPU and the
+     shader compares against them instead. */
+  float l = 0.0;
+  for (int k = 1; k < 8; k++) if (t >= uLvT[k]) l = float(k);
+  return l;
 }
 float densMul(float t){ return 1.0 - uDensK * pow(t, 1.15); }
 
@@ -21929,6 +21954,9 @@ float riverMid(float x){
    double-precision version by a whole glyph. Wrapped, the phase is small and
    the two agree. */
 float _wd; int _wb, _wwet, _wg;
+/* What this cell ends up being. At file scope rather than inside main because
+   the roof span writes them from three call sites and GLSL has no closures. */
+float oG, oPal, oLv, oWet, oSrc, oEmit, oWrote, oDep;
 void waterShade(float wx, float wy){
   float cross = wy - riverMid(wx);
   float band = cross * 1.05
@@ -22050,6 +22078,257 @@ bool inChannel(int ix, int iy){
   return tTypeOf(t) == T_WATER || riverBedOf(t);
 }
 
+/*========================= the walls, as a march ============================
+  The CPU walks one DDA per column and paints spans of rows, because once you
+  are standing on a tile a span is nearly free. A fragment shader has no spans,
+  so the question turns round: this cell, which surface owns it?
+
+  It is still the same walk. What makes it a gather rather than a scatter is
+  that every screen row below the wall pass's ceiling is claimed by exactly ONE
+  tile - ceilLimit shrinks past a tile's top the moment that tile is drawn, so
+  every later tile is clamped to the rows above it and no row is ever painted
+  twice. So the march can stop the instant it paints this fragment.
+
+  The distances are computed rather than accumulated. The CPU adds a delta per
+  step in double precision, which is exact enough to ignore; a float adding a
+  hundred deltas drifts about ten times further than one multiply does. So the
+  step counts are integers and the distance is one multiply-add off them.
+============================================================================*/
+struct Bld {
+  float col, sgn, crown, stripe;
+  float stripePh, litP, fh, wpm;
+  float seed, h, dome, interior;
+  float doorX, doorY, doorNX, doorNY;
+  float winA, winB, hasDoor, id;
+  float cx, cy, domeH;
+};
+Bld getBld(int i){
+  vec4 a = bldAt(i, 0), b = bldAt(i, 1), c = bldAt(i, 2);
+  vec4 d = bldAt(i, 3), e = bldAt(i, 4), f = bldAt(i, 5);
+  return Bld(a.x, a.y, a.z, a.w,  b.x, b.y, b.z, b.w,  c.x, c.y, c.z, c.w,
+             d.x, d.y, d.z, d.w,  e.x, e.y, e.z, e.w,  f.x, f.y, f.z);
+}
+bool emissive(int m){
+  if (m < 0 || m > 63) return false;             // EMISSIVE is 64 long; past it is undefined, which is falsy
+  uint w = m < 32 ? uEmis.x : uEmis.y;
+  return ((w >> uint(m & 31)) & 1u) != 0u;
+}
+float tHAt(int ix, int iy){ return texelFetch(uHgt, ivec2(ix, iy), 0).r; }
+bool inMapI(int x, int y){ return x >= 0 && y >= 0 && float(x) < uMap && float(y) < uMap; }
+
+/*--- the dome: one landmark, wearing an animated sign twelve rows tall ---*/
+void domeSurface(Bld b, float z, float hx, float hy){
+  float lon = atan(hy - b.cy, hx - b.cx);
+  float u = (lon / 6.283185307179586 + 0.5) * 2.0;     // two copies around
+  u -= floor(u);
+  float v = jclamp(z / b.domeH, 0.0, 0.9999);
+  int fw = int(uDome.x), fh = int(uDome.y);
+  int fx = trunc0(u * uDome.x);
+  if (uDome.z > 0.5) fx = (fx + int(uDome.w)) % fw;     // scrolling frames
+  int fy = min(fh - 1, trunc0((1.0 - v) * uDome.y));
+  // every frame in the set is drawn out of dots and hashes only, so the
+  // third branch the CPU keeps for a literal glyph is unreachable here
+  if (texelFetch(uDomeF, ivec2(fx, fy), 0).r > 0.5){ _wd = 0.97; _wb = int(uDomeC.x); }
+  else { _wd = 0.26; _wb = int(uMat[M_SIGNBACK]); }
+}
+
+/*--- the facade, in split coordinates -------------------------------------
+  guv, hxv and hyv are each (whole, offset): the camera's tile index and the
+  distance from it, never added together unless an absolute position is
+  genuinely wanted. Everything this function actually tests is a FRACTION -
+  which tenth of a window column, which side of a door, where in a storey -
+  and a window grid boundary lands on a round threshold like 0.10 far more
+  often than chance, because both are laid out on round numbers. Measured on
+  one downtown wall: wf came to 0.10000002 against a test of wf > 0.10, and
+  gu is constant down a column, so getting it wrong cost a whole vertical
+  stripe of the building rather than a cell. */
+void facade(Bld b, vec2 guv, float z, int side, float hh, vec2 hxv, vec2 hyv){
+  float gu = guv.x + guv.y;
+  float hitX = hxv.x + hxv.y, hitY = hyv.x + hyv.y;
+  _wg = -1;
+  if (b.dome > 0.5){ domeSurface(b, z, hitX, hitY); return; }
+  // burned graffiti: a bright stencil piece holding on the wall for a few days
+  if (z > 0.8 && z < 2.4){
+    vec4 tg = texelFetch(uTags, ivec2(int(hxv.x + floor(hxv.y)), int(hyv.x + floor(hyv.y))), 0);
+    int art = int(tg.r * 255.0 + 0.5) - 1;
+    if (art >= 0){
+      float seg = tg.g * 255.0, spanN = tg.b * 255.0;
+      float fu = fract(side == 0 ? hyv.y : hxv.y);
+      int gc = min(9, trunc0(((seg + fu) / spanN) * 10.0));
+      int gr = min(7, trunc0((2.4 - z) / 1.6 * 8.0));
+      float chq = texelFetch(uTagArt, ivec2(gc, art * 8 + gr), 0).r * 255.0;
+      if (chq > 0.5){                             // 1 is '#', 2 is '+'
+        _wb = chq > 1.5 ? int(uWallM.w) : int(uWallM2.x);   // nCyan : nMag
+        _wd = tg.a > 0.5 ? 0.55 : 1.0;            // old pieces fade before they go
+        return;
+      }
+    }
+  }
+  /* The entrance, drawn where the interact point is - clamped to exactly the
+     door tile's face, with a band of plain wall around it so no window or
+     signage butts against the frame. */
+  if (b.hasDoor > 0.5 && (side == 0 ? b.doorNX != 0.0 : b.doorNY != 0.0)){
+    float face = side == 0 ? b.doorX + (b.doorNX > 0.0 ? 1.0 : 0.0)
+                           : b.doorY + (b.doorNY > 0.0 ? 1.0 : 0.0);
+    vec2 hv = side == 0 ? hxv : hyv;
+    if (abs((hv.x - face) + hv.y) < 0.08){
+      // 0..1 across the door, with the whole tiles cancelled before the add
+      float du = (guv.x - (side == 0 ? b.doorY : b.doorX)) + guv.y;
+      if (du >= 0.0 && du <= 1.0 && z < 2.25){
+        if (du < 0.14 || du > 0.86){ _wd = 0.95; _wb = int(b.sgn); _wg = int(uGBar); }
+        else if (z > 2.05){ _wd = 0.95; _wb = int(b.sgn); }
+        else if (z > 0.95 && z < 1.12 && du > 0.68 && du < 0.80){ _wd = 1.0; _wb = int(uMat[M_NAMBER]); }
+        else { _wd = 0.72; _wb = int(uWallM.x); }
+        if (side == 1) _wd *= 0.8;
+        return;
+      }
+      if (du > -0.3 && du < 1.3 && z < ceil(2.26 / b.fh) * b.fh){
+        _wd = side == 1 ? 0.45 : 0.56; _wb = int(b.col);   // clear margin
+        return;
+      }
+    }
+  }
+  float fzf = z / b.fh, fz = floor(fzf), zf = fzf - fz;
+  /* wcol and wf the same way: the whole part of the camera times the window
+     pitch is worked out on its own, and only its FRACTION is added to the
+     offset - so the number being floored is of order the view distance rather
+     than of order the map. */
+  float aw = guv.x * b.wpm, bw = guv.y * b.wpm;
+  float tw = (aw - floor(aw)) + bw;
+  float wcol = floor(aw) + floor(tw), wf = tw - floor(tw);
+  float dens, base;
+  if (z > hh - 0.34){                                   // parapet, often a crown
+    dens = 0.94; base = b.crown >= 0.0 ? b.crown : b.col;
+  } else if (b.stripe >= 0.0 && mod(wcol, 6.0) == b.stripePh && wf > 0.40 && wf < 0.60){
+    dens = 0.90; base = b.stripe;                       // vertical neon strip
+  } else if (fz == 0.0){                                // street level signage
+    if (z > 0.30 && z < 1.70 && wf > 0.10 && wf < 0.90){ dens = 0.95; base = b.sgn; }
+    else { dens = 0.58; base = b.col; }
+  } else if (wf > 0.18 && wf < 0.82 && zf > 0.24 && zf < 0.80){
+    /* Every window lives its own life: a personal period of 25-90 s, a fresh
+       lit roll each period so rooms go dark out of sync across the city, and a
+       tube about to die flickers out its last seconds. */
+    int iwc = int(wcol), ifz = int(fz), iseed = int(b.seed);
+    float h1 = hash3(iseed, iwc, ifz);                  // stable identity
+    float per = 25.0 + h1 * 65.0;
+    float tOff = uWorldTime + h1 * 997.0;               // desync the clocks
+    int bk = trunc0(tOff / per);
+    int wid = iwc * 92821 + ifz;
+    bool lit = hash3(wid, iseed, bk) < b.litP;
+    if (lit){
+      // most windows simply switch off; once in a while one dies flickering
+      if (per - (tOff - float(bk) * per) < 1.8 &&
+          hash3(wid, iseed, bk + 1) >= b.litP &&
+          hash3(wid, bk, 1337) < 0.14)                  // rare, for flavour
+        lit = hash3(int(uWTick.x), iwc, ifz) < 0.55;
+      else {
+        // now and then one bulb per facade fails for a moment and sputters
+        float fper = 9.0 + mod(b.seed, 7.0);            // this building's rhythm
+        float ft = uWorldTime + mod(b.seed, 89.0);
+        int fep = trunc0(ft / fper);
+        if (ft - float(fep) * fper < 1.4 &&
+            hash3(fep, iseed, 5) < 0.6 &&
+            ((iwc * 7 + ifz * 13) & 31) == trunc0(hash3(fep, iseed, 9) * 32.0))
+          lit = hash3(int(uWTick.y), iwc, ifz) < 0.6;
+      }
+    }
+    if (lit){ dens = 0.98; base = h1 < b.litP * 0.28 ? b.winB : b.winA; }
+    else { dens = 0.17; base = uWallM.z; }              // lights off
+  } else {
+    dens = 0.56 + (mod(fz, 2.0) != 0.0 ? 0.05 : 0.0); base = b.col;
+  }
+  if (side == 1) dens *= 0.80;                          // face shading
+  _wd = dens; _wb = int(base);
+}
+
+/*--- what is on a roof: tar and gravel, a parapet, plant on a coarse grid ---*/
+void roofSurface(Bld b, float sx, float sy, int ix, int iy, float h){
+  float fx = sx - floor(sx), fy = sy - floor(sy);   // sx/sy are camera-relative
+  float lip = 0.16;
+  bool onEdge = false;
+  // where the roof stops being roof - a neighbour that is not this building,
+  // or one that steps down more than a storey, is an EDGE
+  for (int k = 0; k < 4; k++){
+    bool near0 = false;
+    if (k == 0 && fx < lip)           near0 = true;
+    else if (k == 1 && fx > 1.0 - lip) near0 = true;
+    else if (k == 2 && fy < lip)      near0 = true;
+    else if (k == 3 && fy > 1.0 - lip) near0 = true;
+    if (!near0) continue;
+    int nx = ix + (k == 0 ? -1 : k == 1 ? 1 : 0);
+    int ny = iy + (k == 2 ? -1 : k == 3 ? 1 : 0);
+    if (!inMapI(nx, ny)){ onEdge = true; break; }
+    vec4 nt = tileAt(nx, ny);
+    if (bldOf(nt) != int(b.id) || tHAt(nx, ny) < h - 0.6){ onEdge = true; break; }
+  }
+  if (onEdge){
+    // the parapet, and the crown light running along the top of it
+    if (b.crown >= 0.0 && b.h - h < 0.8){ _wb = int(b.crown); _wd = 0.9; return; }
+    _wb = int(uMat[M_CURB]);
+    _wd = 0.62 + hash3(ix, iy, 41) * 0.10;
+    return;
+  }
+  float s = hash3(ix, iy, 53);
+  // plant: housings, tanks and stair heads, on their own coarse grid so they
+  // sit in clumps the way rooftop machinery does instead of freckling the deck
+  int gx = ix / 2, gy = iy / 2;
+  float pk = hash3(gx, gy, 67);
+  if (pk < 0.20 && fx > 0.16 && fx < 0.84 && fy > 0.16 && fy < 0.84){
+    _wb = pk < 0.07 ? int(uWallM2.y) : int(uWallM2.z);   // metal : dataDk
+    _wd = 0.76 - hash3(ix, iy, 13) * 0.12;
+    // a red obstruction light on top of the tallest housings
+    if (pk < 0.02 && fx > 0.42 && fx < 0.58 && fy > 0.42 && fy < 0.58){
+      _wb = int(uMat[M_CAMRED]); _wd = 0.95;
+    }
+    return;
+  }
+  /* Ducting runs in STRAIGHT lines, one way or the other, because a roof is
+     plumbed rather than woven. */
+  bool along = hash3(int(b.id), 3, 19) < 0.5;
+  int run = along ? iy : ix;
+  if ((run & 3) == 1 && hash3(int(b.id), 7, 23) > 0.45){
+    _wb = int(uWallM2.y); _wd = 0.50 + ((along ? fy : fx) < 0.35 ? 0.08 : 0.0);
+    return;
+  }
+  // tar, gravel, and the seams between the sheets it is laid in
+  _wb = s > 0.62 ? int(uMat[M_ASPHALT]) : int(uWallM2.w);
+  _wd = 0.28 + s * 0.14 + hash3(ix * 4 + trunc0(fx * 4.0), iy * 4 + trunc0(fy * 4.0), 5) * 0.10;
+  if (fx < 0.06 || fy < 0.06) _wd += 0.07;
+}
+
+/*--- the lid of ONE heightfield tile, in the rows where the ray crosses it ---
+  dNear/dFar bound the tile along the ray; ceilLimit is whatever nearer
+  geometry has already claimed. Returns whether this row was settled by it -
+  depth counts as settling it even when the glyph rounds away, because the
+  ceiling moves past the row either way. */
+bool roofSpan(Bld bb, float h, float dNear, float dFar, int ceilLimit,
+              float fr, float rdx, float rdy){
+  float dz = uCam.z - h;
+  float rFarF = uHorizon + dz * uProjRows / dFar;
+  float rNearF = uHorizon + dz * uProjRows / dNear;
+  int t0 = int(max(0.0, ceil(rFarF - 0.5)));
+  int t1 = int(floor(rNearF - 0.5));
+  if (t1 > ceilLimit) t1 = ceilLimit;
+  if (float(t1) > uGrid.y - 1.0) t1 = int(uGrid.y) - 1;
+  int rr = int(fr);
+  if (rr < t0 || rr > t1) return false;
+  float dr = dz * uProjRows / (fr + 0.5 - uHorizon);
+  if (!(dr > 0.0) || dr > uViewD) return false;
+  if (oDep < dr - 0.02) return false;          // something nearer already won
+  float sx2 = uCamF.x + rdx * dr, sy2 = uCamF.y + rdy * dr;
+  float wx2 = uCamI.x + sx2, wy2 = uCamI.y + sy2;
+  int ix2 = int(uCamI.x + floor(sx2)), iy2 = int(uCamI.y + floor(sy2));
+  if (wx2 < 0.0 || wy2 < 0.0 || float(ix2) >= uMap || float(iy2) >= uMap) return false;
+  float tr = dr / uViewD;
+  roofSurface(bb, sx2, sy2, ix2, iy2, h);
+  float gg = jround(jclamp(_wd * densMul(tr), 0.0, 1.0) * uRMAX);
+  oDep = dr; oWet = 0.0;
+  if (gg == 0.0) return true;
+  oG = gg; oPal = float(_wb); oLv = levelOf(tr); oWrote = 255.0;
+  if (emissive(_wb)){ oSrc = 2.0; oEmit = 1.0; } else oSrc = 0.0;
+  return true;
+}
+
 void main(){
   ivec2 ci = ivec2(gl_FragCoord.xy);
   int x = ci.x, r = ci.y;
@@ -22065,8 +22344,8 @@ void main(){
      writing a zero here instead would be a difference the parity check is
      right to shout about. The wrote flag carries which cells were really
      painted, and the unpack leaves the rest of bBuf/lBuf alone. */
-  float g = 0.0, b = 0.0, lv = 0.0, wet = 0.0, src = 0.0, emit = 0.0, wrote = 0.0;
-  float depth = 1e30;
+  oG = 0.0; oPal = 0.0; oLv = 0.0; oWet = 0.0; oSrc = 0.0; oEmit = 0.0; oWrote = 0.0;
+  oDep = 1e30;
 
   /*------------------------------- sky -------------------------------*/
   if ((uStages & 1) != 0 && float(r) < uHz){
@@ -22086,7 +22365,7 @@ void main(){
       }
     }
     float gg = jround(jclamp(dens, 0.0, 1.0) * uRMAX);
-    if (gg != 0.0){ g = gg; b = base; lv = 3.0; wrote = 255.0; }
+    if (gg != 0.0){ oG = gg; oPal = base; oLv = 3.0; oWrote = 255.0; }
   }
 
   /*------------------------- the ground plane ------------------------
@@ -22157,16 +22436,140 @@ void main(){
         }
         if (!drop){
           float gg = jround(jclamp(_wd * dmm, 0.0, 1.0) * uRMAX);
-          depth = uD; wet = float(_wwet);
-          if (gg != 0.0){ g = gg; b = float(_wb); lv = lvl; wrote = 255.0; }
+          oDep = uD; oWet = float(_wwet);
+          if (gg != 0.0){ oG = gg; oPal = float(_wb); oLv = lvl; oWrote = 255.0; }
         }
       }
     }
   }
 
-  oA = vec4(g, b, lv, wet) / 255.0;
-  oB = vec4(src, emit, wrote, 0.0) / 255.0;
-  oD = vec4(depth, 0.0, 0.0, 0.0);
+  /*--------------------------- the walls ---------------------------*/
+  if ((uStages & 4) != 0){
+    float rdx = cd.x, rdy = cd.y;
+    float fxc = uCamF.x, fyc = uCamF.y;
+    int mx0 = int(uCamI.x), my0 = int(uCamI.y);
+    float ddx = rdx == 0.0 ? 1e30 : abs(1.0 / rdx);
+    float ddy = rdy == 0.0 ? 1e30 : abs(1.0 / rdy);
+    int stepX = rdx < 0.0 ? -1 : 1, stepY = rdy < 0.0 ? -1 : 1;
+    float sdx0 = rdx < 0.0 ? fxc * ddx : (1.0 - fxc) * ddx;
+    float sdy0 = rdy < 0.0 ? fyc * ddy : (1.0 - fyc) * ddy;
+    int kx = 0, ky = 0, mapX = mx0, mapY = my0;
+    int ceilLimit = int(uGrid.y) - 1;
+    float fr = float(r);
+    bool painted = false;
+
+    /* The DDA steps before it looks, so the tile the camera is standing ON is
+       never examined. On the pavement that is right; fly a runner over a block
+       and the lid directly beneath you is the one tile with no top face, which
+       reads as a hole punched through the roof you are hovering over. It does
+       NOT settle the row - the CPU draws it without touching ceilLimit, so a
+       tile further out is still allowed to paint over it. */
+    {
+      float h0 = tHAt(mx0, my0);
+      int b0 = bldOf(tileAt(mx0, my0));
+      if (b0 >= 0 && h0 > 0.6 && uCam.z - h0 > 0.35)
+        roofSpan(getBld(b0), h0, 0.02, min(sdx0, sdy0), int(uGrid.y) - 1, fr, rdx, rdy);
+    }
+
+    for (int guard = 0; guard < 1700; guard++){
+      if (ceilLimit < 0) break;
+      float sdx = sdx0 + float(kx) * ddx;
+      float sdy = sdy0 + float(ky) * ddy;
+      float d;
+      int side;
+      if (sdx < sdy){ d = sdx; kx++; side = 0; mapX = mx0 + stepX * kx; }
+      else          { d = sdy; ky++; side = 1; mapY = my0 + stepY * ky; }
+      if (d > uViewD) break;
+      if (!inMapI(mapX, mapY)) break;
+      vec4 tile = tileAt(mapX, mapY);
+      float h = tHAt(mapX, mapY);
+
+      /* A BRIDGE DECK is a slab and its side is a vertical face standing on the
+         tile boundary just crossed. It belongs here, in the wall pass, for the
+         same reason every other vertical surface does: the floor pass picks one
+         surface per cell from where the ray meets a HORIZONTAL plane, so a face
+         pushed through it lands in whatever row the water would have been in.
+         Only where the ray comes off open water - inside the deck, and at the
+         abutments where it meets the bank, there is nothing to see. */
+      if (tTypeOf(tile) == T_BRIDGE){
+        int pmx = side == 0 ? mapX - stepX : mapX;
+        int pmy = side == 0 ? mapY : mapY - stepY;
+        if (inMapI(pmx, pmy) && tTypeOf(tileAt(pmx, pmy)) == T_WATER){
+          float uR = uProjRows / d;
+          float fT = uHorizon + uCam.z * uR;               // z = 0, the deck top
+          float fB = uHorizon + (uCam.z + uDeckT) * uR;    // and its soffit
+          float a0 = max(0.0, ceil(fT - 0.5));
+          float a1 = min(uGrid.y - 1.0, floor(fB - 0.5));
+          if (fr >= a0 && fr <= a1 && !(oDep < d - 0.02)){
+            float tt = d / uViewD, dm2 = densMul(tt);
+            float span = max(0.001, fB - fT);
+            float f = jclamp((fr + 0.5 - fT) / span, 0.0, 1.0);
+            float dd = 0.54 - f * 0.26 + hash3(mapX, mapY, 29) * 0.06;
+            if (((mapX + mapY) & 3) == 0) dd += 0.05;      // girders across it
+            float gg = jround(jclamp(dd * dm2, 0.0, 1.0) * uRMAX);
+            if (gg != 0.0){
+              oG = gg; oPal = f < 0.28 ? uMat[M_DECK] : uMat[M_DECKOLD];
+              oLv = levelOf(tt); oDep = d; oWet = 0.0; oSrc = 0.0; oWrote = 255.0;
+            }
+          }
+        }
+      }
+      if (h <= 0.0) continue;
+      float unitRows = uProjRows / d;
+      float rowB = uHorizon + uCam.z * unitRows;
+      float rowT = uHorizon + (uCam.z - h) * unitRows;
+      int r0 = int(max(0.0, ceil(rowT - 0.5)));
+      int r1 = int(floor(rowB - 0.5));
+      if (r1 > ceilLimit) r1 = ceilLimit;
+      int bi = bldOf(tile);
+      if (r >= r0 && r <= r1 && bi >= 0){
+        Bld bb = getBld(bi);
+        vec2 hxv = vec2(uCamI.x, fxc + d * rdx), hyv = vec2(uCamI.y, fyc + d * rdy);
+        vec2 guv = side == 0 ? hyv : hxv;
+        float t = d / uViewD, lvl = levelOf(t), dm = densMul(t);
+        // vertical corner posts at the real building edges
+        float fu = fract(guv.y);
+        bool edge = false;
+        if (bb.dome < 0.5 && (fu < 0.06 || fu > 0.94)){
+          int back = fu < 0.5 ? -1 : 1;
+          int nx = side == 0 ? mapX : mapX + back;
+          int ny = side == 0 ? mapY + back : mapY;
+          edge = !inMapI(nx, ny) || bldOf(tileAt(nx, ny)) != int(bb.id) ||
+                 abs(tHAt(nx, ny) - h) > 0.6;
+        }
+        float z = uCam.z - (fr + 0.5 - uHorizon) / unitRows;
+        facade(bb, guv, z, side, h, hxv, hyv);
+        if (_wg >= 0) oG = float(_wg);
+        else if (edge && lvl < 4.0) oG = uGBar;
+        else oG = jround(jclamp(_wd * dm, 0.0, 1.0) * uRMAX);
+        oPal = float(_wb); oLv = lvl; oDep = d; oWet = 0.0; oWrote = 255.0;
+        if (emissive(_wb)){ oSrc = 2.0; oEmit = 1.0; } else oSrc = 0.0;
+        painted = true;
+      }
+      if (h >= uCam.z){
+        if (r0 - 1 < ceilLimit) ceilLimit = r0 - 1;
+      } else {
+        /* A wall below eye level occludes only above its FAR top edge - the
+           rows between its near and far edge are its own visible top surface,
+           not cover for what is behind. Outdoors that surface is the roof. */
+        float dExit = min(sdx0 + float(kx) * ddx, sdy0 + float(ky) * ddy);
+        int rFar = int(ceil(uHorizon + (uCam.z - h) * uProjRows / dExit - 0.5)) - 1;
+        if (bi >= 0 && h > 0.6 && uCam.z - h > 0.35 && !painted){
+          if (roofSpan(getBld(bi), h, d, dExit, ceilLimit, fr, rdx, rdy))
+            painted = true;
+        }
+        if (rFar < ceilLimit) ceilLimit = rFar;
+      }
+      /* Settled. Whatever just claimed this row also moved the ceiling past
+         it - a wall to its own top edge, a roof to the row above its far edge -
+         so nothing further out is allowed to reach it. */
+      if (painted) break;
+    }
+  }
+
+  oA = vec4(oG, oPal, oLv, oWet) / 255.0;
+  oB = vec4(oSrc, oEmit, oWrote, 0.0) / 255.0;
+  oD = vec4(oDep, 0.0, 0.0, 0.0);
 }`;
 /*------------------ the framebuffer the world lands in ---------------------
   Rebuilt with the grid, like every other per-cell target here. The depth
@@ -22200,6 +22603,20 @@ function glWorldTargets(){
   const n = W * H;
   GW.qa = new Uint8Array(n * 4); GW.qa32 = new Uint32Array(GW.qa.buffer);
   GW.qb = new Uint8Array(n * 4); GW.qb32 = new Uint32Array(GW.qb.buffer);
+  /* One pixel pack buffer per attachment. readPixels into a client array is a
+     synchronous round trip on this driver - five milliseconds a call whether
+     you ask for the whole frame or a single pixel - and into a pack buffer it
+     is four microseconds. The wait moves to getBufferSubData, where it is
+     under a millisecond because by then the card has finished. */
+  for (const pb of (GL.wPack || [])) gl.deleteBuffer(pb);
+  GL.wPack = [];
+  for (const sz of [n * 4, n * 4, n * 4]){
+    const pb = gl.createBuffer();
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pb);
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, sz, gl.STREAM_READ);
+    GL.wPack.push(pb);
+  }
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   GW.colD = new Float32Array(W * 8);       // two rows of RGBA
   GW.rowD = new Float32Array(H * 8);
   if (GL.wCol) gl.deleteTexture(GL.wCol);
@@ -22235,7 +22652,34 @@ function glWorldTargets(){
   megabytes of interleaved bytes twice a second to move a red line would cost
   more than the pass it is part of. It gets its own single-channel texture and
   an epoch, and only that goes up again. */
-let wayEpoch = 0;
+let wayEpoch = 0, tagEpoch = 0, bldEpoch = 0;
+/*--- what a building is made of ---
+  Nearly all of it is decided when the city is built and never moves again.
+  litP is the exception: how many of a building's windows are lit is rolled
+  fresh every time the hour crosses into a new part of the day, so this table
+  is NOT static and pretending it was cost an afternoon - the shader kept
+  drawing the city at whatever hour it had been built at, and a parity check
+  that never changed the clock never noticed. */
+function glWorldBuildings(mkTex){
+  const gl = GL.gl;
+  const nB = Math.max(1, buildings.length);
+  const BD = new Float32Array(nB * 8 * 4);
+  for (let i = 0; i < buildings.length; i++){
+    const b = buildings[i];
+    if (!b) continue;
+    const o = i * 32;
+    BD[o]      = b.col;      BD[o + 1]  = b.sign;   BD[o + 2]  = b.crown;  BD[o + 3]  = b.stripe;
+    BD[o + 4]  = b.stripePh; BD[o + 5]  = b.litP;   BD[o + 6]  = b.fh;     BD[o + 7]  = b.wpm;
+    BD[o + 8]  = b.seed;     BD[o + 9]  = b.h;      BD[o + 10] = b.dome ? 1 : 0;
+    BD[o + 11] = b.interior || 0;
+    BD[o + 12] = b.doorX || 0;  BD[o + 13] = b.doorY || 0;
+    BD[o + 14] = b.doorNX || 0; BD[o + 15] = b.doorNY || 0;
+    BD[o + 16] = b.winA;     BD[o + 17] = b.winB;
+    BD[o + 18] = b.doorNX !== undefined ? 1 : 0;    BD[o + 19] = b.id;
+    BD[o + 20] = b.cx || 0;  BD[o + 21] = b.cy || 0; BD[o + 22] = b.domeH || 0;
+  }
+  GL.wBld = mkTex(GL.wBld, gl.RGBA32F, 8, nB, gl.RGBA, gl.FLOAT, BD);
+}
 function glWorldStatics(){
   if (!GL || !GL.pWorld) return;
   const gl = GL.gl;
@@ -22255,8 +22699,30 @@ function glWorldStatics(){
     GL.wWay = mkTex(GL.wWay, gl.R8, MAP, MAP, gl.RED, gl.UNSIGNED_BYTE,
                     wayG || new Uint8Array(N));
   }
+  /* Graffiti is sprayed by hand and pruned once a day, so the map of it moves
+     far too rarely to rebuild per frame and far too often to call it static.
+     An epoch, and a megabyte, and it is right until somebody sprays again. */
+  if (GW.tagKey !== tagEpoch && GL.wTagArt){
+    GW.tagKey = tagEpoch;
+    const TG = GW.tagBuf || (GW.tagBuf = new Uint8Array(N * 4));
+    TG.fill(0);
+    for (const k in tags){
+      const t = tags[k], a = GW.tagKeys.indexOf(t.art);
+      if (a < 0) continue;
+      const o = (k | 0) * 4;
+      TG[o] = a + 1; TG[o + 1] = t.seg; TG[o + 2] = t.spanN;
+      TG[o + 3] = dayCount - t.day >= 2 ? 255 : 0;
+    }
+    GL.wTags = mkTex(GL.wTags, gl.RGBA8, MAP, MAP, gl.RGBA, gl.UNSIGNED_BYTE, TG);
+  }
+  if (GW.bldKey !== bldEpoch && GL.wBld){
+    GW.bldKey = bldEpoch;
+    glWorldBuildings(mkTex);
+  }
   if (GW.cityKey === buildEpoch && GL.wTile) return;
   GW.cityKey = buildEpoch;
+  glWorldBuildings(mkTex);
+  GW.bldKey = bldEpoch;
 
   /* Type in the low nibble and the riverbed at 16; the building index
      one-based across green and blue, so nought reads as "nothing built here"
@@ -22278,23 +22744,6 @@ function glWorldStatics(){
   if (lampGrid) for (let i = 0; i < N; i++) LG[i] = lampGrid[i] + 1;
   GL.wLampG = mkTex(GL.wLampG, gl.R32F, MAP, MAP, gl.RED, gl.FLOAT, LG);
 
-  const nB = Math.max(1, buildings.length);
-  const BD = new Float32Array(nB * 8 * 4);
-  for (let i = 0; i < buildings.length; i++){
-    const b = buildings[i];
-    if (!b) continue;
-    const o = i * 32;
-    BD[o]      = b.col;      BD[o + 1]  = b.sign;   BD[o + 2]  = b.crown;  BD[o + 3]  = b.stripe;
-    BD[o + 4]  = b.stripePh; BD[o + 5]  = b.litP;   BD[o + 6]  = b.fh;     BD[o + 7]  = b.wpm;
-    BD[o + 8]  = b.seed;     BD[o + 9]  = b.h;      BD[o + 10] = b.dome ? 1 : 0;
-    BD[o + 11] = b.interior || 0;
-    BD[o + 12] = b.doorX || 0;  BD[o + 13] = b.doorY || 0;
-    BD[o + 14] = b.doorNX || 0; BD[o + 15] = b.doorNY || 0;
-    BD[o + 16] = b.winA;     BD[o + 17] = b.winB;
-    BD[o + 18] = b.doorNX !== undefined ? 1 : 0;    BD[o + 19] = b.id;
-    BD[o + 20] = b.cx || 0;  BD[o + 21] = b.cy || 0; BD[o + 22] = b.domeH || 0;
-  }
-  GL.wBld = mkTex(GL.wBld, gl.RGBA32F, 8, nB, gl.RGBA, gl.FLOAT, BD);
   GL.wDist = mkTex(GL.wDist, gl.R8, NB, NB, gl.RED, gl.UNSIGNED_BYTE, distMap);
 
   /* MINIFONT is five rows of three written as one string with pipes between
@@ -22310,6 +22759,24 @@ function glWorldStatics(){
   }
   GL.wFont = mkTex(GL.wFont, gl.R8, 20, 128, gl.RED, gl.UNSIGNED_BYTE, FT);
 
+  /* The four graffiti stencils, one row of the texture per row of the piece,
+     as 0 for a gap, 1 for a block and 2 for the accent colour. */
+  const AK = Object.keys(TAG_ART);
+  GW.tagKeys = AK;
+  const TA = new Uint8Array(10 * 32);
+  for (let a = 0; a < AK.length && a < 4; a++){
+    const art = TAG_ART[AK[a]];
+    for (let ry = 0; ry < 8; ry++)
+      for (let cx = 0; cx < 10; cx++){
+        const ch = art[ry][cx];
+        TA[(a * 8 + ry) * 10 + cx] = ch === '+' ? 2 : ch === '.' ? 0 : 1;
+      }
+  }
+  GL.wTagArt = mkTex(GL.wTagArt, gl.R8, 10, 32, gl.RED, gl.UNSIGNED_BYTE, TA);
+  if (!GL.wDomeF) GL.wDomeF = mkTex(null, gl.R8, 32, 16, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(32 * 16));
+  if (!GL.wTags) GL.wTags = mkTex(null, gl.RGBA8, MAP, MAP, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(N * 4));
+  GW.tagKey = -1;
+  GW.domeIdx = -1;
   GW.lampBuf = new Float32Array(Math.max(1, lamps.length) * 4);
   if (GL.wLamps) gl.deleteTexture(GL.wLamps);
   GL.wLamps = mkTex(null, gl.RGBA32F, Math.max(1, lamps.length), 1, gl.RGBA, gl.FLOAT, null);
@@ -22408,6 +22875,9 @@ function glWorldPass(){
   bind(4, GL.wLamps, U.uLamps); bind(5, GL.wDist, U.uDist);
   bind(6, GL.wFont, U.uFont); bind(7, GL.wBld, U.uBld);
   bind(8, GL.wWay, U.uWay);
+  bind(9, GL.heightT, U.uHgt);
+  bind(10, GL.wTags, U.uTags); bind(11, GL.wTagArt, U.uTagArt);
+  bind(12, GL.wDomeF, U.uDomeF);
   gl.activeTexture(gl.TEXTURE0);
   gl.uniform2f(U.uGrid, cols, rows);
   gl.uniform3f(U.uCam, cam.x, cam.y, cam.z);
@@ -22451,28 +22921,84 @@ function glWorldPass(){
   gl.uniform4f(U.uWave, (worldTime * 0.33) % TAU, (-worldTime * 0.61) % TAU,
                         (worldTime * 0.85) % TAU, (-worldTime * 1.55) % TAU);
   gl.uniform4f(U.uLamp, _lampNight, LAMP_REACH, LAMP_GAIN, LAMP_STEPS);
+  gl.uniform1f(U.uProjRows, projRows);
+  gl.uniform1f(U.uDeckT, DECK_T);
+  gl.uniform1f(U.uGBar, G_BAR);
+  gl.uniform1f(U.uWorldTime, worldTime);
+  /* The two window-flicker clocks are TRUNCATED integers off worldTime, which
+     reaches thousands - and a float there has four milliseconds between
+     neighbours, so the truncation lands on the other side of a second about
+     one time in two hundred and a window flickers when it should not. They are
+     global, so they are truncated here in double precision instead. */
+  gl.uniform2f(U.uWTick, Math.floor(worldTime * 17), Math.floor(worldTime * 19));
+  gl.uniform4f(U.uWallM, C.trunk, 0, C.winDark, C.nCyan);
+  gl.uniform4f(U.uWallM2, C.nMag, C.metal, C.dataDk, C.tire);
+  if (!GW.emis){
+    // EMISSIVE as two 32-bit words; a material past 64 is not in the array at
+    // all, which in JS reads undefined and is therefore not emissive
+    let lo = 0, hi = 0;
+    for (let i = 0; i < 64; i++) if (EMISSIVE[i]){ if (i < 32) lo |= 1 << i; else hi |= 1 << (i - 32); }
+    GW.emis = [lo >>> 0, hi >>> 0];
+    // and the eight fog-level boundaries, solved where the CPU solves them
+    GW.lvT = new Float32Array(8);
+    for (let k = 0; k < 8; k++) GW.lvT[k] = Math.pow(k / 8, 1 / 0.90);
+  }
+  gl.uniform2ui(U.uEmis, GW.emis[0], GW.emis[1]);
+  gl.uniform1fv(U.uLvT, GW.lvT);
+  /* The dome wears an animated sign, one frame every four seconds. Upload the
+     frame when it turns over, not when it is looked at. */
+  const di = ((worldTime / 4.0) | 0) % DOME_FRAMES.length;
+  const dfr = DOME_FRAMES[di];
+  if (GW.domeIdx !== di && GL.wDomeF){
+    GW.domeIdx = di;
+    const DM = new Uint8Array(dfr.w * dfr.h);
+    for (let y = 0; y < dfr.h; y++)
+      for (let xx = 0; xx < dfr.w; xx++)
+        DM[y * dfr.w + xx] = dfr.rows[y].charAt(xx) === '#' ? 255 : 0;
+    gl.bindTexture(gl.TEXTURE_2D, GL.wDomeF);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dfr.w, dfr.h, gl.RED, gl.UNSIGNED_BYTE, DM);
+  }
+  gl.uniform4f(U.uDome, dfr.w, dfr.h, dfr.scroll ? 1 : 0, (worldTime * 4) | 0);
+  gl.uniform2f(U.uDomeC, dfr.c1, dfr.c2);
   if (!GW.mat){
     GW.mat = new Float32Array(32);
     const m = GW.mat;
     m[0] = C.camRed; m[1] = C.nAmber; m[2] = C.walk;  m[3] = C.curb;
     m[4] = C.water;  m[5] = C.waterD; m[6] = C.deck;  m[7] = C.deckOld;
     m[8] = C.path;   m[9] = C.turf;   m[10] = C.rail; m[11] = C.grass;
-    m[12] = C.asphalt; m[13] = C.bank; m[14] = LAMPPOOL[0][0];
+    m[12] = C.asphalt; m[13] = C.bank; m[14] = LAMPPOOL[0][0]; m[15] = C.signBack;
   }
   gl.uniform1fv(U.uMat, GW.mat);
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  /*--- and back. Four one-byte buffers ride in one four-byte read, so the
-        only JS loop left is the unpack, which is a shift and a store. ---*/
+  /*--- and back ------------------------------------------------------------
+    Never readPixels straight into a typed array. On this driver that path
+    costs FIVE MILLISECONDS a call and does not care how much you ask for - a
+    single pixel measured 5.4ms against 5.8ms for the whole frame - because it
+    is a synchronous round trip, not a transfer. Through a pixel pack buffer
+    the same read is 0.004ms to issue and 0.87ms to collect.
+
+    So all three are issued first and collected afterwards, which also gives
+    the card the length of two more issues to finish the pass it is still
+    working on. Four one-byte buffers ride in one four-byte read, so the only
+    JS loop left is the unpack, which is a shift and a store. ---*/
   _T.draw += performance.now() - _t0; _t0 = performance.now();
   const n = cols * rows;
-  gl.readBuffer(gl.COLOR_ATTACHMENT0);
-  gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, GW.qa);
-  gl.readBuffer(gl.COLOR_ATTACHMENT1);
-  gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, GW.qb);
-  gl.readBuffer(gl.COLOR_ATTACHMENT2);
-  gl.readPixels(0, 0, cols, rows, gl.RED, gl.FLOAT, dBuf);
+  const PB = GL.wPack;
+  for (let i = 0; i < 3; i++){
+    gl.readBuffer(gl.COLOR_ATTACHMENT0 + i);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[i]);
+    if (i < 2) gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+    else       gl.readPixels(0, 0, cols, rows, gl.RED, gl.FLOAT, 0);
+  }
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[0]);
+  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GW.qa);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[1]);
+  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GW.qb);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[2]);
+  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dBuf);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   gl.readBuffer(gl.COLOR_ATTACHMENT0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.enable(gl.BLEND);
@@ -23951,6 +24477,7 @@ function netEvent(m){
     case 'tag': {                               // somebody marked a wall
       if (!m.a || !TAG_ART[m.a]) return;
       tags[m.i] = { art: m.a, day: m.d | 0, seg: 0, spanN: m.n | 0 };
+      tagEpoch++;
       if (m.j >= 0) tags[m.j] = { art: m.a, day: m.d | 0, seg: 1, spanN: m.n | 0 };
       return;
     }
@@ -24892,7 +25419,11 @@ function worldPasses(){
   const gw = glWorldPass();
   if (!(gw & 1)){ if (inside) ceilingPass(); else skyPass(); }
   if (!(gw & 2)) floorPass();
-  if (!(gw & 4)) wallPass();
+  /* wallMirror is the one part of the wall pass that stays on the CPU - it
+     writes to a cell other than the one it is drawing, which is the one thing
+     a fragment shader cannot do - so when the card takes the walls it still
+     has to run, on the buffers that just came back. */
+  if (!(gw & 4)) wallPass(); else wallMirror();
   spritePass();
   /* Order matters here and used to be wrong. A reflection is ON the road; a
      light beam is the air BETWEEN the road and the eye. The beam therefore

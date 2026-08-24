@@ -137,6 +137,46 @@ GPUT.ab = (ms = 6000) => new Promise(res => {
   }, ms);
 });
 
+/*--- 3b. block A/B, for a change that introduces a pipeline sync -----------
+  Frame-by-frame interleaving is the right instrument for a change that only
+  costs CPU, and the wrong one for a readback. A frame that reads the card
+  back waits for everything still queued from the frame BEFORE it, while a
+  frame that does not read lets the CPU run a frame ahead - so alternating
+  hands the entire previous frame's GPU time to whichever side is holding the
+  readback. Measured that way the GPU path looked 23% slower; measured in
+  blocks, where each side pays for its own steady state, it does not.
+
+  So: whole frames, in alternating blocks, timed end to end. Blocks rather
+  than one long run of each because the machine drifts. */
+GPUT.blockAB = (msPerBlock = 3000, blocks = 4) => new Promise(res => {
+  const on = [], off = [];
+  let bi = 0;
+  const acc = { t: 0, n: 0 };
+  const D = GPUT._drv;
+  const origFrame = W.frame;
+  W.frame = function(now){
+    const t = performance.now();
+    const r = origFrame.apply(this, arguments);
+    acc.t += performance.now() - t; acc.n++;
+    return r;
+  };
+  const step = () => {
+    if (bi > 0) (GPUW.on ? on : off).push(acc.t / Math.max(1, acc.n));
+    if (bi >= blocks * 2){ W.frame = origFrame;
+      const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+      return res({ onMs: +med(on).toFixed(3), offMs: +med(off).toFixed(3),
+                   ratio: +(med(on) / med(off)).toFixed(4),
+                   savedMs: +(med(off) - med(on)).toFixed(3),
+                   on: on.map(v => +v.toFixed(2)), off: off.map(v => +v.toFixed(2)),
+                   cells: R.cols * R.rows, sprites: statSprites });
+    }
+    GPUW.on = (bi % 2) === 0;
+    acc.t = 0; acc.n = 0; bi++;
+    setTimeout(step, msPerBlock);
+  };
+  step();
+});
+
 /*--------------------------- 4. the parity check ---------------------------*/
 const snap = () => ({
   g: Uint8Array.from(gBuf), b: Uint8Array.from(bBuf), l: Uint8Array.from(lBuf),
@@ -214,29 +254,36 @@ GPUT.poses = () => {
   return out;
 };
 
+/* Bare assignment, NOT window.clock = ... - ASCII CITY is one classic script,
+   so its top-level `let`s live in the global LEXICAL environment and never
+   appear on window. `W.clock = 3` quietly creates a new window property the
+   game does not read, and the pose then runs at whatever hour the game was
+   already at: thirty-five poses that all looked like one. A module can assign
+   the real binding by name, because the binding is in scope. */
 const applyPose = (p) => {
   cam.x = p.x; cam.y = p.y; cam.z = p.z; cam.a = p.a; cam.pitch = p.pitch;
-  W.clock = p.clock;
-  W.weather = p.weather;
+  clock = p.clock;
+  weather = p.weather;
   // the palette and the lamp gate are both derived from the clock, and both
   // are settled once a frame - so settle them here or the pose is half-applied
-  W.updateClock(0);
-  W._lampNight = clamp((curTime().lit - 0.10) / 0.52, 0, 1);
+  updateClock(0);
+  _lampNight = clamp((curTime().lit - 0.10) / 0.52, 0, 1);
+  // a fixed reservoir level, or two renders a frame apart disagree about rain
+  wetLevel = p.wet !== undefined ? p.wet : 0.6;
 };
 
 /* One pose, rendered twice. render() is the real renderer - runFrame is the
    street race and draws nothing - and it must be called synchronously here so
    the buffers belong to the pose we just set rather than to the frame before. */
 GPUT.parityOne = (p, stages) => {
-  const wasOn = GPUW.on, wasSt = GPUW.stages, wasWet = W.wetLevel;
+  const wasOn = GPUW.on, wasSt = GPUW.stages, wasWet = wetLevel;
+  const wasClock = clock, wasWx = weather;
   applyPose(p);
-  // a fixed reservoir level, or two renders a frame apart disagree about rain
-  W.wetLevel = p.wet !== undefined ? p.wet : 0.6;
   GPUW.on = false; render(); const B = snap();
-  applyPose(p); W.wetLevel = p.wet !== undefined ? p.wet : 0.6;
+  applyPose(p);
   GPUW.on = true; GPUW.stages = stages; render(); const A = snap();
-  const ranA = GW.ran;
-  GPUW.on = wasOn; GPUW.stages = wasSt; W.wetLevel = wasWet;
+  GPUW.on = wasOn; GPUW.stages = wasSt;
+  wetLevel = wasWet; clock = wasClock; weather = wasWx;
   const o = diff(A, B);
   o.contentA = content(A); o.contentB = content(B);
   o.pose = p;
