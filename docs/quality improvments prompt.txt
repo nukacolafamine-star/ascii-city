@@ -1,0 +1,16 @@
+imporve the third person perspective accross the board, using these targeted ideas as a starting point and matching the rest of the models and animations to his standard, add animations to kicking the kick deck and add thirdperson animations for each trick, add a cutout to the front of the jackets so that a shirt can be seen below hem if stacked, add lenses to glasses and properly only cover the front half of the head, make all acessories clothing aware and visibly show on top of or layered under in a visible way, ensure the hand of the player model connect with the weapon model, and add a third person recoil/ fireing animation for each weapon with themed ones for special weapons
+
+make it so the top 3/4 of the flock cam and street light gets actuayl remover when the saw is used to cut it down, and that the light cone asociated with the street light dissappears
+
+improve the content displayed on sign by adding twice as many slogan and phrases displayed, make symbos for the signs, make the text and symbols on sign colored, increase the flair of the boarders on signs by adding new effects and types of boarders
+
+rework first person gun models to take up less of the screen and have more visual flair and a better overall asthetic consistent with our look
+
+improve the default actor and pedestrain model, make the head bigger more distinguished arms with different poses, a thiner less bulky torso variant for important character like rook and vance, and slender female model for vesper, and a walking animation with more forward and back sciording legs and less side to side
+
+i like our current map design but some testers have said it is hard to read and that building changing shapes at different zoom levels is dissorientating, improve the existing full screen map to when open to seamlessly swtich to and utilize the highest gird size and rsolution, and improve the readability at all zoom levels, making all landmarks and quest locations with yellow text on the map visible at all zoom levels, and adding a button to cycle back and forth between marked locations auto setting the cursor on it, add a search function to the map for searching for and named location or generic shop location and snapping your cursor to the closest one
+
+make it so you can not exit the car when over the river
+
+improve the audio aspect of our engine so that in multiplayer other players guns shots have a range that gets softer and faded as it gets farther away
+

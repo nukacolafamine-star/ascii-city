@@ -10683,6 +10683,17 @@ function openSettingsMenu(){
         hint: 'hand the world to the card as textures instead of building a ' +
               'vertex buffer for it every frame',
         adj(){ GPUC.on = !GPUC.on; } },
+      { label: 'GPU WORLD', value: () => !(GL && GL.worldOK) ? 'N/A' : !GPUW.on ? 'OFF'
+                 : ['OFF','SKY','FLOOR','SKY+FLOOR','WALLS','SKY+WALLS','FLOOR+WALLS','ON'][GPUW.stages & 7],
+        hint: 'draw the sky, the ground and the walls on the card instead of ' +
+              'one character cell at a time. off is the old path, exactly',
+        adj(d){
+          // OFF -> SKY -> SKY+FLOOR -> ON -> OFF
+          const seq = [0, 1, 3, 7];
+          let m = !GPUW.on ? 0 : Math.max(0, seq.indexOf(GPUW.stages & 7));
+          m = (m + (d < 0 ? -1 : 1) + seq.length) % seq.length;
+          GPUW.on = m > 0; GPUW.stages = seq[m];
+        } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
         hint: 'traced shadows and bounced colour. costs about half the frame; ' +
               'it settles while you stand still and starts over when you move',
@@ -14038,6 +14049,7 @@ function clearWaypoint(quiet){
   waypoint = null; wayOn = false;
   if (wayG) for (const i of waySet) wayG[i] = 0;
   waySet.length = 0;
+  wayEpoch++;                                  // the GPU ground pass reads a copy
   if (!quiet) toast('you have arrived');
 }
 function wayTick(dt){
@@ -14062,7 +14074,7 @@ function wayTick(dt){
       if (d < bd){ bd = d; bi = i; }
     }
     for (let i = bi; i < RUN.path.length; i++){ wayG[RUN.path[i]] = 1; waySet.push(RUN.path[i]); }
-    wayOn = true;
+    wayOn = true; wayEpoch++;
     return;
   }
   if (!waypoint) return;
@@ -14081,7 +14093,8 @@ function wayTick(dt){
   if (path){
     for (const c of path){ wayG[c] = 1; waySet.push(c); }
     wayOn = true;
-  } else wayOn = false;                          // unroutable: the dots wait
+  } else wayOn = false;
+  wayEpoch++;                          // unroutable: the dots wait
 }
 /*========================== THE ENFORCEMENT LADDER =========================
   Corruption used to be three numbers wearing ten faces: something at 2,
@@ -19762,9 +19775,70 @@ function wallPass(){
           statCells++;
         }
       }
-      // A tower's upper floors leave the frame long before its reflection
-      // does. Screen-space mirroring alone loses them the moment you look
-      // down, so the rows above the frame are mirrored straight from here.
+      if (h >= cam.z){
+        if (r0 - 1 < ceilLimit) ceilLimit = r0 - 1;
+      } else {
+        // A wall below eye level occludes only above its FAR top edge - the
+        // rows between its near and far edge are its own visible top surface,
+        // not cover for what is behind. Indoors that surface is the worktop
+        // the floor pass draws; outdoors it is the roof, and it is drawn here.
+        const dExit = Math.min(sdx, sdy);
+        const rFar = Math.ceil(horizon + (cam.z - h) * projRows / dExit - 0.5) - 1;
+        if (!inside && b && h > 0.6 && cam.z - h > 0.35)
+          roofSpan(x, b, h, d, dExit, ceilLimit, cols, rdx, rdy, px, py);
+        if (rFar < ceilLimit) ceilLimit = rFar;
+      }
+    }
+  }
+  wallMirror();
+}
+/*------------------- the part of a tower that is off the top ---------------
+  A tower's upper floors leave the frame long before their reflection does.
+  Screen-space mirroring only knows about rows that are ON the screen, so it
+  loses the whole top of a building the moment you look down - and what is
+  left in the puddle is the two storeys above the shopfront, which is exactly
+  the part with no neon on it.
+
+  So the rows above the frame are mirrored straight from the wall pass's own
+  arithmetic. This used to live inside that pass's DDA, and it is lifted out
+  here for one reason: it is the only thing in wallPass that writes to a cell
+  other than the one being drawn, which makes it the only thing that cannot
+  become a fragment shader. Lifted, the rest of the pass can move to the card
+  and this can stay where it is.
+
+  Running it after the whole pass rather than interleaved with it is the same
+  picture, and not by luck: a reflection is blocked when a wall has already
+  claimed the row it would land in, and every row below the horizon is claimed
+  by the NEAREST tile that reaches it - ceilLimit clamps every later tile to
+  the rows above that one. So the set of blocked rows is complete by the time
+  the nearest tile has been walked, and nothing later can add to it.
+---------------------------------------------------------------------------*/
+function wallMirror(){
+  const cols = R.cols, rows = R.rows, px = cam.x, py = cam.y;
+  const hzRow = clamp(Math.floor(horizon), 0, rows - 1);
+  for (let x = 0; x < cols; x++){
+    const rdx = rayX[x], rdy = rayY[x];
+    let mapX = Math.floor(px), mapY = Math.floor(py);
+    const ddx = rdx === 0 ? 1e30 : Math.abs(1 / rdx);
+    const ddy = rdy === 0 ? 1e30 : Math.abs(1 / rdy);
+    let stepX, stepY, sdx, sdy;
+    if (rdx < 0){ stepX = -1; sdx = (px - mapX) * ddx; } else { stepX = 1; sdx = (mapX + 1 - px) * ddx; }
+    if (rdy < 0){ stepY = -1; sdy = (py - mapY) * ddy; } else { stepY = 1; sdy = (mapY + 1 - py) * ddy; }
+    let ceilLimit = rows - 1, side = 0, guard = 0;
+    while (ceilLimit >= 0 && guard++ < 1700){
+      if (sdx < sdy){ sdx += ddx; mapX += stepX; side = 0; }
+      else          { sdy += ddy; mapY += stepY; side = 1; }
+      const d = side === 0 ? sdx - ddx : sdy - ddy;
+      if (d > viewD) break;
+      if (mapX < 0 || mapY < 0 || mapX >= MAP || mapY >= MAP) break;
+      const id = mapY * MAP + mapX, h = tH[id];
+      if (h <= 0) continue;
+      const unitRows = projRows / d;
+      const rowB = horizon + cam.z * unitRows;
+      const rowT = horizon + (cam.z - h) * unitRows;
+      let r0 = Math.ceil(rowT - 0.5);
+      if (r0 < 0) r0 = 0;
+      const b = buildings[tB[id]];
       if (b){
         const mb = 2 * horizon + 2 * cam.z * unitRows;
         let s0 = Math.ceil(rowT - 0.5), s1 = Math.floor(rowB - 0.5);
@@ -19791,17 +19865,15 @@ function wallPass(){
           }
         }
       }
+      /* The same occlusion bookkeeping the wall pass keeps, and for the same
+         reason: it is what ends this walk. Without it the loop runs to the
+         view distance down every column instead of stopping at the first
+         thing tall enough to fill the frame. */
       if (h >= cam.z){
         if (r0 - 1 < ceilLimit) ceilLimit = r0 - 1;
       } else {
-        // A wall below eye level occludes only above its FAR top edge - the
-        // rows between its near and far edge are its own visible top surface,
-        // not cover for what is behind. Indoors that surface is the worktop
-        // the floor pass draws; outdoors it is the roof, and it is drawn here.
         const dExit = Math.min(sdx, sdy);
         const rFar = Math.ceil(horizon + (cam.z - h) * projRows / dExit - 0.5) - 1;
-        if (!inside && b && h > 0.6 && cam.z - h > 0.35)
-          roofSpan(x, b, h, d, dExit, ceilLimit, cols, rdx, rdy, px, py);
         if (rFar < ceilLimit) ceilLimit = rFar;
       }
     }
@@ -21366,6 +21438,23 @@ function glInit(){
       G.uC[k] = gl.getUniformLocation(G.pComp, k);
     G.compOK = true;
   } catch (e){ G.compOK = false; }
+  /* And again for the world pass. Three colour attachments and an integer
+     hash in the fragment shader are more than some drivers will take, and
+     every pass it replaces is still sitting there, so a failure here costs
+     frame time and nothing else. */
+  G.worldOK = false;
+  try {
+    G.pWorld = mkProg(VS_FULL, FS_WORLD);
+    G.uW = {};
+    for (const k of ['uCol','uRow','uTile','uLampG','uLamps','uDist','uFont','uBld','uWay',
+                     'uGrid','uCam','uCamI','uCamF','uCamM','uCamH',
+                     'uHorizon','uHz','uR0','uRMAX','uStages',
+                     'uViewD','uMap','uP','uRW','uNB','uDensK',
+                     'uNight','uSunOn','uSunRow','uDay','uSkyMat','uLineW',
+                     'uWet','uWayOn','uRiverY','uRural','uWave','uLamp','uMat'])
+      G.uW[k] = gl.getUniformLocation(G.pWorld, k);
+    G.worldOK = true;              // glWorldTargets has the final say
+  } catch (e){ G.worldOK = false; G.pWorld = null; }
   G.uBG = {};
   for (const k of ['uSky', 'uMid', 'uFog', 'uGround', 'uHz']) G.uBG[k] = gl.getUniformLocation(G.pBG, k);
   G.uG = {};
@@ -21560,6 +21649,7 @@ function glResize(){
         gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
     }
   }
+  if (GL.pWorld) glWorldTargets();
   glBuildAtlas();
   glBuildPalette();
   glUploadHeight();
@@ -21654,6 +21744,749 @@ function glLightPass(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.enable(gl.BLEND);
   return true;
+}
+/*=================== the world stops being a CPU loop =======================
+  Everything above this line hands the card a world the CPU has already drawn.
+  This is the card drawing it.
+
+  The three passes that lay down the STATIC world - sky, ground, walls - are
+  between them a third of the frame at the finest grid, and they are the head
+  of the dependency chain: sprites, signs, reflections and the lamp beam all
+  read the depth and the source flags those three leave behind. So they move
+  together, and what comes back across the bus is exactly the six buffers the
+  rest of the frame already expects. Nothing downstream learns anything.
+
+  The shape is one fragment per CHARACTER CELL - not per pixel - into a
+  framebuffer of three attachments:
+
+      colour 0   RGBA8   glyph, palette, distance level, wetness
+      colour 1   RGBA8   source kind, emitter kind
+      colour 2   R32F    depth
+
+  which is gBuf/bBuf/lBuf/refBuf, srcBuf/emitKind, and dBuf. Two readPixels of
+  RGBA8 and one of R32F come back in about a millisecond; an R8 attachment
+  measured 6.6ms EACH on this driver, which is why four one-byte buffers are
+  packed into one four-byte target rather than given a target apiece.
+
+  Why a fragment and not a column: the CPU walks one DDA per column and paints
+  spans of rows, because a span is cheap when you are already there. A shader
+  has no spans - it has a hundred and twenty thousand independent programs -
+  so the question is turned round. Screen row r at horizontal distance d sits
+  at world height cam.z - (r + 0.5 - horizon) * d / projRows, which is LINEAR
+  in d: every cell is a straight ray in three dimensions, and the whole
+  sky/floor/wall system is one heightfield march per cell.
+
+  Parity is the reason for the two data textures. JS computes in doubles and
+  GLSL in floats, so anything recomputed in the shader drifts from what the
+  CPU had - and a drift of one ulp at a tile boundary is a whole cell of the
+  wrong material. So the values that vary per COLUMN (the ray, the wobble,
+  the occlusion cutoff) and per ROW (the two floor distances, the sky's glow
+  ramp) are computed once on the CPU exactly as the old passes computed them,
+  and uploaded. What is left to drift is only the arithmetic between them.
+============================================================================*/
+const GPUW = {
+  /* Off by default until the walls move too. Sky and ground alone are a
+     wash: they are 4.6ms of CPU replaced by 4.8ms of pass, because the
+     readback and the unpack are a fixed toll that does not care how much
+     work was moved. It only pays once the third pass is on the card. */
+  on:     false,
+  stages: 3,     // bit 0 sky, bit 1 floor, bit 2 walls
+  max:    7
+};
+const GW = { qa: null, qa32: null, qb: null, qb32: null, colD: null, rowD: null, ran: 0 };
+const FS_WORLD = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+layout(location = 0) out vec4 oA;    // glyph, palette, level, wetness
+layout(location = 1) out vec4 oB;    // source kind, emitter kind, did-write
+layout(location = 2) out vec4 oD;    // depth
+
+uniform sampler2D uCol;      // per column: rayX, rayY, refWob, floorCut | skyA, sunD
+uniform sampler2D uRow;      // per row:    d, dWater, glowD, up | lvl, dm, lvlW, dmW
+uniform sampler2D uTile;     // per map tile: type+flags, building lo, building hi, paint
+uniform sampler2D uLampG;    // per map tile: nearest lamp, one-based
+uniform sampler2D uLamps;    // per lamp: lens x, lens y, colour, dead
+uniform sampler2D uDist;     // per block: district
+uniform sampler2D uFont;     // the 3x5 pixel font the crossings are numbered in
+uniform sampler2D uBld;      // per building: eight texels of what it is made of
+uniform sampler2D uWay;      // per map tile: the red line home
+
+uniform vec2  uGrid;         // cols, rows
+uniform vec3  uCam;
+/*--- the camera, split so the fraction is not lost in the whole -------------
+  Everything the ground pass decides is decided about a SMALL quantity: where
+  in a tile the sample landed, where in a twenty-metre block, which side of a
+  kerb. But the sample point itself is an absolute world coordinate around
+  four hundred, where a float has thirty microns between neighbours - so a
+  kerb strip a tenth of a metre wide is tested with a third of a percent of
+  its own width as noise, and the CPU, deciding the same test in double
+  precision, comes down the other side of it along whole diagonals of screen.
+
+  So the integer part of the camera is kept out of the arithmetic. sx is the
+  offset from the camera's own tile - magnitude the view distance, not the map
+  size - and every fractional test is made on that, with the whole part folded
+  back in only where an absolute position is genuinely wanted. Same value, a
+  quarter of the noise. */
+uniform vec2  uCamI;         // floor(cam.xy)
+uniform vec2  uCamF;         // cam.xy - uCamI
+uniform vec2  uCamM;         // uCamI mod P, for the block residue
+uniform vec2  uCamH;         // fract(uCamI * 0.5), for the slab joints
+uniform float uHorizon, uHz, uR0, uRMAX;
+uniform float uViewD, uMap, uP, uRW, uNB, uDensK;
+uniform int   uStages;
+// sky
+uniform float uNight, uSunOn, uSunRow, uDay;
+uniform vec4  uSkyMat;       // glowMat, nWhite, nAmber, sunGlow
+uniform float uLineW;
+// ground
+uniform float uWet, uWayOn, uRiverY, uRiverDepth, uRural;
+uniform vec4  uWave;         // the four water phases, already wrapped
+uniform vec4  uLamp;         // night, reach, gain, steps
+uniform float uMat[32];
+#define M_CAMRED   0
+#define M_NAMBER   1
+#define M_WALK     2
+#define M_CURB     3
+#define M_WATER    4
+#define M_WATERD   5
+#define M_DECK     6
+#define M_DECKOLD  7
+#define M_PATH     8
+#define M_TURF     9
+#define M_RAIL    10
+#define M_GRASS   11
+#define M_ASPHALT 12
+#define M_BANK    13
+#define M_POOL0   14
+#define T_ROAD   0
+#define T_CROSS  1
+#define T_WALK   2
+#define T_LOT    3
+#define T_WATER  5
+#define T_BRIDGE 6
+#define T_PATH   7
+
+/*--- the same integer noise the CPU uses, and it ports exactly ---
+  hash3 is Math.imul and >>> on 32-bit words, which is uint arithmetic with
+  defined wraparound in GLSL ES 3.00. The one place it is NOT exact is the
+  last line: JS divides a 32-bit integer in double precision, and float(h)
+  here rounds a 32-bit value into a 24-bit mantissa first. That is a relative
+  error of 2^-25 on a number that is then compared against a threshold, so a
+  cell flips only when the true value lands inside that window - about one
+  comparison in thirty million, and thirty randomised poses did not find one. */
+float hash3(int a, int b, int c){
+  uint h = uint(a) * 374761393u ^ uint(b) * 668265263u ^ uint(c) * 1442695041u;
+  h = (h ^ (h >> 13)) * 1274126177u;
+  return float(h ^ (h >> 16)) / 4294967296.0;
+}
+// JS Math.round is floor(x+0.5); GLSL round() may go to even on a tie
+float jround(float x){ return floor(x + 0.5); }
+float jclamp(float x, float a, float b){ return min(max(x, a), b); }
+// JS "x | 0" truncates toward zero, which is what int() does - but only for
+// values inside 32 bits, and every one of these is a tile or a screen row
+int trunc0(float x){ return int(x); }
+/* The two distance ramps. Wherever the distance is per ROW these arrive
+   precomputed in uRow, because GLSL pow and Math.pow disagree in the last
+   couple of bits and that is enough to step a fog level at a boundary. Only
+   the surfaces found by marching - the channel wall, and the roofs - are far
+   enough off the row grid to have to compute them here. */
+float levelOf(float t){
+  if (t <= 0.0) return 0.0;
+  if (t >= 1.0) return 7.0;
+  return min(7.0, floor(pow(t, 0.90) * 8.0));
+}
+float densMul(float t){ return 1.0 - uDensK * pow(t, 1.15); }
+
+/*------------------------- what the map says here --------------------------
+  One RGBA8 texel per tile carries everything the ground pass asks of the
+  city: the surface type in the low nibble of red with the riverbed and the
+  waypoint line as flags above it, the building index across green and blue
+  (one-based, so nought means nothing is built here), and in alpha the
+  character painted on the tarmac at a crossing. */
+vec4 tileAt(int ix, int iy){ return texelFetch(uTile, ivec2(ix, iy), 0); }
+int  tTypeOf(vec4 t){ return int(t.r * 255.0 + 0.5) & 15; }
+bool riverBedOf(vec4 t){ return (int(t.r * 255.0 + 0.5) & 16) != 0; }
+bool wayAt(int ix, int iy){ return texelFetch(uWay, ivec2(ix, iy), 0).r > 0.5; }
+int  bldOf(vec4 t){ return int(t.g * 255.0 + 0.5) + (int(t.b * 255.0 + 0.5) << 8) - 1; }
+vec4 bldAt(int id, int slot){ return texelFetch(uBld, ivec2(slot, id), 0); }
+
+int puddleAt(int ix, int iy){
+  if (uWet >= 0.999) return 1;
+  if (uWet <= 0.001) return 0;
+  float blob = hash3(ix / 3, iy / 3, 313);
+  float fine = hash3(ix, iy, 77);
+  return (blob * 0.72 + fine * 0.28) < uWet ? 1 : 0;
+}
+float riverMid(float x){
+  return uRiverY + sin(x * 0.042) * 9.0 + sin(x * 0.017 + 1.7) * 5.0;
+}
+/* Two perpendicular sines cross into a field of blobs, so the waves run as
+   long crests parallel to the banks instead. The four time phases arrive
+   already reduced into one turn: worldTime is seconds since the city was
+   built and runs to thousands, and a float that large has thirty microradians
+   between neighbours - enough for the ripple to disagree with the CPU's
+   double-precision version by a whole glyph. Wrapped, the phase is small and
+   the two agree. */
+float _wd; int _wb, _wwet, _wg;
+void waterShade(float wx, float wy){
+  float cross = wy - riverMid(wx);
+  float band = cross * 1.05
+             + sin(wx * 0.055 + uWave.x) * 1.8
+             + sin(wx * 0.131 + uWave.y) * 0.7;
+  float w1 = sin(band * 1.55 + uWave.z)
+           + 0.55 * sin(band * 3.7 + uWave.w);
+  _wb = w1 > 0.45 ? int(uMat[M_WATER]) : int(uMat[M_WATERD]);
+  _wd = 0.23 + w1 * 0.10;
+  float gl = hash3(trunc0(wx * 1.7), trunc0(wy * 1.7), 61);
+  if (gl > 0.984) _wd += 0.14;
+  _wwet = 2;
+}
+/* The pool a lamp throws, over whatever the ground already was. The rung
+   carries the colour and the glyph density carries the intensity, and because
+   both fall off together the pool reads as light landing rather than as
+   ground being painted. */
+void lampPool(float wx, float wy, int ix, int iy){
+  if (uLamp.x <= 0.01) return;
+  float li = texelFetch(uLampG, ivec2(ix, iy), 0).r - 1.0;
+  if (li < 0.0) return;
+  vec4 L = texelFetch(uLamps, ivec2(int(li), 0), 0);
+  if (L.w > 0.5) return;                       // dead
+  float dx = wx - L.x, dy = wy - L.y;
+  float d2 = dx * dx + dy * dy;
+  if (d2 >= uLamp.y * uLamp.y) return;
+  float f = 1.0 - sqrt(d2) / uLamp.y;
+  float e = f * f * (3.0 - 2.0 * f) * uLamp.x;
+  if (e <= 0.02) return;
+  _wd = jclamp(_wd + e * uLamp.z, 0.0, 1.0);
+  int k = trunc0(e * uLamp.w);
+  int st = int(uLamp.w);
+  _wb = int(uMat[M_POOL0]) + int(L.z) * st + (k < st ? k : st - 1);
+}
+int zoneAt(int bi, int bj){
+  float zr = length(vec2(float(bi) + 0.5 - uNB * 0.5, float(bj) + 0.5 - uNB * 0.5)) / (uNB * 0.5);
+  return zr < 0.15 ? 0 : zr < 0.34 ? 1 : zr < 0.60 ? 2 : zr < 0.85 ? 3 : 4;
+}
+int districtAt(int x, int y){
+  int bi = int(jclamp(float(x / int(uP)), 0.0, uNB - 1.0));
+  int bj = int(jclamp(float(y / int(uP)), 0.0, uNB - 1.0));
+  return int(texelFetch(uDist, ivec2(bi, bj), 0).r * 255.0 + 0.5);
+}
+void floorSample(float wx, float wy, float sx, float sy, int ix, int iy, vec4 tile){
+  int t = tTypeOf(tile);
+  _wwet = (t == T_ROAD || t == T_CROSS) ? puddleAt(ix, iy) : 0;
+  float rx = mod(uCamM.x + sx, uP), ry = mod(uCamM.y + sy, uP);
+  float fx = sx - floor(sx), fy = sy - floor(sy);
+  if (uWayOn > 0.5 && wayAt(ix, iy)){             // the red line home, on ANY ground
+    float cfx = fx - 0.5, cfy = fy - 0.5;
+    if (cfx * cfx + cfy * cfy < 0.10){
+      _wb = int(uMat[M_CAMRED]); _wd = 0.95; _wwet = puddleAt(ix, iy); return;
+    }
+  }
+  if (t == T_ROAD || t == T_CROSS){
+    int pc = int(tile.a * 255.0 + 0.5);         // the crossing's own number
+    if (pc != 0 && fx >= 0.14 && fy >= 0.10){
+      int gc = trunc0((fx - 0.14) * 4.17), gr = trunc0((fy - 0.10) * 6.25);
+      if (gr < 5 && texelFetch(uFont, ivec2(gr * 4 + gc, pc), 0).r > 0.5){
+        // painted in something that glows: it is a source, so it carries
+        // nobody else's light
+        _wb = int(uMat[M_NAMBER]); _wd = 0.95; _wwet = 0;
+        return;
+      }
+    }
+    _wb = int(uMat[M_WALK]); _wd = 0.27 + hash3(ix, iy, 5) * 0.09;
+    float jx = fract(uCamH.x + sx * 0.5), jy = fract(uCamH.y + sy * 0.5);
+    if (jx < 0.05 || jy < 0.05) _wd = 0.44;               // slab joints
+    bool inX = rx < uRW, inY = ry < uRW;
+    if (!(inX && inY)){
+      float off = inX ? abs(rx - uRW * 0.5) : abs(ry - uRW * 0.5);
+      if (off < 0.6){ _wb = int(uMat[M_CURB]); _wd = 0.38; }
+      else if (abs(off - 2.1) < 0.12){ _wb = int(uMat[M_CURB]); _wd = 0.30; }
+    }
+    _wwet = puddleAt(ix, iy);
+    return;
+  }
+  if (t == T_WALK){
+    _wb = int(uMat[M_WALK]); _wd = 0.27 + hash3(ix, iy, 5) * 0.09;
+    float jx = fract(uCamH.x + sx * 0.5), jy = fract(uCamH.y + sy * 0.5);
+    if (jx < 0.05 || jy < 0.05) _wd = 0.44;
+    // paving drains better than tarmac: it needs the reservoir fuller
+    _wwet = uWet > 0.45 ? puddleAt(ix, iy) : 0;
+    return;
+  }
+  if (t == T_WATER){ waterShade(wx, wy); return; }
+  if (t == T_BRIDGE){
+    _wb = hash3(ix, iy, 23) > 0.5 ? int(uMat[M_DECK]) : int(uMat[M_DECKOLD]);
+    _wd = 0.32 + hash3(ix, iy, 13) * 0.10;
+    if (fx < 0.09 || fy < 0.09) _wd = 0.54;               // plate seams
+    _wwet = puddleAt(ix, iy);
+    return;
+  }
+  if (t == T_PATH){
+    _wb = int(uMat[M_PATH]); _wd = 0.30 + hash3(ix, iy, 31) * 0.12;
+    return;
+  }
+  if (t == T_LOT){
+    if (float(districtAt(ix, iy)) == uRural){
+      if (zoneAt(ix / int(uP), iy / int(uP)) >= 4){        // open wilderness
+        _wb = int(uMat[M_TURF]); _wd = 0.20 + hash3(ix, iy, 12) * 0.16;
+        if (hash3(ix, iy, 44) > 0.985){ _wb = int(uMat[M_RAIL]); _wd = 0.5; }
+        return;
+      }
+      // worked land: crop rows, soil between
+      if (iy - (iy / 3) * 3 == 0){ _wb = int(uMat[M_PATH]);  _wd = 0.26 + hash3(ix, iy, 7) * 0.08; }
+      else                       { _wb = int(uMat[M_GRASS]); _wd = 0.40 + hash3(ix, iy, 8) * 0.20; }
+      return;
+    }
+    _wb = int(uMat[M_TURF]); _wd = 0.28 + hash3(ix, iy, trunc0(wx * 3.0)) * 0.22;
+    return;
+  }
+  int bi = bldOf(tile);
+  _wb = bi >= 0 ? int(bldAt(bi, 0).x) : int(uMat[M_ASPHALT]);
+  _wd = 0.5;
+}
+bool inChannel(int ix, int iy){
+  vec4 t = tileAt(ix, iy);
+  return tTypeOf(t) == T_WATER || riverBedOf(t);
+}
+
+void main(){
+  ivec2 ci = ivec2(gl_FragCoord.xy);
+  int x = ci.x, r = ci.y;
+  vec4 cd = texelFetch(uCol, ivec2(x, 0), 0);
+  vec4 cs = texelFetch(uCol, ivec2(x, 1), 0);
+  vec4 rw = texelFetch(uRow, ivec2(r, 0), 0);
+  vec4 rl = texelFetch(uRow, ivec2(r, 1), 0);
+
+  /* The cleared frame - except that worldPasses clears gBuf, dBuf, refBuf and
+     srcBuf and does NOT clear bBuf or lBuf, because every reader of those two
+     is gated on the glyph being non-empty and a clear of 122k cells twice a
+     frame is not free. So a cell nobody draws keeps LAST frame's palette, and
+     writing a zero here instead would be a difference the parity check is
+     right to shout about. The wrote flag carries which cells were really
+     painted, and the unpack leaves the rest of bBuf/lBuf alone. */
+  float g = 0.0, b = 0.0, lv = 0.0, wet = 0.0, src = 0.0, emit = 0.0, wrote = 0.0;
+  float depth = 1e30;
+
+  /*------------------------------- sky -------------------------------*/
+  if ((uStages & 1) != 0 && float(r) < uHz){
+    float glowD = rw.z, up = rw.w;
+    float hs = hash3(int(cs.x), int(float(r) - uHorizon), 11);
+    float dens = glowD, base = uSkyMat.x;
+    if (uNight > 0.0 && hs < 0.007 * up * uNight){ dens = 0.45 + hs * 24.0; base = uSkyMat.y; }
+    else if (uNight > 0.0 && hs < 0.05) dens += 0.05;
+    if (uSunOn > 0.5){
+      bool day = uDay > 0.5;
+      float dy = (float(r) - uSunRow) * 2.0;
+      float q = cs.y * cs.y + dy * dy;
+      if (q < (day ? 9.0 : 24.0)){ dens = 1.0; base = day ? uSkyMat.y : uSkyMat.z; }
+      else if (q < (day ? 34.0 : 170.0)){
+        float halo = (day ? 0.3 : 0.55) - q / (day ? 160.0 : 380.0);
+        if (halo > dens){ dens = halo; base = day ? uLineW : uSkyMat.w; }
+      }
+    }
+    float gg = jround(jclamp(dens, 0.0, 1.0) * uRMAX);
+    if (gg != 0.0){ g = gg; b = base; lv = 3.0; wrote = 255.0; }
+  }
+
+  /*------------------------- the ground plane ------------------------
+    Rows below the horizon inverse-project onto z = 0, and the distance that
+    puts them there is per ROW, not per cell - so it arrives in uRow already
+    computed in double precision, along with its fog level and its density
+    multiplier. The only per-cell arithmetic left is where along the ray the
+    tile is, which is the part that has to be per-cell. */
+  if ((uStages & 2) != 0 && float(r) >= uR0){
+    float d = rw.x;
+    if (d > 0.0 && d <= cd.w){          // negative means the CPU cut this row
+      float sx = uCamF.x + cd.x * d, sy = uCamF.y + cd.y * d;
+      float wx = uCamI.x + sx, wy = uCamI.y + sy;
+      int ix = int(uCamI.x + floor(sx)), iy = int(uCamI.y + floor(sy));
+      if (!(wx < 0.0 || wy < 0.0 || float(ix) >= uMap || float(iy) >= uMap)){
+        vec4 tile = tileAt(ix, iy);
+        float uD = d, lvl = rl.x, dmm = rl.y;
+        bool drop = false;
+        if (tTypeOf(tile) == T_WATER){
+          /* The ray has dropped through the hole in the street. Walk the gap
+             between the lip and the bed and find the first bank it passes:
+             THAT is the wall it stops against, not whatever tile happens to
+             sit at the far end of the ray. */
+          float dW = rw.y;
+          if (dW < 0.0) drop = true;    // past the view distance, decided on the CPU
+          else {
+            float sx2 = uCamF.x + cd.x * dW, sy2 = uCamF.y + cd.y * dW;
+            float wx2 = uCamI.x + sx2, wy2 = uCamI.y + sy2;
+            int ix2 = int(uCamI.x + floor(sx2)), iy2 = int(uCamI.y + floor(sy2));
+            if (wx2 < 0.0 || wy2 < 0.0 || float(ix2) >= uMap || float(iy2) >= uMap) drop = true;
+            else {
+              float wallD = -1.0;
+              int wix = ix2, wiy = iy2;
+              float span = dW - d;
+              int nStep = int(min(40.0, max(2.0, ceil(span * 0.8))));
+              for (int sI = 1; sI <= 40; sI++){
+                if (sI > nStep) break;
+                float ds = d + span * (float(sI) / float(nStep));
+                float ox = uCamF.x + cd.x * ds, oy = uCamF.y + cd.y * ds;
+                float px2 = uCamI.x + ox, py2 = uCamI.y + oy;
+                int six = int(uCamI.x + floor(ox)), siy = int(uCamI.y + floor(oy));
+                if (px2 < 0.0 || py2 < 0.0 || float(six) >= uMap || float(siy) >= uMap){
+                  wallD = ds; break;
+                }
+                // a deck overhead is not the bed - the river runs under it,
+                // and its SIDE is a vertical face the wall pass draws
+                if (!inChannel(six, siy)){ wallD = ds; wix = six; wiy = siy; break; }
+              }
+              if (wallD < 0.0){                          // clear all the way down
+                lvl = rl.z; dmm = rl.w; uD = dW;
+                // the bed is the bed whatever is built over it
+                waterShade(wx2, wy2);
+                if (tTypeOf(tileAt(ix2, iy2)) == T_BRIDGE) _wd *= 0.62;
+              } else {                                   // the channel wall, in place
+                float tw = wallD / uViewD;
+                lvl = levelOf(tw); dmm = densMul(tw); uD = wallD;
+                float f = jclamp((wallD - d) / max(0.001, span), 0.0, 1.0);
+                _wb = f < 0.16 ? int(uMat[M_CURB]) : int(uMat[M_BANK]);  // a kerbstone lip
+                _wd = 0.46 - f * 0.14 + hash3(wix, wiy, 17) * 0.12;
+                if (((wiy * 3 + wix) & 3) == 0) _wd += 0.07;   // coursing in the stone
+                _wwet = 0;
+              }
+            }
+          }
+        } else {
+          floorSample(wx, wy, sx, sy, ix, iy, tile);
+          lampPool(wx, wy, ix, iy);
+        }
+        if (!drop){
+          float gg = jround(jclamp(_wd * dmm, 0.0, 1.0) * uRMAX);
+          depth = uD; wet = float(_wwet);
+          if (gg != 0.0){ g = gg; b = float(_wb); lv = lvl; wrote = 255.0; }
+        }
+      }
+    }
+  }
+
+  oA = vec4(g, b, lv, wet) / 255.0;
+  oB = vec4(src, emit, wrote, 0.0) / 255.0;
+  oD = vec4(depth, 0.0, 0.0, 0.0);
+}`;
+/*------------------ the framebuffer the world lands in ---------------------
+  Rebuilt with the grid, like every other per-cell target here. The depth
+  attachment is a COLOUR attachment of format R32F rather than a real depth
+  buffer: the pass picks its own nearest surface analytically, so it has no
+  use for a depth TEST, and dBuf has to come back to the CPU as the same
+  Float32Array the sprite pass has always read. */
+function glWorldTargets(){
+  const gl = GL.gl, W = R.cols, H = R.rows;
+  if (GL.wF) gl.deleteFramebuffer(GL.wF);
+  for (const t of (GL.wT || [])) gl.deleteTexture(t);
+  GL.wT = [];
+  GL.wF = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
+  const mk = (ifmt, fmt, type, slot) => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, W, H, 0, fmt, type, null);
+    for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+    for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + slot, gl.TEXTURE_2D, t, 0);
+    GL.wT.push(t);
+  };
+  mk(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+  mk(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, 1);
+  mk(gl.R32F,  gl.RED,  gl.FLOAT,         2);
+  GL.worldOK = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const n = W * H;
+  GW.qa = new Uint8Array(n * 4); GW.qa32 = new Uint32Array(GW.qa.buffer);
+  GW.qb = new Uint8Array(n * 4); GW.qb32 = new Uint32Array(GW.qb.buffer);
+  GW.colD = new Float32Array(W * 8);       // two rows of RGBA
+  GW.rowD = new Float32Array(H * 8);
+  if (GL.wCol) gl.deleteTexture(GL.wCol);
+  if (GL.wRow) gl.deleteTexture(GL.wRow);
+  const mkData = (w, h) => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+    for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+    for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  GL.wCol = mkData(W, 2);
+  GL.wRow = mkData(H, 2);
+}
+/*------------------- what the shader needs to know once --------------------
+  The city is a megabyte of tile arrays and a couple of thousand building
+  records, and none of it changes from one frame to the next - so it goes up
+  when the city is built and is not touched again:
+
+    wTile   RGBA8   MAP x MAP   surface type + riverbed, the building index,
+                                and the character painted on the road
+    wLampG  R32F    MAP x MAP   which lamp is nearest, one-based
+    wBld    RGBA32F 8 x nB      everything a building is made of
+    wDist   R8      NB x NB     the district field
+    wFont   R8      20 x 128    the 3x5 pixel font crossings are numbered in
+    wWay    R8      MAP x MAP   the red line home
+
+  The waypoint line is the one thing here that moves, which is why it is not
+  folded into wTile with the rest of the per-tile flags: rebuilding four
+  megabytes of interleaved bytes twice a second to move a red line would cost
+  more than the pass it is part of. It gets its own single-channel texture and
+  an epoch, and only that goes up again. */
+let wayEpoch = 0;
+function glWorldStatics(){
+  if (!GL || !GL.pWorld) return;
+  const gl = GL.gl;
+  const mkTex = (t, ifmt, w, h, fmt, type, data) => {
+    if (!t) t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, data);
+    for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+    for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  const N = MAP * MAP;
+  if (GW.wayKey !== wayEpoch){
+    GW.wayKey = wayEpoch;
+    GL.wWay = mkTex(GL.wWay, gl.R8, MAP, MAP, gl.RED, gl.UNSIGNED_BYTE,
+                    wayG || new Uint8Array(N));
+  }
+  if (GW.cityKey === buildEpoch && GL.wTile) return;
+  GW.cityKey = buildEpoch;
+
+  /* Type in the low nibble and the riverbed at 16; the building index
+     one-based across green and blue, so nought reads as "nothing built here"
+     the way tB's -1 does; and the crossing's painted character in alpha,
+     which is nought nearly everywhere. */
+  const TB = new Uint8Array(N * 4);
+  for (let i = 0, o = 0; i < N; i++, o += 4){
+    TB[o] = tType[i] | (riverBed[i] ? 16 : 0);
+    const bi = tB[i] + 1;
+    TB[o + 1] = bi & 255; TB[o + 2] = bi >> 8;
+  }
+  for (const k in signFloor){
+    const c = signFloor[k].charCodeAt(0);
+    if (c < 256) TB[(k | 0) * 4 + 3] = c;
+  }
+  GL.wTile = mkTex(GL.wTile, gl.RGBA8, MAP, MAP, gl.RGBA, gl.UNSIGNED_BYTE, TB);
+
+  const LG = new Float32Array(N);
+  if (lampGrid) for (let i = 0; i < N; i++) LG[i] = lampGrid[i] + 1;
+  GL.wLampG = mkTex(GL.wLampG, gl.R32F, MAP, MAP, gl.RED, gl.FLOAT, LG);
+
+  const nB = Math.max(1, buildings.length);
+  const BD = new Float32Array(nB * 8 * 4);
+  for (let i = 0; i < buildings.length; i++){
+    const b = buildings[i];
+    if (!b) continue;
+    const o = i * 32;
+    BD[o]      = b.col;      BD[o + 1]  = b.sign;   BD[o + 2]  = b.crown;  BD[o + 3]  = b.stripe;
+    BD[o + 4]  = b.stripePh; BD[o + 5]  = b.litP;   BD[o + 6]  = b.fh;     BD[o + 7]  = b.wpm;
+    BD[o + 8]  = b.seed;     BD[o + 9]  = b.h;      BD[o + 10] = b.dome ? 1 : 0;
+    BD[o + 11] = b.interior || 0;
+    BD[o + 12] = b.doorX || 0;  BD[o + 13] = b.doorY || 0;
+    BD[o + 14] = b.doorNX || 0; BD[o + 15] = b.doorNY || 0;
+    BD[o + 16] = b.winA;     BD[o + 17] = b.winB;
+    BD[o + 18] = b.doorNX !== undefined ? 1 : 0;    BD[o + 19] = b.id;
+    BD[o + 20] = b.cx || 0;  BD[o + 21] = b.cy || 0; BD[o + 22] = b.domeH || 0;
+  }
+  GL.wBld = mkTex(GL.wBld, gl.RGBA32F, 8, nB, gl.RGBA, gl.FLOAT, BD);
+  GL.wDist = mkTex(GL.wDist, gl.R8, NB, NB, gl.RED, gl.UNSIGNED_BYTE, distMap);
+
+  /* MINIFONT is five rows of three written as one string with pipes between
+     the rows, so the CPU indexes it at gr*4+gc and column three is always a
+     separator that can never be a hit. The texture keeps that stride, so the
+     index ports across unchanged. */
+  const FT = new Uint8Array(20 * 128);
+  for (const ch in MINIFONT){
+    const code = ch.charCodeAt(0);
+    if (code >= 128) continue;
+    const s = MINIFONT[ch];
+    for (let k = 0; k < s.length && k < 20; k++) FT[code * 20 + k] = s[k] === '#' ? 255 : 0;
+  }
+  GL.wFont = mkTex(GL.wFont, gl.R8, 20, 128, gl.RED, gl.UNSIGNED_BYTE, FT);
+
+  GW.lampBuf = new Float32Array(Math.max(1, lamps.length) * 4);
+  if (GL.wLamps) gl.deleteTexture(GL.wLamps);
+  GL.wLamps = mkTex(null, gl.RGBA32F, Math.max(1, lamps.length), 1, gl.RGBA, gl.FLOAT, null);
+}
+/* The whole world pass. Returns a bitmask of which stages it actually did,
+   so worldPasses can run the CPU original for whatever is left. */
+function glWorldPass(){
+  if (!GL || !GL.worldOK || !GL.pWorld || !GPUW.on || inside) return 0;
+  const stages = GPUW.stages & GPUW.max;
+  if (!stages) return 0;
+  const _T = GW.t || (GW.t = {stat:0,setup:0,upload:0,draw:0,read:0,unpack:0,n:0});
+  let _t0 = performance.now();
+  glWorldStatics();
+  _T.stat += performance.now() - _t0; _t0 = performance.now();
+  if (!GL.wTile) return 0;
+  const gl = GL.gl, cols = R.cols, rows = R.rows;
+  /* The floor's occlusion cutoff is one short DDA per column and a tenth of a
+     millisecond, and it is what makes the ground pass comparable to the CPU's
+     cell for cell rather than only after the walls have painted over it. So
+     it stays where it was and the answer is uploaded. */
+  if (stages & 2) floorOcclude();
+
+  /*--- what varies per column, computed here exactly as the passes did ---*/
+  const SUN_AZ = 2.35, colPerRad = cols / CFG.FOV;
+  const cD = GW.colD;
+  for (let x = 0; x < cols; x++){
+    const a = Math.atan2(rayY[x], rayX[x]);
+    let da = a - SUN_AZ;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    const o = x * 4;
+    cD[o] = rayX[x]; cD[o + 1] = rayY[x]; cD[o + 2] = refWob[x];
+    cD[o + 3] = (stages & 2) ? floorCut[x] : 1e30;
+    const o2 = cols * 4 + x * 4;
+    cD[o2] = (a * 96) | 0; cD[o2 + 1] = da * colPerRad;
+  }
+  /*--- and per row. levelOf and densMul are here rather than in the shader
+        because GLSL pow and Math.pow differ in the last bits, and a fog level
+        is a truncation - so the disagreement lands as a whole step. ---*/
+  const hz = clamp(Math.floor(horizon), 0, rows);
+  const glowAmp = CFG.timeMode === 2 ? 0.14 : 0.8;
+  const rD = GW.rowD;
+  for (let r = 0; r < rows; r++){
+    const o = r * 4, o2 = rows * 4 + r * 4;
+    const d = cam.z * projRows / (r + 0.5 - horizon);
+    const dW = (cam.z + RIVER_DEPTH) * projRows / (r + 0.5 - horizon);
+    /* "Is this row past the view distance" is decided HERE, not in the
+       shader, and the answer rides in as a negative distance. It has to be:
+       projRows comes out 144.00000000000003 rather than 144, so a row that
+       lands on exactly the view distance is 96.00000000000001 in double
+       precision and rounds to exactly 96 on the way to the card - and the two
+       then disagree about a whole row of the frame. Every other float in this
+       pass is off by an ulp in a place where an ulp does not matter; this one
+       is a >= against a round number, which is where it always matters. */
+    rD[o]     = (d > 0 && d <= viewD) ? d : -1;
+    rD[o + 1] = (dW > 0 && dW <= viewD) ? dW : -1;
+    if (r < hz){
+      const up = (hz - r) / Math.max(1, hz);
+      rD[o + 2] = Math.pow(1 - up, 2.5) * glowAmp;
+      rD[o + 3] = up;
+    } else { rD[o + 2] = 0; rD[o + 3] = 0; }
+    const t = d > 0 ? d / viewD : 0, tw = dW > 0 ? dW / viewD : 0;
+    rD[o2] = levelOf(t); rD[o2 + 1] = densMul(t);
+    rD[o2 + 2] = levelOf(tw); rD[o2 + 3] = densMul(tw);
+  }
+  _T.setup += performance.now() - _t0; _t0 = performance.now();
+  gl.bindTexture(gl.TEXTURE_2D, GL.wCol);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, 2, gl.RGBA, gl.FLOAT, cD);
+  gl.bindTexture(gl.TEXTURE_2D, GL.wRow);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, rows, 2, gl.RGBA, gl.FLOAT, rD);
+  /* Lamps go up every frame rather than with the city: one of them dying is a
+     saw and a few seconds, and twenty-eight kilobytes is not worth tracking. */
+  if (GW.lampBuf && lamps.length){
+    const LB = GW.lampBuf;
+    for (let i = 0; i < lamps.length; i++){
+      const L = lamps[i], o = i * 4;
+      LB[o] = L.lx; LB[o + 1] = L.ly; LB[o + 2] = L.ci; LB[o + 3] = L.dead ? 1 : 0;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, GL.wLamps);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, lamps.length, 1, gl.RGBA, gl.FLOAT, LB);
+  }
+
+  _T.upload += performance.now() - _t0; _t0 = performance.now();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
+  gl.viewport(0, 0, cols, rows);
+  gl.disable(gl.BLEND);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
+  gl.useProgram(GL.pWorld);
+  const U = GL.uW;
+  const bind = (unit, tex, loc) => {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(loc, unit);
+  };
+  bind(0, GL.wCol, U.uCol);   bind(1, GL.wRow, U.uRow);
+  bind(2, GL.wTile, U.uTile); bind(3, GL.wLampG, U.uLampG);
+  bind(4, GL.wLamps, U.uLamps); bind(5, GL.wDist, U.uDist);
+  bind(6, GL.wFont, U.uFont); bind(7, GL.wBld, U.uBld);
+  bind(8, GL.wWay, U.uWay);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform2f(U.uGrid, cols, rows);
+  gl.uniform3f(U.uCam, cam.x, cam.y, cam.z);
+  /* The camera split four ways, so the shader can test a kerb without an
+     absolute world coordinate's worth of noise underneath it. See uCamI. */
+  const cix = Math.floor(cam.x), ciy = Math.floor(cam.y);
+  gl.uniform2f(U.uCamI, cix, ciy);
+  gl.uniform2f(U.uCamF, cam.x - cix, cam.y - ciy);
+  gl.uniform2f(U.uCamM, cix - Math.floor(cix / P) * P, ciy - Math.floor(ciy / P) * P);
+  gl.uniform2f(U.uCamH, (cix * 0.5) % 1, (ciy * 0.5) % 1);
+  gl.uniform1f(U.uHorizon, horizon);
+  gl.uniform1f(U.uHz, hz);
+  gl.uniform1f(U.uR0, clamp(Math.ceil(horizon), 0, rows));
+  gl.uniform1f(U.uRMAX, RMAX);
+  gl.uniform1f(U.uViewD, viewD);
+  gl.uniform1f(U.uMap, MAP);
+  gl.uniform1f(U.uP, P);
+  gl.uniform1f(U.uRW, RW);
+  gl.uniform1f(U.uNB, NB);
+  gl.uniform1f(U.uDensK, densK);
+  gl.uniform1i(U.uStages, stages);
+  const tm = CFG.timeMode;
+  gl.uniform1f(U.uNight, tm === 0 ? 1 : tm === 1 ? 0.5 : 0);
+  gl.uniform1f(U.uSunOn, tm !== 0 ? 1 : 0);
+  const elev = Math.sin(clamp((clock - 6.5) / 12, 0, 1) * Math.PI);
+  gl.uniform1f(U.uSunRow, tm === 2 ? hz * (1 - 0.72 * elev) : hz * 0.9);
+  gl.uniform1f(U.uDay, tm === 2 ? 1 : 0);
+  gl.uniform4f(U.uSkyMat,
+    tm === 1 ? C.glowDusk : tm === 2 ? C.lineW : C.skyGlow,
+    C.nWhite, C.nAmber, tm === 2 ? C.nWhite : C.nAmber);
+  gl.uniform1f(U.uLineW, C.lineW);
+  gl.uniform1f(U.uWet, wetLevel);
+  gl.uniform1f(U.uWayOn, wayOn && wayG ? 1 : 0);
+  gl.uniform1f(U.uRiverY, RIVER_Y);
+  gl.uniform1f(U.uRural, D_RURAL);
+  /* The water's four time phases, wrapped into one turn before they cross the
+     bus. worldTime is seconds since the city was built and reaches thousands;
+     a float that big has microradians between neighbours, and the ripple ends
+     up a glyph out of step with the CPU's double. Wrapped, it does not. */
+  const TAU = Math.PI * 2;
+  gl.uniform4f(U.uWave, (worldTime * 0.33) % TAU, (-worldTime * 0.61) % TAU,
+                        (worldTime * 0.85) % TAU, (-worldTime * 1.55) % TAU);
+  gl.uniform4f(U.uLamp, _lampNight, LAMP_REACH, LAMP_GAIN, LAMP_STEPS);
+  if (!GW.mat){
+    GW.mat = new Float32Array(32);
+    const m = GW.mat;
+    m[0] = C.camRed; m[1] = C.nAmber; m[2] = C.walk;  m[3] = C.curb;
+    m[4] = C.water;  m[5] = C.waterD; m[6] = C.deck;  m[7] = C.deckOld;
+    m[8] = C.path;   m[9] = C.turf;   m[10] = C.rail; m[11] = C.grass;
+    m[12] = C.asphalt; m[13] = C.bank; m[14] = LAMPPOOL[0][0];
+  }
+  gl.uniform1fv(U.uMat, GW.mat);
+  gl.bindVertexArray(GL.empty);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  /*--- and back. Four one-byte buffers ride in one four-byte read, so the
+        only JS loop left is the unpack, which is a shift and a store. ---*/
+  _T.draw += performance.now() - _t0; _t0 = performance.now();
+  const n = cols * rows;
+  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, GW.qa);
+  gl.readBuffer(gl.COLOR_ATTACHMENT1);
+  gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, GW.qb);
+  gl.readBuffer(gl.COLOR_ATTACHMENT2);
+  gl.readPixels(0, 0, cols, rows, gl.RED, gl.FLOAT, dBuf);
+  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.enable(gl.BLEND);
+  _T.read += performance.now() - _t0; _t0 = performance.now();
+  const qa = GW.qa32, qb = GW.qb32;
+  for (let i = 0; i < n; i++){
+    const v = qa[i], w = qb[i];
+    gBuf[i] = v; refBuf[i] = v >>> 24;
+    srcBuf[i] = w; emitKind[i] = w >>> 8;
+    if (w & 0xff0000){ bBuf[i] = v >>> 8; lBuf[i] = v >>> 16; }
+  }
+  _T.unpack += performance.now() - _t0; _T.n++;
+  GW.ran++;
+  return stages;
 }
 function glQuad(x, y, w, h, r, g, b, a){
   const gl = GL.gl;
@@ -24052,9 +24885,14 @@ function worldPasses(){
   litAlloc();
   emitKind.fill(0);
   if (LIGHTV.on || GIR.on || FOGV.on){ litR.fill(0); litG.fill(0); litB.fill(0); }
-  if (inside) ceilingPass(); else skyPass();
-  floorPass();
-  wallPass();
+  /* Whatever the card drew, the CPU does not draw again. glWorldPass returns
+     the stages it actually did - it does nothing at all indoors, or with the
+     switch off, or if the program would not build - so the passes below are
+     the fallback and the reference in the same breath. */
+  const gw = glWorldPass();
+  if (!(gw & 1)){ if (inside) ceilingPass(); else skyPass(); }
+  if (!(gw & 2)) floorPass();
+  if (!(gw & 4)) wallPass();
   spritePass();
   /* Order matters here and used to be wrong. A reflection is ON the road; a
      light beam is the air BETWEEN the road and the eye. The beam therefore
