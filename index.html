@@ -57,8 +57,15 @@ const CFG = {
   SW:         2,   // sidewalk width in tiles
   FOV:       90 * Math.PI / 180,
   MAXD:      96,   // render / fade distance in tiles
-  CELLW:  [24, 19, 16, 13, 11, 9, 7],
-  resIdx:     6,   // default to the finest grid; auto-res steps down if needed
+  /* Cell width in pixels; the grid follows from it and the window. Cell count
+     goes as 1/cw^2, so each step down the list is a bigger grid: 5px carries
+     just over twice the cells of 7px, which is what "double" means here.
+     The last two are HD and are opt-in - the default stays at 7 so nothing
+     changes for anyone who does not go looking, and auto-res still steps DOWN
+     from wherever it starts. Picking a grid by hand sets manualRes, and that
+     always wins: initRender breaks out of its budget loop immediately. */
+  CELLW:  [24, 19, 16, 13, 11, 9, 7, 6, 5],
+  resIdx:     6,   // 7px - the finest of the old ladder; 6 and 5 are opt-in
   manualRes: false,   // set once you pick a grid with [ or ]
   CARS:      54,   // air traffic only - set dressing, never physical
   PEDS:     430,   // streamed: kept near the camera rather than spread thin
@@ -86,15 +93,94 @@ function hash3(a, b, c){                          // stable per-cell noise
 }
 
 /*----------------------------- 3. CHARACTER SET ----------------------------*/
-// RAMP is ordered by visual weight; a surface's "density" indexes straight in.
-const RAMP  = " .',:;-=+ox*#%@&$";
-const EXTRA = "|/\\_[]()<>^~`{}";   // note the escaped backslash - it IS a glyph
+/* RAMP is ordered by visual weight; a surface's "density" indexes straight in,
+   because RAMP is the PREFIX of CHARS and gBuf holds an atlas column. That is
+   also why nothing may be reordered here without rebaking: a density is a
+   glyph index, not a lookup.
+
+   The order used to be picked by eye and was wrong at the top. Rendering every
+   printable ASCII character into a cell at the game's own font and size, then
+   counting alpha-weighted ink coverage, measured the old ramp as:
+
+     # 0.347   % 0.347   @ 0.444   & 0.355   $ 0.389
+
+   - so density 14 drew HEAVIER than 15 or 16, and the last three rungs of the
+   ramp ran backwards. Anything shading into the top of the ramp got a bright
+   step in the middle of a dark fall.
+
+   The order below is that measurement, sorted, with characters inside about
+   0.006 of each other dropped as duplicates. Seventeen rungs became twenty
+   seven, which is what buys the finer shading up close and at distance: the
+   old ramp had one step for the whole span from * to # - 0.197 to 0.347 - and
+   now there are six. Letters are kept out of it except the ones that read as
+   texture rather than as writing (c x n o w m); o and x were always here. */
+let RAMP    = " .,-':;^~\"+<>?/x|(no[w#%$@";
+/* Everything else the world can draw. The ones after the join were rungs of
+   the old ramp that the measurement dropped - they stay in CHARS because art
+   and signage look glyphs up by character, and a miss falls back to '*'. */
+const EXTRA = "|/\\_[]()<>^~`{}" + ",=%?*&";
 const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";   // readable signage
-const CHARS = RAMP + EXTRA + ALPHA;
-const RMAX  = RAMP.length - 1;
-const GI = {};                                   // char -> glyph index
-for (let i = 0; i < CHARS.length; i++) GI[CHARS[i]] = i;
-const G_BAR = GI['|'];
+let CHARS   = RAMP + EXTRA + ALPHA;
+const RMAX  = RAMP.length - 1;                   // fixed: rampSort only REORDERS
+let GI = {};                                     // char -> glyph index
+let G_BAR = 0, G_SLASH = 0, G_TICK = 0;
+function indexChars(){
+  CHARS = RAMP + EXTRA + ALPHA;
+  GI = {};
+  for (let i = 0; i < CHARS.length; i++) GI[CHARS[i]] = i;
+  /* '|' and '/' also live in EXTRA, whose offset never moves, so those two
+     would survive a reorder anyway. The apostrophe is a ramp rung and only a
+     ramp rung, so its index really does move - recompute all three rather
+     than remember which. */
+  G_BAR = GI['|']; G_SLASH = GI['/']; G_TICK = GI[String.fromCharCode(39)];
+}
+indexChars();
+/*----------------------- the ramp orders ITSELF ----------------------------
+  A density is a glyph index - RAMP is the prefix of CHARS - so the ramp has
+  to run from lightest to heaviest or a surface shading down gets a bright
+  step in the middle of a dark fall. The old order was picked by eye and did
+  exactly that at the top: measured as ink coverage it ran # 0.347, % 0.347,
+  @ 0.444, & 0.355, $ 0.389, so rung 14 drew heavier than 15 or 16.
+
+  It cannot be fixed by writing a better order down, because the right order
+  is not a constant. Ink coverage is a property of the RASTERISED glyph, so it
+  moves with the cell size: measured at 11x20 an underscore covers more than a
+  hyphen, and at 7x12 they are equal and 'x' and 'c' have swapped. A single
+  declared order is wrong at every size but one, and this build has nine.
+
+  So the ramp is sorted where it is baked, against the font that actually
+  loaded, at the size actually in use. The set of glyphs is fixed - which
+  keeps RMAX and the atlas width constant - and only their order moves.
+============================================================================*/
+function rampSort(cw, ch){
+  let g;
+  try {
+    const cn = document.createElement('canvas');
+    cn.width = Math.max(1, cw); cn.height = Math.max(1, ch);
+    g = cn.getContext('2d', { willReadFrequently: true });
+    if (!g) return;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = Math.min(ch * 0.99, cw / 0.575).toFixed(2) + 'px ' + FONT;
+    const ink = [];
+    for (let i = 0; i < RAMP.length; i++){
+      const c = RAMP[i];
+      g.clearRect(0, 0, cw, ch);
+      g.fillStyle = '#fff';
+      g.fillText(c, cw * 0.5, ch * 0.5);
+      const d = g.getImageData(0, 0, cw, ch).data;
+      let sum = 0;
+      for (let k = 3; k < d.length; k += 4) sum += d[k];
+      ink.push({ c, v: sum, i });
+    }
+    // ties keep their declared order, so the result is stable run to run
+    ink.sort((a, b) => (a.v - b.v) || (a.i - b.i));
+    /* A blank must stay rung nought whatever the measurement says - it is the
+       "nothing here" the whole renderer tests for with `if (!g) continue`. */
+    const sorted = ink.map(o => o.c).filter(c => c !== ' ');
+    RAMP = ' ' + sorted.join('');
+    indexChars();
+  } catch (e){ /* no canvas, no measurement, keep the declared order */ }
+}
 
 /*------------------------------- 4. PALETTE --------------------------------*/
 // Base materials. Distance shading is baked per level, so this stays flat.
@@ -17449,7 +17535,6 @@ function inFields(x, y){
   return zoneAt(clamp((x / P) | 0, 0, NB - 1), clamp((y / P) | 0, 0, NB - 1)) >= 3;
 }
 let bloomCv = [];
-const G_SLASH = GI['/'], G_TICK = GI[String.fromCharCode(39)];
 let statRays = 0, statCells = 0, statSprites = 0;
 const CELL_BUDGET = 17000;
 
@@ -17468,6 +17553,7 @@ function initRender(){
   }
   CFG.resIdx = ri;
   R.cellW = cw; R.cellH = ch;
+  rampSort(cw, ch);            // the ramp is only monotonic if it is measured
   R.cols = Math.max(24, Math.floor(R.W / cw));
   R.rows = Math.max(14, Math.floor(R.H / ch));
   R.ox = ((R.W - R.cols * cw) * 0.5) | 0;
