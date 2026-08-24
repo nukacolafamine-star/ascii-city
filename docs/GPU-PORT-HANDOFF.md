@@ -1,6 +1,6 @@
 # ASCII CITY — GPU renderer port, handoff
 
-Rewritten at commit `da33b41` on branch `fog-and-hd`. Line numbers drift; the
+Rewritten at commit `1d2a88c` on branch `fog-and-hd`. Line numbers drift; the
 function names do not.
 
 ---
@@ -27,23 +27,38 @@ CPU total       27.30ms    GPU present      0.33ms      →  35fps
 the problem, the GPU is not the problem. **The frame is CPU rasterisation and
 the card is idle.**
 
-**Sky, floor and walls are now on the card.** The rest is not. Measured on the
-same street on a slower afternoon (absolute times on this machine drift by more
-than 2× — see §6 — so read the pairs, not the numbers):
+**Sky, floor and walls are written for the card, correct, and switched OFF.**
+Read that before you read anything else in here.
+
+`GPUW` defaults to off because on screen the pass is **slower than the CPU
+passes it replaces, at every grid the game offers**. Mean frame time, switch on
+against switch off, page visible:
 
 ```
-                        switch off      switch on
-skyPass                    1.70            —
-floorPass                  6.71            —
-wallPass                   6.21            —
-glWorldPass                 —             8.93
-──────────────────────────────────────────────────
-worldPasses               35.48           30.54     0.86x
+  66x23      5.41 / 1.09        145x50    16.59 / 1.74
+ 100x34      5.43 / 1.41        228x83    16.49 / 3.00
+ 320x111    16.52 / 4.68        533x200   21.99 / 11.76
 ```
+
+The cost is **fixed, not per cell** — a `readPixels` round trip costs the same
+for 1,518 cells as for 106,600 — so there is no grid at which it pays, and
+coarsening does not help. That interacts with auto-res catastrophically:
+auto-res drops a step whenever a frame stays over 14ms, the GPU path is over
+14ms nearly everywhere, and dropping the grid does not bring it back under. So
+it walks the resolution from 533×200 down to 66×23, ten steps, **one full
+`initRender` every ninety frames** — atlas rebuild, palette rebuild, every
+buffer reallocated — which on screen reads as the world flickering black about
+once a second while it rebuilds itself coarser. That shipped to Pages for about
+an hour before it was caught.
 
 `glWorldPass` breaks down as **read 6.73, unpack 1.76, setup 0.25, upload 0.08,
-draw 0.05**. Note what that says: the shader is free and the readback is the
-entire cost. That is the shape of the next problem.
+draw 0.05**. The shader is free; the readback is the entire cost. That is both
+why it does not pay today and the shape of the only thing that can fix it.
+
+**There is a number in this repo's history that says 0.86×.** It was measured
+with the page backgrounded, where the compositor is not contending for the card
+and the same readback costs 1.6ms instead of 16.2ms. It is real, it is
+reproducible, and it is not the condition the game runs in. See §3.
 
 ---
 
@@ -174,22 +189,36 @@ a hung renderer and is not.
 under a benchmark that is still running. `GPUT.pin()` makes `innerWidth` and
 `innerHeight` constants.
 
-**3. THE PANE'S COMPOSITING CONTENDS WITH READBACK, AND IT IS TEN TIMES.**
-Same build, same frame, same code:
+**3. COMPOSITING CONTENDS WITH READBACK, AND IT IS TEN TIMES — AND THE QUIET
+SIDE IS THE WRONG SIDE.** Same build, same frame, same code:
 
 ```
-pane fronted        bare getBufferSubData  16.2ms      fps 19
-pane backgrounded   bare getBufferSubData   1.6ms      fps 30
+page on screen      bare getBufferSubData  16.2ms      fps 19
+page backgrounded   bare getBufferSubData   1.6ms      fps 30
 ```
 
-This is the single biggest source of nonsense in this port's measurements. The
-same commit measured 0.84× and 1.32× twenty minutes apart because the pane had
-been fronted in between. **Open a second tab, front it, and drive the game tab
-from the background with `javascript_tool`'s `tabId`.** Then measure. The worker
-driver is what makes that possible.
+This is the single biggest source of nonsense in this port's measurements, and
+it has now caused a bad number in both directions. First it made the same commit
+measure 0.84× and 1.32× twenty minutes apart. Then, having found it, the last
+session "controlled for" it by backgrounding the page — because that is where
+the numbers are quiet and reproducible — and shipped a 14% regression as a 14%
+win.
 
-Note that `document.hidden` still reads `false` on a backgrounded pane tab, so
-you cannot test for this — you have to arrange it.
+**Backgrounded is the quiet condition. On screen is the real one.** A player is
+looking at the page. Anything whose cost involves the GPU pipeline must be
+measured with the page visible, and accepted as noisy, rather than measured
+somewhere clean that does not exist in play. Use backgrounding only to isolate
+a signal you already understand, never to produce the number you report.
+
+Note that `document.hidden` reads `false` on a backgrounded pane tab, so you
+cannot test for this — you have to arrange it, and you have to know which way
+round you have arranged it.
+
+**And `GPUT.boot()` sets `CFG.manualRes = true`, which disables auto-res.** So
+the rig never exercises the interaction in §1 at all. A change with a fixed
+per-frame cost can be a mild loss in the rig and a death spiral in the game.
+After any perf change, run once at true defaults with no rig at all and watch
+`CFG.resIdx` for fifteen seconds; if it moves, you have shipped a flicker.
 
 ---
 
@@ -296,12 +325,22 @@ lampVolume      6.35      hizBuild    0.55
 reflectPass     2.89      harvest     1.34
 ```
 
-**The readback is now the whole toll and it does not get bigger.** `glWorldPass`
-is 8.93ms of which 8.5 is getting the answer back to the CPU; the shader itself
-is 0.05ms of submission and about 2ms on the card. Every pass that moves after
-this one is nearly free, because it shares a readback that is already paid for —
-and the moment the LAST reader of these buffers moves, the readback deletes
-itself and takes eight milliseconds with it.
+**The readback is the whole toll, it does not get bigger, and until it is gone
+the port is a net loss.** `glWorldPass` is 8.93ms of which 8.5 is getting the
+answer back to the CPU; the shader itself is 0.05ms of submission and about 2ms
+on the card. That is why `GPUW` is off: one readback costs more than all three
+passes it replaces.
+
+It is also why the next move is worth making anyway. Every pass that moves
+shares a readback already paid for, so each one is nearly free — and the moment
+the LAST CPU reader of these buffers moves, the readback deletes itself and
+takes eight milliseconds with it. The port does not pay incrementally. It pays
+all at once, at the end, and `GPUW` should not be defaulted on again before
+then.
+
+If that end looks too far off, the honest alternative is to stop here and keep
+the CPU passes: the work so far is not wasted either way, because it is what
+established the cost of a readback on this stack and it is all behind a switch.
 
 So the order is forced and it is the doc's original order:
 
@@ -326,8 +365,15 @@ compose unconditional.
 
 ## 6. Measurement traps that have already cost time
 
-- **The pane's compositing contends with readback, ten to one.** §3. If a
-  performance number is not reproducible, check this first.
+- **Compositing contends with readback, ten to one, and the quiet side is the
+  wrong side.** §3. If a performance number is not reproducible, check this
+  first — and then make sure the number you report comes from the page being
+  visible, not from the condition that was easy to measure.
+- **A fixed per-frame cost fights auto-res, and auto-res loses.** Auto-res
+  assumes frame time falls when the grid gets coarser. Anything whose cost is
+  per *call* rather than per cell breaks that assumption, and the grid walks to
+  the floor doing a full `initRender` every ninety frames on the way. The rig
+  hides this because it pins `manualRes`. §1, §3.
 - **`readPixels` into a typed array is a synchronous round trip.** Five
   milliseconds a call on this driver, and it does not care what you ask for — a
   single pixel measured 5.4ms against 5.8ms for the whole frame. Through a
