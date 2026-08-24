@@ -20931,7 +20931,7 @@ const VS_GLYPH = `#version 300 es
 in vec3 aCell;            // cell index, glyph, atlas row
 in vec4 aCol;             // final colour, already faded
 uniform vec2 uGrid, uCell, uOrigin, uRes, uAtlas;
-out vec2 vUV; out vec4 vCol;
+out vec2 vUV; out vec4 vCol; out vec2 vLUV;
 void main(){
   vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
   vec2 cxy = vec2(mod(aCell.x, uGrid.x), floor(aCell.x / uGrid.x));
@@ -20939,16 +20939,144 @@ void main(){
   vec2 ndc = px / uRes * 2.0 - 1.0;
   gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
   vUV = vec2((aCell.y + corner.x) / uAtlas.x, (aCell.z + corner.y) / uAtlas.y);
+  /* the cell's own middle in the light buffer - taking the CENTRE rather than
+     the corner keeps a glyph one colour instead of gradient-shading it */
+  vLUV = (cxy + 0.5) / uGrid;
   vCol = aCol;
 }`;
 const FS_GLYPH = `#version 300 es
 precision mediump float;
-in vec2 vUV; in vec4 vCol; out vec4 o;
+in vec2 vUV; in vec4 vCol; in vec2 vLUV; out vec4 o;
 uniform sampler2D uTex;
+uniform sampler2D uLight;
+uniform float uLightOn;
 void main(){
   float a = texture(uTex, vUV).a;
   if (a < 0.01) discard;
-  o = vec4(vCol.rgb, a * vCol.a);
+  vec3 c = vCol.rgb;
+  if (uLightOn > 0.5){
+    vec4 L = texture(uLight, vLUV);
+    /* openness multiplies and light adds, in that order - a corner is dark
+       because nothing reaches it, and a sign opposite still lands on it */
+    c = c * L.a + L.rgb;
+  }
+  o = vec4(min(c, vec3(1.0)), a * vCol.a);
+}`;
+
+/*===================== the lighting, moved onto the GPU =====================
+  Every light pass in this file used to run on the CPU, once per character
+  cell, in JavaScript. Costed at the finest grid that was 22.4ms against a
+  base renderer of 20.9ms - the lighting was more than the world.
+
+  It is also, exactly, what a fragment shader is for: the same short program
+  over every cell, no cell depending on any other. So the whole of it moves -
+  the glow around each source, the shafts they cut through the air, and the
+  occlusion that makes a shaft a shaft - and what the CPU still does is hand
+  over three things a frame: the depth buffer, the list of lights, and where
+  the camera is.
+
+  The heightfield goes up ONCE. tH never changes after the city is built, so
+  the shadow test that turns a glow into a shaft is a texture read against a
+  1000x1000 R32F upload rather than a DDA walked per cell per light.
+
+  A light's contribution along a view ray is a chord through its glow sphere,
+  which is analytic - so this is O(lights) per pixel and not O(lights x steps).
+  One shadow sample at the middle of that chord decides whether anything was
+  standing in the way. That is the whole trick: the shaft is the chord, and
+  the occlusion is one tap.
+============================================================================*/
+const FS_LIGHT = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+in vec2 vT; out vec4 o;
+uniform sampler2D uDepth;     // R32F, one texel per character cell
+uniform sampler2D uEmit;      // RGBA32F, 2 rows: xyz+weight, rgb+radius
+uniform sampler2D uHeight;    // R32F, the city's heightfield
+uniform vec2  uGrid;          // cols, rows
+uniform vec3  uCam;
+uniform vec2  uDir, uPlane;
+uniform float uProjRows, uHorizon, uViewD, uMap;
+uniform int   uNE;
+uniform vec4  uTune;          // dens, fall, gain, roof
+uniform vec4  uTune2;         // shaftK, shadowSteps, aoK, night
+
+float hAt(vec2 w){
+  if (w.x < 0.0 || w.y < 0.0 || w.x >= uMap || w.y >= uMap) return 0.0;
+  return texelFetch(uHeight, ivec2(int(w.x), int(w.y)), 0).r;
+}
+// is the straight line from a point to a light clear of the rooftops
+float shadow(vec3 p, vec3 L, int steps){
+  vec3 d = L - p;
+  float n = float(steps);
+  float lit = 1.0;
+  for (int i = 1; i <= 8; i++){
+    if (i > steps) break;
+    float t = float(i) / (n + 1.0);
+    vec3 q = p + d * t;
+    if (q.z < hAt(q.xy)) { lit -= 1.0 / n; }
+  }
+  return clamp(lit, 0.0, 1.0);
+}
+void main(){
+  vec2 cell = vT * uGrid;
+  float c = floor(cell.x), r = floor(cell.y);
+  float depth = texture(uDepth, (vec2(c, r) + 0.5) / uGrid).r;
+  if (depth <= 0.0 || depth > uViewD * 0.999){ o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+
+  float cxn = 2.0 * (c + 0.5) / uGrid.x - 1.0;
+  vec3 rd = vec3(uDir.x + uPlane.x * cxn, uDir.y + uPlane.y * cxn,
+                 -((r + 0.5 - uHorizon) / uProjRows));
+  vec3 surf = uCam + rd * depth;                 // what this cell is looking at
+
+  float dens = uTune.x, fall = uTune.y, gain = uTune.z, roof = uTune.w;
+  float shaftK = uTune2.x; int sSteps = int(uTune2.y);
+  float aoK = uTune2.z, night = uTune2.w;
+
+  vec3 acc = vec3(0.0);
+  float occ = 0.0, occW = 0.0;
+
+  for (int i = 0; i < 256; i++){
+    if (i >= uNE) break;
+    vec4 A = texelFetch(uEmit, ivec2(i, 0), 0);
+    vec4 B = texelFetch(uEmit, ivec2(i, 1), 0);
+    vec3 ep = A.xyz;  float ew = A.w;
+    vec3 ec = B.rgb;  float rad = B.a;
+
+    // --- the chord this view ray cuts through the light's glow -------------
+    vec3 oc = uCam - ep;
+    float b = dot(oc, rd), cc = dot(oc, oc) - rad * rad;
+    float disc = b * b - dot(rd, rd) * cc;
+    if (disc > 0.0){
+      float sq = sqrt(disc), inv = 1.0 / dot(rd, rd);
+      float t0 = (-b - sq) * inv, t1 = (-b + sq) * inv;
+      t0 = max(t0, 0.0); t1 = min(t1, depth);
+      if (t1 > t0){
+        vec3 mid = uCam + rd * ((t0 + t1) * 0.5);
+        float q = dot(mid - ep, mid - ep) / (rad * rad);
+        float tau = (t1 - t0) * dens / rad / (1.0 + fall * q) * night;
+        // the shaft: what is standing between that air and the light
+        float sh = sSteps > 0 ? shadow(mid, ep, sSteps) : 1.0;
+        acc += ec * min(tau, 1.0) * sh * shaftK * ew;
+      }
+    }
+    // --- and what it puts on the surface itself ----------------------------
+    vec3 toL = ep - surf;
+    float d2 = dot(toL, toL);
+    if (d2 < rad * rad * 9.0){
+      float att = ew / (1.0 + d2 * 0.5);
+      float sh = sSteps > 0 ? shadow(surf + vec3(0.0, 0.0, 0.05), ep, sSteps) : 1.0;
+      acc += ec * att * sh * 0.06 * night;
+      occ += 1.0 - sh; occW += 1.0;
+    }
+  }
+  // many lights add, brightness does not: roll the sum toward a ceiling
+  vec3 lit = (vec3(1.0) - exp(-acc * gain / roof)) * roof;
+  float ao = occW > 0.0 ? 1.0 - aoK * (occ / occW) : 1.0;
+  if (uTune2.y < -0.5){            // debug: show the heightfield, not the light
+    float hh = hAt(surf.xy) / 24.0;
+    o = vec4(hh, hh, hh, 1.0); return;
+  }
+  o = vec4(lit / 255.0, ao);
 }`;
 const VS_QUAD = `#version 300 es
 uniform vec4 uRect; uniform vec2 uRes;
@@ -20999,10 +21127,25 @@ function glInit(){
     G.pQuad = mkProg(VS_QUAD, FS_QUAD);
     G.pPost = mkProg(VS_FULL, FS_POST);
   } catch (e){ return null; }
+  /* The light pass is optional in the strict sense: if the shader will not
+     build, or the machine cannot sample a float texture, the CPU passes are
+     still there and still correct. Nothing below is allowed to be fatal. */
+  G.lightOK = false;
+  try {
+    gl.getExtension('EXT_color_buffer_float');
+    gl.getExtension('OES_texture_float_linear');
+    G.pLight = mkProg(VS_FULL, FS_LIGHT);
+    G.uL = {};
+    for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane',
+                     'uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2'])
+      G.uL[k] = gl.getUniformLocation(G.pLight, k);
+    G.lightOK = true;
+  } catch (e){ G.lightOK = false; }
   G.uBG = {};
   for (const k of ['uSky', 'uMid', 'uFog', 'uGround', 'uHz']) G.uBG[k] = gl.getUniformLocation(G.pBG, k);
   G.uG = {};
-  for (const k of ['uGrid', 'uCell', 'uOrigin', 'uRes', 'uAtlas', 'uTex']) G.uG[k] = gl.getUniformLocation(G.pGlyph, k);
+  for (const k of ['uGrid', 'uCell', 'uOrigin', 'uRes', 'uAtlas', 'uTex', 'uLight', 'uLightOn'])
+    G.uG[k] = gl.getUniformLocation(G.pGlyph, k);
   G.uQ = {};
   for (const k of ['uRect', 'uRes', 'uColor']) G.uQ[k] = gl.getUniformLocation(G.pQuad, k);
   G.uP = {};
@@ -21118,10 +21261,132 @@ function glResize(){
   GL.scene = mkTarget(R.W, R.H);
   GL.tap = [mkTarget(Math.max(2, R.W >> 3), Math.max(2, R.H >> 3)),
             mkTarget(Math.max(2, R.W >> 5), Math.max(2, R.H >> 5))];
+  /* The light buffer is one texel per CHARACTER CELL, not per pixel. Light in
+     this renderer can never be finer than a glyph, so anything more is thrown
+     away by the glyph pass a moment later. */
+  if (GL.lightOK){
+    if (GL.lightT) gl.deleteTexture(GL.lightT);
+    if (GL.lightF) gl.deleteFramebuffer(GL.lightF);
+    GL.lightT = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, GL.lightT);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, R.cols, R.rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    GL.lightF = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, GL.lightF);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, GL.lightT, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) GL.lightOK = false;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // depth, re-made with the grid; emitters and the heightfield are made once
+    if (GL.depthT) gl.deleteTexture(GL.depthT);
+    GL.depthT = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, GL.depthT);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, R.cols, R.rows, 0, gl.RED, gl.FLOAT, null);
+    for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+    for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    if (!GL.emitT){
+      GL.emitT = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, GPUL.max, 2, 0, gl.RGBA, gl.FLOAT, null);
+      for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+        gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+      for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+        gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    }
+  }
   glBuildAtlas();
   glBuildPalette();
+  glUploadHeight();
 }
 
+/*------------------ the light pass, and what feeds it -----------------------
+  Three uploads a frame - depth, the emitter list, the camera - against one
+  upload for the whole session: the heightfield, which never changes after the
+  city is built and is what the shadow test reads to turn a glow into a shaft.
+============================================================================*/
+const GPUL = {
+  on:     true,
+  max:    256,    // the shader's loop is bounded; this is the hard ceiling
+  lights: 220,    // and this is how many are actually sent
+  dens:   0.30,   // optical density of the air inside a glow
+  fall:   3.20,   // how fast that glow dies with distance from the source
+  gain:   1.00,   // overall
+  roof:   140,    // the ceiling many overlapping sources roll off toward
+  shaft:  1.35,   // what the in-air chord is worth against the surface term
+  shadow: 5,      // taps along the line to the light; 0 turns shafts off
+  ao:     0.55    // how dark a fully shut-in cell goes
+};
+let _emitTex = null, _heightUp = false;
+function glUploadHeight(){
+  if (!GL || !GL.lightOK || _heightUp) return;
+  /* glInit runs from initRender, which can happen BEFORE the city exists - and
+     the first version of this latched _heightUp on that call, so the shader
+     spent the whole session reading an all-zero heightfield and every shadow
+     test came back "nothing in the way". Measured: the debug channel read 0
+     everywhere while tH held heights up to 120. Only count it as uploaded once
+     there is something in it. */
+  let any = 0;
+  for (let i = 0; i < tH.length; i += 257){ if (tH[i] > 0){ any = 1; break; } }
+  if (!any) return;
+  const gl = GL.gl;
+  if (!GL.heightT) GL.heightT = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, GL.heightT);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, MAP, MAP, 0, gl.RED, gl.FLOAT, tH);
+  for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+  for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+  _heightUp = gl.getError() === 0;
+}
+function glLightPass(){
+  if (!GL || !GL.lightOK || !GPUL.on || inside) return false;
+  if (!_heightUp) glUploadHeight();          // the city may post-date glInit
+  const gl = GL.gl, E = EMIT;
+  if (!E || !E.n) return false;
+  const n = Math.min(E.n, GPUL.lights, GPUL.max);
+  if (!_emitTex || _emitTex.length !== GPUL.max * 8) _emitTex = new Float32Array(GPUL.max * 8);
+  const T = _emitTex;
+  for (let k = 0; k < n; k++){
+    const bi = E.idx[k], o0 = k * 4, o1 = GPUL.max * 4 + k * 4;
+    T[o0]     = E.x[bi]; T[o0 + 1] = E.y[bi]; T[o0 + 2] = E.z[bi];
+    T[o0 + 3] = Math.min(4, 0.35 + E.w[bi] * 0.10);          // weight, damped
+    T[o1]     = E.r[bi] / 255; T[o1 + 1] = E.g[bi] / 255; T[o1 + 2] = E.b[bi] / 255;
+    T[o1 + 3] = LIGHTV.rad * Math.pow(Math.max(1, E.w[bi]), LIGHTV.grow) * 1.6;
+  }
+  gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, GPUL.max, 2, gl.RGBA, gl.FLOAT, T);
+  gl.bindTexture(gl.TEXTURE_2D, GL.depthT);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.FLOAT, dBuf);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, GL.lightF);
+  gl.viewport(0, 0, R.cols, R.rows);
+  gl.disable(gl.BLEND);
+  gl.useProgram(GL.pLight);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.depthT);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, GL.heightT);
+  gl.uniform1i(GL.uL.uDepth, 0); gl.uniform1i(GL.uL.uEmit, 1); gl.uniform1i(GL.uL.uHeight, 2);
+  gl.uniform2f(GL.uL.uGrid, R.cols, R.rows);
+  gl.uniform3f(GL.uL.uCam, cam.x, cam.y, cam.z);
+  gl.uniform2f(GL.uL.uDir, dirX, dirY);
+  gl.uniform2f(GL.uL.uPlane, planeX, planeY);
+  gl.uniform1f(GL.uL.uProjRows, projRows);
+  gl.uniform1f(GL.uL.uHorizon, horizon);
+  gl.uniform1f(GL.uL.uViewD, viewD);
+  gl.uniform1f(GL.uL.uMap, MAP);
+  gl.uniform1i(GL.uL.uNE, n);
+  gl.uniform4f(GL.uL.uTune, GPUL.dens, GPUL.fall, GPUL.gain, GPUL.roof);
+  gl.uniform4f(GL.uL.uTune2, GPUL.shaft, GPUL.shadow, GPUL.ao, _lampNight);
+  gl.bindVertexArray(GL.empty);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.enable(gl.BLEND);
+  return true;
+}
 function glQuad(x, y, w, h, r, g, b, a){
   const gl = GL.gl;
   gl.useProgram(GL.pQuad);
@@ -21197,6 +21462,11 @@ function glDrawGlyphs(first, count){
   gl.uniform1i(GL.uG.uTex, 0);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, GL.tex);
+  gl.uniform1f(GL.uG.uLightOn, GL._litThisFrame ? 1 : 0);
+  gl.uniform1i(GL.uG.uLight, 3);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, GL._litThisFrame ? GL.lightT : GL.tex);
+  gl.activeTexture(gl.TEXTURE0);
   gl.bindVertexArray(GL.vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, GL.ibuf);
   const base = first * 16;                 // drawArraysInstanced has no baseInstance
@@ -21214,6 +21484,7 @@ function glPresent(){
                   : T.fog.map((v, i) => (v * 0.66 + DF[i] * 0.34) / 255);
   const hz = clamp(0.5 + cam.pitch / Math.max(1, R.rows), 0.03, 0.97);
 
+  GL._litThisFrame = glLightPass();
   const nw = glPackWorld();
   const nh = glPackHud(nw);
   gl.bindVertexArray(GL.vao);
@@ -23500,7 +23771,16 @@ function worldPasses(){
      which pass drew the cell it lands on. */
   /* The harvest is the light LIST, not the glow - the tracer needs it just as
      much, so it runs if either of them wants it. */
-  if (LIGHTV.on || GIR.on || FOGV.on){
+  /* With the GPU doing the lighting the CPU's only job is the light LIST -
+     the shader wants somewhere to look up positions and colours, and that is
+     still cheapest to build from srcBuf here. Everything after it is skipped,
+     including the upsample, because the light texture is sampled directly by
+     the glyph shader and never comes back across the bus. */
+  const gpuLit = !!(GL && GL.lightOK && GPUL.on && !inside);
+  if (gpuLit){
+    litR.fill(0); litG.fill(0); litB.fill(0); litA.fill(1);
+    harvestEmitters();
+  } else if (LIGHTV.on || GIR.on || FOGV.on){
     hlR.fill(0); hlG.fill(0); hlB.fill(0); hlA.fill(1);
     harvestEmitters();
     if (LIGHTV.on) emitVolume();
