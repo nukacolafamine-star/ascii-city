@@ -391,7 +391,8 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_FURN = 19, PK_HOOP = 20, PK_SWING = 21, PK_CLIMB = 22,
       PK_FLOTSAM = 23, PK_RAMP = 24,
       PK_FOUNT = 25, PK_STATUE = 26, PK_BAND = 27,
-      PK_PARKED = 28;                         // stock, standing on its wheels
+      PK_PARKED = 28,                         // stock, standing on its wheels
+      PK_BODY = 29;                           // and what is left of somebody
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -1485,7 +1486,8 @@ function doorStep(d){
 /* which props are standing on a given cell */
 function propsOn(x, y, out){
   for (const q of gridQuery(propGrid, x + 0.5, y + 0.5, 6, _q1)){
-    if (q.k === PK_ITEM || q.k === PK_CROP || q.k === PK_STAIR || q.k === PK_RAMP) continue;
+    if (q.k === PK_ITEM || q.k === PK_CROP || q.k === PK_STAIR || q.k === PK_RAMP ||
+        q.k === PK_BODY) continue;
     const yaw = q.yaw === undefined ? propFacing(q) : q.yaw;
     const fb = footBox(q.k, yaw);
     if (Math.abs(q.x - (x + 0.5)) <= fb[0] * 0.5 + 0.5 &&
@@ -1625,7 +1627,7 @@ function bakeSolidProps(){
     // A ramp is a surface, not an obstacle - closing the road under it would
     // wall off the very street the run is routed down.
     if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR ||
-        p.k === PK_RAMP) continue;
+        p.k === PK_RAMP || p.k === PK_BODY) continue;
     const yaw = p.yaw === undefined ? (p.yaw = propFacing(p)) : p.yaw;
     const fb = footBox(p.k, yaw);
     const x0 = Math.floor(p.x - fb[0] * 0.5 + 1e-6), x1 = Math.floor(p.x + fb[0] * 0.5 - 1e-6);
@@ -2518,6 +2520,10 @@ const ART = {
                   'KKKKKKKKK',
                   'KKKKKKKKK']),
   hydr: parseArt(['.B.', 'BBB', '.B.', '.B.']),
+  /* Face down, arm out. Read left to right: head, coat, legs, one boot. */
+  body: parseArt(['..HH...SSSSS...PP..',
+                  '.HHHH.SSSSSSS.PPPPT',
+                  '..HH...SSSSS...PP..']),
   bin:  parseArt(['TTT', 'MMM', 'MMM', 'MMM']),
   tlight: parseArt(['MMM', 'MXM', 'MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   rail: parseArt(['M.M', 'MMM', 'M.M', 'M.M']),
@@ -3015,6 +3021,11 @@ const FLOTSAM = [
     sl: slots({ T: [C.tire, 0.9] }) }
 ];
 PROPDEF[PK_FLOTSAM] = FLOTSAM[0];
+/* Low, wide, and the colour of whoever it was. `sl` is only the fallback -
+   every body carries its own slots so the coat is the one they were wearing. */
+PROPDEF[PK_BODY] = { art: ART.body, w: 2.0, h: 0.52, dep: 0.85,
+  sl: slots({ H: [SKINC[0], 0.92], S: [SHIRTC[0], 0.86],
+              P: [C.pants, 0.82], T: [C.tire, 0.75] }) };
 PROPDEF[PK_RAMP] = { art: ART.ramp, w: 9.4, h: 1.25, dep: 0.40,
                      sl: slots({ M: [C.deckOld, 0.74], K: [C.trunk, 0.62],
                                  X: [C.nMag, 1.0], W: [C.nWhite, 0.9] }) };
@@ -4260,7 +4271,7 @@ function spawnPeds(){
     peds.push({
       x: x + 0.5, y: y + 0.5, dx: 1, dy: 0,
       spd: 1.05 + rnd() * 0.75, path: null, pi: 0, phase: rnd() * 6,
-      sb: sl.base, sd: sl.dens,
+      sb: sl.base, sd: sl.dens, skin, shirt,
       wait: 0, cool: rnd() * 2, moving: 0, linger: false,
       jx: rr(-0.3, 0.3), jy: rr(-0.3, 0.3),
       pid: i, ident, leg: 'errand', off: 0, talkT: 0
@@ -4447,6 +4458,9 @@ const ACTORDEF = {
   enforcer: { speed: 2.6, solid: true, r: 0.36 }
 };
 let actors = [];
+/* What a working person has in them when nobody has said otherwise. Hostiles
+   are given their own number at the spawn; everybody else gets this one. */
+const CIVIL_HP = 30;
 let CAST0 = 0;         // how many of them the seed placed; the rest are local
 /* The same line drawn through the traffic. The crowd packet streams cars BY
    INDEX, and a player's own runner is pushed onto the end of the same array -
@@ -4470,7 +4484,16 @@ function spawnActor(kind, x, y, o){
     path: null, pi: 0, phase: rnd() * 6, moving: 0, cool: rnd() * 3,
     brain: o.brain || 'still', dialog: o.dialog || null, tree: o.tree || null,
     homeX: x | 0, homeY: y | 0, range: o.range || 12,
-    hp: o.hp || 0, maxHp: o.hp || 0, aggro: 0, hitT: 0, atkCool: 0,
+    skin: sl.base[ROLE.H], shirt: sl.base[ROLE.S],   // the body keeps the coat
+    /* CIVIL_HP, not 0. Zero was doing double duty as "nobody has set this
+       yet", and four places downstream read `hp <= 0` as "already dead" -
+       so the katana's arc and the maul's shockwave skipped every shopkeeper
+       who had not been hit by something else first, the railgun pierced
+       them instead of stopping, and a guest's `ahit` arrived at the host as
+       0 - dmg, killing a keeper with one punch. Give them the same 30 the
+       lazy initialisers were handing out and every one of those reads is
+       right by construction. */
+    hp: o.hp || CIVIL_HP, maxHp: o.hp || CIVIL_HP, aggro: 0, hitT: 0, atkCool: 0,
     sb: sl.base, sd: sl.dens
   };
   actors.push(a);
@@ -4480,7 +4503,11 @@ function spawnActor(kind, x, y, o){
 function actorBlocked(x, y, rad){
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
-    if (!a.solid) continue;
+    // Which room, not whether: every interior is stamped at the same array
+    // origin, so a body two districts away shares your coordinates. Without
+    // this test somebody else's shopkeeper stands in your doorway - and can
+    // pin you in a corner you cannot walk out of until they leave.
+    if (!a.solid || !actorHere(a)) continue;
     const dx = x - a.x, dy = y - a.y, rr2 = (rad + a.r) * (rad + a.r);
     if (dx * dx + dy * dy < rr2) return true;
   }
@@ -4495,6 +4522,20 @@ function updateActor(a, dt){
   if (!who) return;                            // nobody here to notice them
   const prx = who.cam.x - a.x, pry = who.cam.y - a.y;
   const pr = Math.hypot(prx, pry);
+  /* Frightened: put the counter between you and them. Not a flee across the
+     map - there is nowhere to go in a four-metre shop - but they will not
+     stand there and take it. */
+  if (a.scared > worldTime && pr > 0.001){
+    a.dx = prx / pr; a.dy = pry / pr;          // still facing you
+    if (pr < 3.2){
+      const sp = 1.7 * dt;
+      const nx = a.x - prx / pr * sp, ny = a.y - pry / pr * sp;
+      if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)] &&
+          !propBlocked(nx, ny, a.r)){ a.x = nx; a.y = ny; a.moving = 1; }
+      a.phase += dt * 5.2;
+    }
+    return;
+  }
   const engaged = pr < 2.6;                    // somebody close: stop, meet their eye
   if (engaged && pr > 0.001){ a.dx = prx / pr; a.dy = pry / pr; }
   if (pr < 0.9 && pr > 0.001 && !a.pinned){    // and never stand inside them
@@ -5232,10 +5273,29 @@ function buildInterior(bld, door, floor, S){
     // The house wears one of four skins, and each leads with its own game -
     // but every floor keeps blackjack, because every floor keeps blackjack.
     const theme = (hash3(bld.id, 64, 9) * 4) | 0;
-    const games = [['slots', 'blackjack', 'wheel'],
-                   ['wheel', 'blackjack', 'highlow'],
-                   ['plinko', 'blackjack', 'slots'],
-                   ['highlow', 'blackjack', 'plinko']][theme];
+    const full = [['slots', 'blackjack', 'wheel'],
+                  ['wheel', 'blackjack', 'highlow'],
+                  ['plinko', 'blackjack', 'slots'],
+                  ['highlow', 'blackjack', 'plinko']][theme];
+    /* Count the tables that FIT before deciding what the house is, rather
+       than promising three and letting the placer break out of the loop
+       having built two. A 4x2 shed is not a casino missing a third of
+       itself - it is a back room with one table, and it gets to be that on
+       purpose. The headline game survives every trim, so the door can be
+       signed with something true. */
+    /* Count with exactly the arithmetic the placer uses, so the trim removes
+       what would not have been built and nothing more. Getting this wrong in
+       either direction is a content bug: too loose and the room promises a
+       table it has no space for, too tight and a house that used to have
+       three loses one for no reason. */
+    const step0 = Math.max(3, ((rw - 4) / full.length) | 0);
+    let fits = 0;
+    while (fits < full.length && 2 + fits * step0 <= rw - 2) fits++;
+    const games = full.slice(0, Math.max(1, fits));
+    /* The headline game always survives the trim, which matters because the
+       street already signs the door from the SAME hash - LUCKY LUCKY over
+       slots, VELVET WHEEL over the wheel, HIGH-LOW over the dice. Trimming
+       from the back keeps that promise true. */
     // the pit: tables mid-room, the cage at the back, a bar on one wall
     furn(IOX + 1.5, IOY + 1.6, 'cage', Math.PI / 2);            // the cashier
     furn(IOX + rw - 1.7, IOY + 2.0, 'kitchenette', -Math.PI / 2);   // the bar
@@ -5378,6 +5438,9 @@ function buildInterior(bld, door, floor, S){
                            dialog: F.lines });
     a.interior = 1;
     if (kind === 'shop'){ a.tree = makeShopTree(trade); a.dialog = null; }
+    /* A gunsmith stands in a room full of guns. He was the softest target in
+       the city, and the only keeper who has no business being one. */
+    if (trade === 'armory'){ a.armed = 1; a.atk = 11; a.hp = 55; a.maxHp = 55; }
   }
   // the top of THE WORKS always keeps its terminal - the switch lives there
   if (typeof WORKS !== 'undefined' && WORKS && bld.id === WORKS.bld){
@@ -5477,7 +5540,7 @@ function gotoFloor(f){
   }
   mqWorksFloor();
   inside.shop = room.shop;
-  cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0;
+  cam.x = room.px; cam.y = room.py; cam.ang = room.ang; setAim(0);
   fade = 1;
   sfx('door', { rate: 1.25, vol: 0.7 });
   toast('FLOOR ' + f);
@@ -5548,7 +5611,7 @@ function enterInterior(door){
       netBroadcastEvent('seen', { b: door.b, s: room.shop });
     }
   }
-  cam.x = room.px; cam.y = room.py; cam.ang = room.ang; cam.pitch = 0; cam.riding = null;
+  cam.x = room.px; cam.y = room.py; cam.ang = room.ang; setAim(0); cam.riding = null;
   if (mqLive('mq10') && bld.dist === D_DOWN) player.qvar.mq10seen = 1;   // recon done
   if (skating) toast('deck up - no riding indoors');
   wasSkating = skating; skating = false; airT = 0; skV = 0; grind = null; skTrick = null;
@@ -5574,7 +5637,7 @@ function exitInterior(){
      out of buildBackground, the probe matches nothing and every key looks
      dead, which reads as the whole game locking up. */
   if (typeof EXT.camX === 'number' && isFinite(EXT.camX)){
-    cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; cam.pitch = EXT.camPitch;
+    cam.x = EXT.camX; cam.y = EXT.camY; cam.ang = EXT.camAng; setAim(EXT.camPitch);
   }
   if (wasSkating){ skating = true; wasSkating = false; toast('wheels down'); }
   inside = null; viewD = 30; fade = 1;              // the street eases back out
@@ -5588,6 +5651,12 @@ function exitInterior(){
    drives the [SPACE] prompt and the SPACE key. Doors, items and anything
    else interactive will answer this same probe later. */
 let lookTarget = null, _prSc = 0;
+/* Things you go somewhere to use outrank things you can walk over. */
+const PROBE_WEIGHT = {
+  shift: 1.6, theswitch: 1.6, door: 1.35, stash: 1.3, sleep: 1.3,
+  buyhome: 1.25, metro: 1.2, actor: 1.15, drop: 1.4,
+  item: 1.0, ped: 0.9, cut: 0.85, bin: 0.7, bench: 0.7
+};
 function probeConsider(x, y, obj){
   const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
   const rx = x - cam.x, ry = y - cam.y;
@@ -5597,7 +5666,12 @@ function probeConsider(x, y, obj){
   if (dot < 0.82) return;                      // a narrow forward cone
   // no prompting through walls - but a counter is not a wall
   if (!sightClear(cam.x, cam.y, x, y)) return;
-  const score = dot / (1 + d * 0.2);           // centred beats near
+  /* Geometry alone let a dropped bolt on the floor outscore the work station
+     behind it, and a stairwell outscore the shopkeeper at his own counter -
+     and with one target and no way to cycle, a shadowed prompt is simply
+     unusable. Weigh what a thing IS as well as where it is: you can always
+     step onto a pickup, you cannot always reposition for a counter. */
+  const score = dot / (1 + d * 0.2) * (PROBE_WEIGHT[obj.kind] || 1);
   if (score > _prSc){ _prSc = score; lookTarget = obj; }
 }
 function probeInteract(){
@@ -5634,12 +5708,20 @@ function probeInteract(){
         continue;
       }
       const cost = p.price ? (player.corruption >= 3 ? Math.ceil(p.price * 1.25) : p.price) : 0;
+      /* Theft used to be gated on POVERTY: STEAL only appeared when you
+         could not afford the thing, so a solvent player had no way to pocket
+         anything in the whole city. The wallet decides what E does; SHIFT
+         always takes. Whether it costs you anything is the flock's business,
+         not the shopkeeper's - crimeEvent already asks whether a lens saw it,
+         so cutting the camera first is a clean lift. */
       probeConsider(p.x, p.y, { kind: 'item', p,
         prompt: !p.price ? '[E]  TAKE - ' + ITEMS[p.item].name
               : player.credits >= cost
-                ? '[E]  BUY - ' + ITEMS[p.item].name + ' (' + cost + ' cr)'
-                : '[E]  STEAL - ' + ITEMS[p.item].name + ' (+' +
-                  Math.max(1, Math.ceil(cost / 100)) + ' corruption)' });
+                ? '[E]  BUY - ' + ITEMS[p.item].name + ' (' + cost + ' cr)' +
+                  '     [SHIFT+E]  POCKET IT'
+                : '[E]  STEAL - ' + ITEMS[p.item].name + ' (' +
+                  (flockSees() ? '+' + Math.max(1, Math.ceil(cost / 100)) + ' corruption'
+                               : 'nothing is watching') + ')' });
     }
     else if (p.k === PK_BIN)
       probeConsider(p.x, p.y, { kind: 'bin', prompt: '[E]  TRASH - STREET BIN' });
@@ -5657,11 +5739,11 @@ function probeInteract(){
         probeConsider(p.x, p.y, { kind: 'theswitch', prompt: '[E]  THE SWITCH' });
       else
         probeConsider(p.x, p.y, { kind: 'shift', desk: 1,
-          prompt: '[E]  WORK A DESK SHIFT - 6h, +60 cr, it takes something' });
+          prompt: '[E]  WORK A DESK SHIFT - 6h, +' + SHIFT_PAY[1] + ' cr, it takes something' });
     }
     else if (p.k === PK_FURN && inside && p.fid === 'cratepile')
       probeConsider(p.x, p.y, { kind: 'shift', desk: 0,
-        prompt: '[E]  HAUL FREIGHT - 6h, +90 cr, it takes more' });
+        prompt: '[E]  HAUL FREIGHT - 6h, +' + SHIFT_PAY[0] + ' cr, it takes more' });
     else if (p.k === PK_BENCH && (p.occ || 0) < 2)
       probeConsider(p.x, p.y, { kind: 'bench', p, prompt: '[E]  SIT - BENCH' });
     else if ((p.k === PK_CAM || p.k === PK_LAMP) && !p.dead && invCount('saw'))
@@ -5686,7 +5768,10 @@ function probeInteract(){
       if (Math.abs(dr.x - cam.x) > 4 || Math.abs(dr.y - cam.y) > 4) continue;
       const hm = homeAt(dr.b);
       if (hm && !(player.homes && player.homes[hm.id]) && hm.def.price > 0)
-        probeConsider(dr.x, dr.y, { kind: 'buyhome', hm,
+        // the sale sign used to be the whole door: a building that was also a
+        // shop could not be walked into at all until you had bought the flat
+        // above it. The listing carries the door with it now.
+        probeConsider(dr.x, dr.y, { kind: 'buyhome', hm, door: dr,
           prompt: '[E]  FOR SALE - ' + hm.def.name + ' (' + hm.def.price + ' cr)' });
       else if (hm && player.homes && player.homes[hm.id])
         probeConsider(dr.x, dr.y, { kind: 'door', door: dr,
@@ -5719,7 +5804,7 @@ function tryInteract(){
   } else if (t.kind === 'shift'){
     workShift(t.desk);
   } else if (t.kind === 'buyhome'){
-    openBuyHome(t.hm);
+    openBuyHome(t.hm, t.door);
   } else if (t.kind === 'sleep'){
     sleepToMorning();
   } else if (t.kind === 'stash'){
@@ -5782,11 +5867,12 @@ function tryInteract(){
       toast('+ ' + space + ' ' + def.name + '   (bag full)');
       return;
     }
-    let paid = 0;
+    let paid = 0, lifted = false;
     if (t.p.price){
       const cost = player.corruption >= 3 ? Math.ceil(t.p.price * 1.25) : t.p.price;
-      if (player.credits >= cost){ player.credits -= cost; paid = cost; }
-      else crimeEvent(Math.max(1, Math.ceil(cost / 100)), 'theft');   // scaled to the take
+      const pocket = keys.ShiftLeft || keys.ShiftRight;   // deliberate, not accidental
+      if (!pocket && player.credits >= cost){ player.credits -= cost; paid = cost; }
+      else { lifted = true; crimeEvent(Math.max(1, Math.ceil(cost / 100)), 'theft'); }
     }
     invAdd(t.p.item, want);
     claimProp(t.p);                          // the claim already lifts it out of props
@@ -5797,8 +5883,8 @@ function tryInteract(){
     const pi = props.indexOf(t.p);
     if (pi >= 0) props.splice(pi, 1);
     indexProps(); indexSpriteProps();
-    sfx('ui_select', { rate: 1.35, vol: 0.6 });
-    toast((paid ? '-' + paid + ' cr   ' : '') + '+ ' + def.name);
+    sfx('ui_select', { rate: lifted ? 0.9 : 1.35, vol: 0.6 });
+    toast((paid ? '-' + paid + ' cr   ' : lifted ? 'pocketed.  ' : '') + '+ ' + def.name);
   }
 }
 
@@ -6236,7 +6322,7 @@ function propBlocked(x, y, rad){
   for (let i = 0; i < near.length; i++){
     const p = near[i];
     if (p.k === PK_ITEM || p.k === PK_CROP || p.k === PK_STAIR ||
-        p.k === PK_RAMP) continue;                    // you ride over a ramp
+        p.k === PK_RAMP || p.k === PK_BODY) continue;   // ride over a ramp, step over a body
     if (grind && (p.k === PK_RAIL || p.k === PK_BENCH)) continue;   // walk-through kinds
     // Street furniture you can clear on a board. A bench is knee high and a
     // bin is not much more, so with the wheels off the ground they are
@@ -6322,7 +6408,7 @@ addEventListener('contextmenu', e => {
 addEventListener('mousemove', e => {
   if (document.pointerLockElement === view && !topMode()){
     cam.ang += e.movementX * 0.0026;
-    cam.pitch = clamp(cam.pitch - e.movementY * 0.10, -R.rows * 0.62, R.rows * 0.62);
+    aimBy(-e.movementY * 0.10);
   }
 });
 function onPress(code, key){
@@ -6732,6 +6818,20 @@ function updateCam(dt){
   if (sitting){                                 // on the bench: the mouse looks
     cam.z = 1.12;
     return;
+  }
+  /* Bodies take up room, and that included nobody else's. Two people walked
+     into the same shop and came to rest on the same tile, inside each other -
+     no doorway could be held, and a rival had no physical presence at all.
+     A soft push, the same courtesy the crowd already gets. */
+  if (NET.on) for (const q of PLAYERS){
+    if (q.local || q.dead || q.scene !== SCENE) continue;
+    const dx = cam.x - q.cam.x, dy = cam.y - q.cam.y;
+    const rr = cam.rad * 2, d2 = dx * dx + dy * dy;
+    if (d2 >= rr * rr) continue;
+    const d = Math.sqrt(d2) || 0.001;
+    const push = Math.min((rr - d) * 0.5, 3 * dt);
+    const nx = cam.x + dx / d * push, ny = cam.y + dy / d * push;
+    if (!tileBlocked(nx, ny, cam.rad) && !propBlocked(nx, ny, cam.rad)){ cam.x = nx; cam.y = ny; }
   }
   if (blockedAt(cam.x, cam.y, cam.rad)){
     // Two very different kinds of stuck. Real geometry - a wall, a cart -
@@ -7364,17 +7464,33 @@ function openBlackjack(bet){
     settle(){
       const yv = handVal(this.you), hv = handVal(this.house);
       const b = this.doubled ? this.bet * 2 : this.bet;
-      if (yv > 21) payout(0, 'bust');
-      else if (this.you.length === 2 && yv === 21 && this.house.length === 2 && hv !== 21)
-        payout((b * 2.5) | 0, 'blackjack');
-      else if (hv > 21 || yv > hv) payout(b * 2, 'you take it');
-      else if (yv === hv) payout(b, 'push');
-      else payout(0, 'house takes it');
+      /* The result belongs ON THE TABLE. A corner toast is where the game
+         tells you the weather; it is not where it tells you that you won. */
+      if (yv > 21){ payout(0, 'bust'); this.banner = 'BUST'; this.bcol = H_RED; }
+      else if (this.you.length === 2 && yv === 21 && this.house.length === 2 && hv !== 21){
+        payout((b * 2.5) | 0, 'blackjack'); this.banner = 'BLACKJACK  +' + ((b * 2.5) | 0); this.bcol = H_YEL; }
+      else if (hv > 21){ payout(b * 2, 'you take it'); this.banner = 'HOUSE BUSTS  +' + (b * 2); this.bcol = H_GRN; }
+      else if (yv > hv){ payout(b * 2, 'you take it'); this.banner = 'YOU TAKE IT  +' + (b * 2); this.bcol = H_GRN; }
+      else if (yv === hv){ payout(b, 'push'); this.banner = 'PUSH'; this.bcol = H_DIM; }
+      else { payout(0, 'house takes it'); this.banner = 'HOUSE TAKES IT'; this.bcol = H_RED; }
       this.phase = 'done'; this.msg = 'SPACE deal again   ESC leave';
     },
     housePlay(){
-      this.phase = 'house';
-      while (handVal(this.house) < 17) this.house.push(deck.pop());
+      this.phase = 'house';                    // a real state, with a clock
+      this.dealT = 0.5;                        // the hole card turns, and lands
+      this.msg = 'the house turns its card';
+    },
+    tick(dt){
+      if (this.phase !== 'house') return;
+      this.dealT -= dt;
+      if (this.dealT > 0) return;
+      if (handVal(this.house) < 17){
+        this.house.push(deck.pop());
+        this.dealT = 0.40;
+        this.msg = 'the house draws';
+        sfx('ui_move', { vol: 0.4, rate: 0.85 + this.house.length * 0.13 });
+        return;
+      }
       this.settle();
     },
     onKey(code){
@@ -7407,6 +7523,10 @@ function openBlackjack(bet){
       hudStr(x + 2, y + 2, 'HOUSE  ' + (this.phase === 'play' ? '?' : handVal(this.house)), H_RED);
       for (let i = 0; i < this.house.length; i++)
         drawCard(x + 2 + i * 6, y + 3, this.house[i], this.phase === 'play' && i === 1);
+      if (this.banner){
+        const bx2 = x + ((w - this.banner.length) >> 1);
+        hudStr(bx2, y + 8, this.banner, this.bcol || H_YEL);
+      }
       hudStr(x + 2, y + 9, 'YOU    ' + handVal(this.you), H_GRN);
       for (let i = 0; i < this.you.length; i++)
         drawCard(x + 2 + i * 6, y + 10, this.you[i], false);
@@ -7548,19 +7668,65 @@ function openPlinko(bet){
   pushMode(m);
 }
 /* ------------------------------ high-low -------------------------------- */
+/* The multiplier has to answer to the die. A flat x1.4 paid the same for a
+   five-in-six shot as for a coin flip, so calling HIGHER on a 1 (or LOWER on
+   a 6) returned 1.167 for every credit staked - and since C cashes out at
+   streak zero for the bet back, a player could sit there filtering for those
+   two faces and print money at about six percent a bet. Pay the odds instead,
+   less the house's cut: the safe call is worth little, the coin flip nearly
+   doubles, and every face carries the SAME edge - so there is no longer a
+   face worth waiting for. HL_CUT is the only dial; move it and the whole
+   table moves with it. */
+const HL_CUT = 0.96;                            // four points to the house
+function hlOdds(die, guessHigh){                // winning faces out of six
+  return guessHigh ? 6 - die : die - 1;
+}
+function hlMult(die, guessHigh){
+  const w = hlOdds(die, guessHigh);
+  return w > 0 ? (6 / w) * HL_CUT : 0;          // no faces win: no bet to take
+}
 function openHighLow(bet){
   const m = {
     name: 'highlow', pausesWorld: true, bet,
     die: 1 + ((Math.random() * 6) | 0), pot: bet, streak: 0,
     msg: 'H higher   L lower   C cash out', phase: 'play',
     roll(guessHigh){
-      const next = 1 + ((Math.random() * 6) | 0);
-      const win = next === this.die ? false
-                : guessHigh ? next > this.die : next < this.die;
+      /* Half a second of pips before the answer. The number was landing in
+         the same frame as the call, which is a spreadsheet, not a dice game. */
+      this.mult = hlMult(this.die, guessHigh);
+      /* `from` is the face the call was made against - the tumble overwrites
+         this.die on the way, so the comparison cannot read it live. */
+      this.pending = { high: guessHigh, from: this.die, next: 1 + ((Math.random() * 6) | 0) };
+      this.spin = 0.55;
+      this.phase = 'roll';
+      this.msg = '...';
+      sfx('ui_move', { vol: 0.4, rate: 1.1 });
+    },
+    tick(dt){
+      if (this.phase !== 'roll') return;
+      this.spin -= dt;
+      if (this.spin > 0){
+        // the face tumbles while it is in the air
+        if (((this.spin * 22) | 0) !== this._lastPip){
+          this._lastPip = (this.spin * 22) | 0;
+          this.die = 1 + ((Math.random() * 6) | 0);
+          sfx('ui_move', { vol: 0.18, rate: 1.7 });
+        }
+        return;
+      }
+      this.phase = 'play';
+      const { high, from, next } = this.pending;
+      this.pending = null;
+      this.settleRoll(high, from, next);
+    },
+    settleRoll(guessHigh, from, next){
+      const mult = this.mult;
+      const win = next === from ? false
+                : guessHigh ? next > from : next < from;
       this.die = next;
       if (win){
         this.streak++;
-        this.pot = (this.pot * 1.4) | 0;
+        this.pot = Math.max(1, (this.pot * mult) | 0);
         sfx('ui_select', { vol: 0.5, rate: 1.2 + this.streak * 0.1 });
         this.msg = 'streak ' + this.streak + '  pot ' + this.pot + '  H / L / C';
       } else {
@@ -7596,7 +7762,15 @@ function openHighLow(bet){
       const pips = ['', 'o', 'o o', 'o o o', 'oo oo', 'oo:oo', 'oooooo'][this.die];
       hudStr(x + 17, y + 5, '[ ' + this.die + ' ]', H_WHT);
       hudStr(x + 17, y + 7, pips.slice(0, 5), H_YEL);
-      hudStr(x + 2, y + 2, 'a tie loses. every win multiplies x1.4', H_DIM);
+      // the price of each call, on the table where the player can see it
+      hudStr(x + 2, y + 2, 'a tie loses. the safer the call, the less it pays', H_DIM);
+      if (this.phase === 'roll' && this.pending)
+        hudStr(x + 2, y + h - 4, 'CALLED ' + (this.pending.high ? 'HIGHER' : 'LOWER') +
+                                 '  x' + this.mult.toFixed(2), H_YEL);
+      else
+        hudStr(x + 2, y + h - 4,
+               'HIGHER  x' + hlMult(this.die, true).toFixed(2) +
+               '   LOWER  x' + hlMult(this.die, false).toFixed(2), H_DIM);
       hudStr(x + 2, y + h - 2, this.msg, H_YEL);
       hudStr(x + w - 14, y + h - 2, 'CR ' + player.credits, H_DIM);
     }
@@ -7849,22 +8023,26 @@ function grantHome(id){
   toast('the keys to ' + (def ? def.name.toLowerCase() : id) + ' are yours');
   sfx('ui_select', { vol: 0.7, rate: 0.8 });
 }
-function openBuyHome(h){
+function openBuyHome(h, dr){
+  const items = [
+    { info: 'one room in the belt. thin walls, a working door,' },
+    { info: 'and nobody upstairs who asks questions.' },
+    { sep: true },
+    { label: 'BUY IT', value: () => player.credits >= h.def.price ? '' : 'SHORT',
+      act(){
+        if (player.credits < h.def.price){ toast('not enough credits'); return; }
+        player.credits -= h.def.price;
+        grantHome(h.id);
+        closeMenus();
+      } }
+  ];
+  /* The ground floor is somebody's business whether or not the flat above it
+     sells. Without this the sale sign is a lock on the shop door. */
+  if (dr) items.push({ label: 'STEP INSIDE - ' + dr.name,
+                       act(){ closeMenus(); enterInterior(dr); } });
+  items.push({ label: 'NOT TODAY', act(){ popMode(); } });
   pushMode(makeListMenu({
-    name: 'buyhome', title: h.def.name + '  -  ' + h.def.price + ' CR',
-    items: [
-      { info: 'one room in the belt. thin walls, a working door,' },
-      { info: 'and nobody upstairs who asks questions.' },
-      { sep: true },
-      { label: 'BUY IT', value: () => player.credits >= h.def.price ? '' : 'SHORT',
-        act(){
-          if (player.credits < h.def.price){ toast('not enough credits'); return; }
-          player.credits -= h.def.price;
-          grantHome(h.id);
-          closeMenus();
-        } },
-      { label: 'NOT TODAY', act(){ popMode(); } }
-    ]
+    name: 'buyhome', title: h.def.name + '  -  ' + h.def.price + ' CR', items
   }));
 }
 /* a shift: six hours gone, credits in, and the body pays the difference.
@@ -7876,8 +8054,12 @@ function openBuyHome(h){
    people take the other kind of work, and why a bed of your own changes the
    arithmetic completely, since sleeping heals for nothing and turns the whole
    wage into profit. */
+/* Indexed by `desk`: [0] is freight, [1] is the desk. The doorstep prompt
+   reads the same two tables, so the sign and the wage cannot drift apart -
+   which they had, by eight credits each, in the player's disfavour. */
+const SHIFT_PAY = [84, 52], SHIFT_COST = [18, 10];
 function workShift(desk){
-  const cost = desk ? 10 : 18, pay = desk ? 52 : 84;
+  const cost = SHIFT_COST[desk ? 1 : 0], pay = SHIFT_PAY[desk ? 1 : 0];
   if (player.hp <= cost + 8){ toast('you are in no state to work'); return; }
   player.hp -= cost;
   player.credits += pay;
@@ -10828,7 +11010,7 @@ function openCamJack(){
     jump(){
       const c = this.cams[this.i];
       cam.x = c.x; cam.y = c.y; cam.z = 4.6;
-      cam.ang = hash3(c.x | 0, c.y | 0, 5) * Math.PI * 2; cam.pitch = -6;
+      cam.ang = hash3(c.x | 0, c.y | 0, 5) * Math.PI * 2; setAim(-6);
       sfx('ui_move', { vol: 0.5, rate: 1.5 });
     },
     onKey(code){
@@ -10839,7 +11021,7 @@ function openCamJack(){
       } else if (code === 'KeyQ') cam.ang += 0.35;
       else if (code === 'KeyE') cam.ang -= 0.35;
       else if (code === 'Escape' || code === 'Space' || code === 'Tab'){
-        Object.assign(cam, save); popMode(); sfx('ui_back', { vol: 0.5 });
+        Object.assign(cam, save); setAim(save.pitch); popMode(); sfx('ui_back', { vol: 0.5 });
       }
     },
     draw(){
@@ -11254,7 +11436,81 @@ function applyDeltaToProps(){
                  item: d.item, qty: d.qty, cval: d.cval, key: d.key });
     ch = true;
   }
+  /* and the dead are part of what a room remembers */
+  if (worldDelta.bodies) for (const k in worldDelta.bodies){
+    const b = worldDelta.bodies[k];
+    if (b.sc !== sid) continue;
+    let here = false;
+    for (const q of props) if (q.key === k){ here = true; break; }
+    if (here) continue;
+    const sl = bodySlots(b.skin, b.shirt);
+    props.push({ x: b.x, y: b.y, k: PK_BODY, s: 0, r: 0, yaw: b.yaw || 0,
+                 sb: sl.base, sd: sl.dens, key: b.key, day: b.day });
+    ch = true;
+  }
   if (ch){ indexProps(); indexSpriteProps(); }
+}
+
+/*========================== 13f3. WHAT IS LEFT OF THEM ======================
+  A kill used to leave one particle puff and a hole in the crowd: killActor
+  spliced the body the same frame, and pedWound went further - it teleported
+  the walker to a fresh spot with their hp reset, so the person you shot was
+  strolling two streets over inside a second. That is why murder felt like
+  nothing. It left no evidence at all.
+
+  A body is a prop now, on the same ledger as a dropped till: it rides the
+  handshake, it survives the room being rebuilt from its seed, every client
+  has it, and it fades a day later the way graffiti does. Walk back through a
+  district you shot up this morning and it is still there this afternoon; come
+  back tomorrow and the street has been cleaned.
+============================================================================*/
+const BODY_DAYS = 1;                          // how long the street remembers
+function bodySlots(skin, shirt){
+  return slots({ H: [skin === undefined ? SKINC[0] : skin, 0.92],
+                 S: [shirt === undefined ? SHIRTC[0] : shirt, 0.86],
+                 P: [C.pants, 0.82], T: [C.tire, 0.75] });
+}
+function placeBody(b){
+  const sc = sceneById(b.sc);
+  if (!sc || !sc.props) return;               // nobody has that room open
+  withScene(sc, () => {
+    for (const q of props) if (q.key === b.key) return;
+    const sl = bodySlots(b.skin, b.shirt);
+    props.push({ x: b.x, y: b.y, k: PK_BODY, s: 0, r: 0, yaw: b.yaw || 0,
+                 sb: sl.base, sd: sl.dens, key: b.key, day: b.day });
+    indexProps(); indexSpriteProps();
+  });
+}
+function dropBody(sc, x, y, o){
+  o = o || {};
+  const b = { sc, x, y, yaw: o.yaw || 0, skin: o.skin, shirt: o.shirt,
+              day: dayCount, key: 'body' + (bodySeq++) + '_' + (dayCount | 0) };
+  if (!worldDelta.bodies) worldDelta.bodies = {};
+  worldDelta.bodies[b.key] = b;
+  placeBody(b);
+  if (NET.on && !o.quiet) netBroadcastEvent('body', b);
+  return b;
+}
+let bodySeq = 0;
+/* the street gets cleaned overnight */
+function sweepBodies(){
+  if (!worldDelta.bodies) return;
+  const gone = [];
+  for (const k in worldDelta.bodies)
+    if (dayCount - worldDelta.bodies[k].day > BODY_DAYS) gone.push(k);
+  if (!gone.length) return;
+  for (const k of gone) delete worldDelta.bodies[k];
+  const sweep = sc => {
+    if (!sc || !sc.props) return;
+    withScene(sc, () => {
+      let hit = false;
+      for (let i = props.length - 1; i >= 0; i--)
+        if (props[i].k === PK_BODY && gone.indexOf(props[i].key) >= 0){ props.splice(i, 1); hit = true; }
+      if (hit){ indexProps(); indexSpriteProps(); }
+    });
+  };
+  sweep(CITY);
+  for (const sc of SCENES.values()) sweep(sc);
 }
 
 /* ---- saves: seed + camera + player + delta, three slots -------------------
@@ -11358,7 +11614,7 @@ function loadGame(n){
   }
   if (!player.quests) player.quests = {};      // saves from before quests existed
   if (!player.qvar) player.qvar = {};
-  cam.x = s.cam.x; cam.y = s.cam.y; cam.ang = s.cam.ang; cam.pitch = s.cam.pitch;
+  cam.x = s.cam.x; cam.y = s.cam.y; cam.ang = s.cam.ang; setAim(s.cam.pitch);
   cam.riding = null; cam.z = 1.62; sitting = null; skating = false; resetSkate();
   if (!walkG[clamp(cam.y | 0, 0, MAP - 1) * MAP + clamp(cam.x | 0, 0, MAP - 1)]){
     const sp = freeSpotNear(cam.x, cam.y);
@@ -12637,6 +12893,7 @@ function pedCrime(n, why){
 function dayTick(){                           // called once per day rollover
   dayCount++;
   for (const k in tags) if (dayCount - tags[k].day > 3) delete tags[k];
+  sweepBodies();                              // and the pavement is washed
   // one clean day a point, where it used to be two - the ladder above is
   // steep enough that waiting it out should not be most of an evening
   if (player.corruption > 0 && dayCount - (player.qvar.lastCrimeDay || 0) >= 1){
@@ -12868,6 +13125,11 @@ function spawnEnforcer(nearR, aggro){
 }
 function heliFrame(dt){
   if (!heli) return;
+  /* Nothing hunts a body. In multiplayer the world keeps running for a player
+     sitting on the FLATLINED card - which is right - but the light went on
+     hunting the corpse, and the drop team kept roping onto it every thirty
+     seconds for as long as the card was up. */
+  if (player.hp <= 0){ swatT = Math.max(0, swatT - dt); heli.lock = 0; return; }
   heli.t -= dt;
   if (heli.t <= 0 && player.corruption < 6){ heli = null; toast('the rotor noise fades'); return; }
   if (heli.t <= 0) heli.t = 20;                // at six it just circles back
@@ -12887,10 +13149,15 @@ function heliFrame(dt){
       if (a.kind === 'enforcer') a.aggro = 1;
     if (heli.lock > 3 && player.corruption >= 6 && swatT <= 0){
       swatT = 30;                              // the drop team
+      /* The drop answers to the same ceiling the call-outs do. Without it the
+         rope was an uncapped spawner: three more bodies every thirty seconds,
+         for as long as the light held, against a cap of three - which is how
+         one pinned player collected sixty enforcers stacked on one tile. */
+      const cap = enfCap();
+      const have = actors.filter(a => a.kind === 'enforcer' && a.brain !== 'patrol').length;
       let n = 0;
-      for (let i = 0; i < 3; i++) if (spawnEnforcer(4, true)) n++;
-      if (n) toast('ropes hit the pavement - SWAT drop');
-      sfx('door', { rate: 0.5, vol: 0.8 });
+      for (let i = 0; i < 3 && have + n < cap; i++) if (spawnEnforcer(4, true)) n++;
+      if (n){ toast('ropes hit the pavement - SWAT drop'); sfx('door', { rate: 0.5, vol: 0.8 }); }
     }
   } else heli.lock = Math.max(0, heli.lock - dt * 2);
   // the machine is heard, seen high up, and the light shows on the street
@@ -13124,15 +13391,31 @@ function spawnPatrols(){
     a.atk = 9; a.spd = 2.6; a.route = route; a.ri = 0; a.tier = 0;
   }
 }
+/* Weapons no shop will sell you, and no passer-by expects to see. */
+const CONTRABAND = { railgun: 1, arcgun: 1, maul: 1, katana: 1, nailer: 1 };
+let carryT = 8;
 function corruptionTick(){                    // polled every half second
   if (!inside){ mqWorksGuards(); cellAmbushTick(); }
   else spirePapers();
-  if (player.corruption <= 0 || inside || jamT > 0) return;
+  if (inside || jamT > 0) return;
+  if (player.corruption <= 0 && !CONTRABAND[weaponId()]) return;
   camWhisperT -= 0.5;
   if (camWhisperT <= 0){
     camWhisperT = 22 + Math.random() * 30;
     if (flockEyes() > 0) toast('a camera swivels to follow you');
   }
+  /* A maglev lance is free, does sixty, and outclasses every counter weapon
+     in the city - the balance for that cannot be the price, because there is
+     no price. It is that you are carrying it down a public street. The bark
+     already existed ("keep that thing down, friend"); this is the rest of
+     the sentence. */
+  if (CONTRABAND[weaponId()] && flockEyes() > 0){
+    carryT -= 0.5;
+    if (carryT <= 0){
+      carryT = 18 + Math.random() * 12;
+      crimeEvent(1, 'open carry');
+    }
+  } else carryT = 8;
   const c = player.corruption, T = enfTier(), cap = enfCap();
   if (cap > 0){
     enfT -= 0.5;
@@ -13225,10 +13508,20 @@ function pedWound(p, d, ax, ay, by){
   /* And the walker itself goes back into the far side of the stream. That
      is ours alone: on a guest the next snapshot would only put it back. */
   if (p.sit){ p.sit.occ--; p.sit = null; }
+  /* They fall HERE. What walks away is the crowd renewing itself somewhere
+     else, and it gets a new face and coat on the way - recycling the same
+     silhouette two streets over is what made a killing feel undone. */
+  dropBody('city', p.x, p.y, { skin: p.skin, shirt: p.shirt,
+                               yaw: Math.atan2(p.dy || 0, p.dx || 1) });
   withScene(CITY, () => {                       // a room's walkG is not the city's
     const t = randWalkNear(ax, ay, 60, STREAM_R * 0.8);   // the crowd renews
     if (t && !inPanicZone(t[0], t[1])){ p.x = t[0] + 0.5; p.y = t[1] + 0.5; }
   });
+  p.shirt = SHIRTC[(Math.random() * SHIRTC.length) | 0];
+  p.skin  = SKINC[(Math.random() * SKINC.length) | 0];
+  { const sl2 = slots({ H: [p.skin, 0.92], S: [p.shirt, 0.86],
+                        P: [C.pants, 0.82], T: [C.tire, 0.75] });
+    p.sb = sl2.base; p.sd = sl2.dens; }
   p.path = null; p.pi = 0; p.cool = rnd() * 2; p.flee = 0;
 }
 /* A body going down, on every screen at once. The crime and the line about
@@ -13454,7 +13747,7 @@ function strikeLand(){
       netHitPlayer(q, m.d + ((Math.random() * m.r) | 0)); struck++;
     }
     if (struck){
-      hitStopT = 0.09 + struck * 0.02; cam.pitch -= 0.5;
+      hitStopT = 0.09 + struck * 0.02; addRecoil(-0.5 * RECOIL_GAIN);
       sfx('hit', { rate: 1.6, vol: 0.7 }); sfx('footstep', { rate: 2.6, vol: 0.3 });
     } else sfx('footstep', { vol: 0.3, rate: 2.8 });
     return;
@@ -13475,13 +13768,13 @@ function strikeLand(){
     // the shock goes through the pavement, and the pavement is everybody's
     netPanic(cam.x, cam.y, 30);
     flash = Math.max(flash, 0.25);             // the shock reads on screen
-    cam.pitch -= 1.4;
+    addRecoil(-1.4 * RECOIL_GAIN);
   }
   if (!hit){ sfx('ui_back', { vol: 0.18, rate: 1.6 }); return; }   // an airy miss
   const a = hit.a;
   const dmg = m.d + ((Math.random() * m.r) | 0);
   if (a.player){                               // another player: their body, their call
-    hitStopT = 0.06; cam.pitch -= 0.3;
+    hitStopT = 0.06; addRecoil(-0.3 * RECOIL_GAIN);
     netHitPlayer(a.player, dmg);
     return;
   }
@@ -13489,7 +13782,7 @@ function strikeLand(){
   const nx = a.x + vx * m.kb, ny = a.y + vy * m.kb;   // the shove
   if (inMap(nx | 0, ny | 0) && walkG[(ny | 0) * MAP + (nx | 0)]){ a.x = nx; a.y = ny; }
   hitStopT = m.id === 'bat' ? 0.11 : m.id === 'pipe' ? 0.07 : 0.04;
-  cam.pitch -= m.id === 'bat' ? 0.6 : m.id === 'pipe' ? 0.4 : 0.3;
+  addRecoil(-(m.id === 'bat' ? 0.6 : m.id === 'pipe' ? 0.4 : 0.3) * RECOIL_GAIN);
   if (m.id !== 'fist') cam.ang -= 0.015;
   const jit = () => 1 + (Math.random() * 0.16 - 0.08);
   if (m.id === 'bat'){
@@ -13504,10 +13797,54 @@ function strikeLand(){
   a.stunT = Math.max(a.stunT || 0, m.stun);
   if (dealActorDamage(a, dmg)){
     hitStopT += 0.05;                          // the kill beat holds a moment
-    cam.pitch -= 0.4;
+    addRecoil(-0.4 * RECOIL_GAIN);
     addFx(a.x, a.y, 0.8); addFx(a.x, a.y, 0.4);
     sfx('hurt', { rate: 0.5, vol: 0.45 });
   }
+}
+/*========================== 13e2. RECOIL THAT SETTLES =======================
+  cam.pitch used to be written by three unrelated things - the mouse, a gun's
+  kick, and a melee swing - and eased back by none of them. Every shot raised
+  your aim permanently: four rounds from the lance walked the view 4, 8, 12,
+  16 rows up and left it there, and thirteen pinned it at the clamp. Held
+  automatic fire climbed 4.5 rows a second with nothing to climb back down.
+
+  So the rendered pitch is now the sum of two things that mean different
+  things. `aimPitch` is where the player is looking and only the mouse moves
+  it. `recoilPitch` is what the weapon just did, and it decays. The player
+  fighting the climb moves their aim down, which is the skill; letting go
+  returns the sight to exactly where they left it, which is the courtesy.
+
+  Two dials for the whole feel of every gun in the city.
+============================================================================*/
+let aimPitch = 0, recoilPitch = 0, recoilTau = 0.34;
+const RECOIL_GAIN = 2.2;     // how much of a weapon's `kick` becomes throw
+const RECOIL_TAU  = 0.34;    // seconds to shed ~63% of it, single-shot
+const RECOIL_AUTO = 0.85;    // an automatic settles slower than it fires, so
+                             // held fire climbs and a tapped burst does not
+const pitchLimit = () => R.rows * 0.62;
+/* the one absolute setter: doorways, saves, waking up, the camera feed */
+function setAim(v){
+  aimPitch = clamp(v || 0, -pitchLimit(), pitchLimit());
+  recoilPitch = 0;
+  cam.pitch = aimPitch;
+}
+function addRecoil(v, tau){
+  recoilTau = tau || RECOIL_TAU;
+  recoilPitch = clamp(recoilPitch + v, -pitchLimit() * 2, pitchLimit() * 2);
+  cam.pitch = clamp(aimPitch + recoilPitch, -pitchLimit(), pitchLimit());
+}
+/* the mouse owns the aim, never the recoil */
+function aimBy(d){
+  aimPitch = clamp(aimPitch + d, -pitchLimit(), pitchLimit());
+  cam.pitch = clamp(aimPitch + recoilPitch, -pitchLimit(), pitchLimit());
+}
+function recoilTick(dt){
+  if (recoilPitch){
+    recoilPitch *= Math.exp(-dt / recoilTau);
+    if (Math.abs(recoilPitch) < 0.02) recoilPitch = 0;
+  }
+  cam.pitch = clamp(aimPitch + recoilPitch, -pitchLimit(), pitchLimit());
 }
 let unarmedT = 0, shotCool = 0, fireHeld = false, scopeHeld = false;
 /* The glass. scopeZoom is 1 when you are not looking through anything, and
@@ -13570,12 +13907,30 @@ const GUNS = {
   nailer:  { dmg: 10, rng: 5, cool: 0.30, range: 28, kick: 0.9, rate: 1.6, snd: 0.65,
              pin: 2.2 }
 };
+/* Somebody close enough that the muzzle is past them. */
+function pointBlank(){
+  const vx = Math.cos(cam.ang), vy = Math.sin(cam.ang);
+  const close = (x, y) => {
+    const rx = x - cam.x, ry = y - cam.y;
+    const f = rx * vx + ry * vy;
+    return f < 0.32 && Math.hypot(rx, ry) < 0.75;
+  };
+  for (const a of actors) if (a.solid && actorHere(a) && close(a.x, a.y)) return true;
+  for (const q of PLAYERS) if (!q.local && !q.dead && q.scene === SCENE && close(q.cam.x, q.cam.y)) return true;
+  if (!inside) for (const p of gridQuery(pedGrid, cam.x, cam.y, 1.2, _q1))
+    if (!p.off && close(p.x, p.y)) return true;
+  return false;
+}
 function fireWeapon(){
   if (topMode() || worldFrozen()) return;
   if (cam.riding){ toast('not from up here'); return; }
   if (sitting){ toast('not from the bench'); return; }
   if (shotCool > 0) return;                   // the zip pistol is not a minigun
   handsBusy();
+  /* Targeting needs a body at least 0.3 ahead, so anything pressed right up
+     against you was a dead zone: the shot went nowhere and the trigger did
+     nothing. At that range a gun is a heavy object, so swing it. */
+  if (pointBlank()){ punch(); return; }
   const wid = weaponId(), G = GUNS[wid];
   const armed = !!G && invCount(wid) > 0;
   if (!armed || invCount('ammo') === 0){
@@ -13593,7 +13948,7 @@ function fireWeapon(){
   // a flash is gone in a twelfth of a second, far too short to survive being
   // sampled by the position stream - it goes as its own event or not at all
   netBroadcastEvent('shot', { x: +cam.x.toFixed(2), y: +cam.y.toFixed(2) });
-  cam.pitch = clamp(cam.pitch + G.kick, -R.rows * 0.62, R.rows * 0.62);
+  addRecoil(G.kick * RECOIL_GAIN, G.settle || (G.auto ? RECOIL_AUTO : RECOIL_TAU));
   sfx('shot', { vol: G.snd, rate: G.rate * (0.97 + Math.random() * 0.06) });
   panicHere(cam.x, cam.y, 120);
   for (const a of actors)                       // gunfire carries
@@ -13688,6 +14043,42 @@ function fireWeapon(){
                             cam.y + Math.sin(cam.ang) * (wd - 0.05), 1.3);
   }
 }
+/* What a working person does when somebody starts hitting them, which until
+   now was: nothing. They are `brain:'still'`, aggro was set and ignored, and
+   twelve swings landed on a body that never moved or made a sound. Three
+   answers, by trade: most plead and back away, the armoury shoots. */
+const PANIC_LINE = {
+  grocery:    ['take the apples, take anything', 'not over produce, please'],
+  bodega:     ['the register is under the counter, just take it',
+               'i only work here, i only work here'],
+  general:    ['whatever you want, it is yours', 'do not, do NOT'],
+  clothier:   ['it is only cloth. it is only cloth',
+               'you can have the coat off my back, literally'],
+  jeweler:    ['the case is not even locked', 'gold is not worth this'],
+  tools:      ['there is nothing in here worth a body',
+               'i will open the drawer, just wait'],
+  dispensary: ['whoa. whoa. everybody is fine', 'this is such a bad trip'],
+  armory:     ['wrong shop, friend', 'you came into a GUN STORE'],
+  casino:     ['the cage is that way, the CAGE', 'security. SECURITY.']
+};
+function actorHurtReact(a){
+  if (a.brain === 'hostile') return;
+  /* The armoury answers in kind. Everybody else gets out of the way. */
+  if (a.armed && a.brain !== 'hostile'){
+    a.brain = 'hostile'; a.spd = 2.3;
+    if (a.barkT === undefined) toast(a.name.toLowerCase() + ': "wrong shop, friend"');
+    a.barkT = worldTime + 6;
+    return;
+  }
+  a.scared = worldTime + 9;                   // they will not stand still again
+  if (a.barkT !== undefined && worldTime < a.barkT) return;
+  a.barkT = worldTime + 4.5;
+  const trade = (inside && inside.shop) || 'general';
+  const lines = PANIC_LINE[trade] || PANIC_LINE.general;
+  toast(a.name.toLowerCase() + ': "' + lines[(Math.random() * lines.length) | 0] + '"');
+  sfx('ui_back', { vol: 0.35, rate: 1.5 });
+  panicHere(a.x, a.y, 40);                    // and the room notices
+}
 /* Every blow against an actor lands here. On the client that owns the body
    it is a plain wound; from a guest striking a host-owned body it is a
    report - the flinch shows at once, the hp comes back in the stream, and
@@ -13695,6 +14086,7 @@ function fireWeapon(){
    true when the body fell HERE and the caller may play its kill beat. */
 function dealActorDamage(a, dmg){
   a.aggro = 1; a.hitT = 0.15;
+  actorHurtReact(a);
   if (netGuest() && actorNetSynced(a)){
     // the panic anchor rides along: the block empties around US, not around
     // wherever the host happens to be standing when it applies this
@@ -13703,7 +14095,10 @@ function dealActorDamage(a, dmg){
     netBroadcastEvent('ahit', o);
     return false;
   }
-  if (a.hp === undefined){ a.hp = 30; a.maxHp = 30; }
+  // A live body never sits at or below zero - killActor splices it the moment
+  // it gets there - so anything <= 0 here is an old save's uninitialised hp,
+  // not a corpse. Give it a body before taking it away.
+  if (a.hp === undefined || a.hp <= 0){ a.hp = CIVIL_HP; a.maxHp = CIVIL_HP; }
   a.hp -= dmg;
   if (a.hp <= 0){ killActor(a, NET.id); return true; }
   return false;
@@ -13730,6 +14125,9 @@ function killActor(a, by){
     netBroadcastEvent('slain', { c: a.id, by, m: a.brain !== 'hostile' ? 1 : 0 });
   }
   actors.splice(actors.indexOf(a), 1);
+  // and the street keeps them until tomorrow
+  dropBody(sc, a.x, a.y, { skin: a.skin, shirt: a.shirt,
+                           yaw: Math.atan2(a.dy || 0, a.dx || 1) });
   if (typeof mqWorksKill === 'function') mqWorksKill(a);
   if (typeof spireKill === 'function') spireKill(a);
   if (a.brain !== 'hostile'){
@@ -13766,19 +14164,98 @@ function damagePlayer(d){
   sfx('hurt', { vol: 0.8, rate: 0.9 + Math.random() * 0.2 });
   if (player.hp <= 0) playerDown();
 }
+/*========================= 13f2. THE CITY SAW YOU ===========================
+  Killing a shopkeeper says "shopkeep drops the till - and the city saw".
+  Killing a PERSON used to say nothing at all: no line for the one who swung,
+  no line for anyone watching, no entry on the record, and the half of a purse
+  the dead lose simply left the economy. The whole premise of a lobby is people
+  doing this to each other, so it belongs inside the same sentence as every
+  other crime.
+
+  The dead call their own death - the same rule that makes a body its own
+  authority everywhere else - and the wire carries it to everybody.
+============================================================================*/
+let lastHitBy = null;                     // {id, w, t} from the last pdam
+const HIT_MEMORY = 8;                     // seconds a blow still counts as the cause
+
+/* What the one who swung is told. The weapon does the talking. */
+const KILL_LINE = {
+  railgun:  'the lance goes through them and keeps going',
+  rifle:    'one shot, from a long way back',
+  shotgun:  'the doorbell answers',
+  smg:      'half a stick, and the wall behind them',
+  revolver: 'the judge closes the argument',
+  pistol:   'three cheap rounds on a quiet street',
+  holdout:  'sleeve gun, sleeve range',
+  nailer:   'you staple them to the ground',
+  arcgun:   'the arc finds them and will not let go',
+  katana:   'one arc. they come apart on the follow-through',
+  maul:     'the pavement takes most of it',
+  bat:      'the bat does what a bat is for',
+  pipe:     'they fold around the pipe',
+  knife:    'close work, and quick',
+  fist:     'bare hands. it took a while'
+};
+function killLine(w){ return KILL_LINE[w] || 'they go down and stay down'; }
+function peerName(id){
+  const p = playerById(id);
+  if (!p) return 'somebody';
+  return String(p.name || 'somebody').split('-')[0];
+}
+/* Everyone hears the same packet; what it means depends on where you stood. */
+function pkillHeard(m){
+  if (m.by === undefined || m.v === undefined) return;
+  if (m.by === NET.id){
+    toast(killLine(m.w) + '  -  ' + peerName(m.v) + ' is down');
+    sfx('hit', { vol: 0.9, rate: 0.5 });
+    player.qvar.kills = (player.qvar.kills || 0) + 1;
+    /* A person is worth what a person is worth. Killing a working stranger
+       is three points; killing somebody who can shoot back was worth none. */
+    crimeEvent(3, 'murder');
+    return;
+  }
+  if (m.v === NET.id) return;               // we already know, we are on the card
+  // a bystander only hears what the street would tell them
+  const d = Math.hypot((m.x || 0) - cam.x, (m.y || 0) - cam.y);
+  const same = (m.s || 'city') === netSceneId();
+  if (same && d < 26) toast(peerName(m.v) + ' goes down. ' + peerName(m.by) + ' is still standing.');
+  else if (same && d < 90) toast('gunfire down the block, and then nothing');
+}
 function playerDown(){
   // Going down mid-chase is not a flatline. The cell's whole business is
   // people who get picked up and say nothing, and the metro-respawn screen -
   // half your credits, wake across the city, quest still open behind you -
   // says none of that and puts the run out of reach besides.
   if (RUN){ runCaught(); return; }
+  player.qvar.deaths = (player.qvar.deaths || 0) + 1;
+  const byPlayer = lastHitBy && worldTime - lastHitBy.t < HIT_MEMORY ? lastHitBy : null;
+  /* "someone goes through your pockets" was doing the work of a mechanic that
+     did not exist: the half you lose simply vanished. Now it lies where you
+     fell, keyed through worldDelta like any other drop, so it is on every
+     screen, survives the room being rebuilt, and can be taken by whoever
+     reaches it first - including you, if you can get back. */
+  const purse = Math.floor(player.credits / 2);
+  const where = (typeof netSceneId === 'function') ? netSceneId() : 'city';
+  if (purse > 0) dropAt(where, cam.x, cam.y, 'credchip', { cval: purse });
+  dropBody(where, cam.x, cam.y, { skin: player.skinC, shirt: player.shirtC,
+                                  yaw: cam.ang });
+  if (byPlayer && NET.on)
+    netBroadcastEvent('pkill', { by: byPlayer.id, v: NET.id, w: byPlayer.w,
+                                 x: +cam.x.toFixed(1), y: +cam.y.toFixed(1), s: where });
+  lastHitBy = null;
+  const epitaph = byPlayer
+    ? peerName(byPlayer.id) + ' put you down. ' +
+      (ITEMS[byPlayer.w] ? ITEMS[byPlayer.w].name.toLowerCase() : 'bare hands') + '.'
+    : 'the pavement is cold. someone goes through your pockets.';
   pushMode(makeListMenu({
     name: 'dead', title: 'FLATLINED',
     onBack(){},                               // no slipping out of this one
     items: [
-      { info: 'the pavement is cold. someone goes through your pockets.' },
+      { info: epitaph },
+      { info: purse > 0 ? purse + ' credits are lying where you fell.'
+                        : 'you had nothing on you worth taking.' },
       { sep: true },
-      { label: 'WAKE AT THE METRO', hint: 'half your credits stay on the pavement',
+      { label: 'WAKE AT THE METRO', hint: 'and walk back for it, if it is still there',
         act(){ respawn(); } },
       { label: 'LOAD GAME', act(){ openSlotMenu('load'); } },
       { label: 'NEW CITY', act(){ closeMenus(); newWorld((Math.random() * 1e9) | 0); } }
@@ -13786,7 +14263,17 @@ function playerDown(){
   }));
 }
 function respawn(){
-  player.credits = Math.ceil(player.credits / 2);
+  player.credits = Math.ceil(player.credits / 2);   // the other half is on the pavement
+  /* Getting caught IS the punishment. Without this, dying at high heat was a
+     spiral with no floor: dead, half your money, still hunted, dead again -
+     and the fixer's forty a point recedes every time. Two points back is the
+     brake, and it costs you the purse to pull it. */
+  if (player.corruption > 0){
+    const shed = Math.min(2, player.corruption);
+    player.corruption -= shed;
+    player.qvar.lastCrimeDay = dayCount;
+    toast('they had you, and let you go. -' + shed + ' corruption');
+  }
   player.hp = player.maxHp;
   cam.riding = null; cam.z = 1.62; sitting = null; skating = false; resetSkate();
   drug = null; jamT = 0; snifferT = 0; bakeKey = -1;   // you wake up sober
@@ -16434,7 +16921,7 @@ function buildTouchUI(){
     const tm = topMode();
     if (!tm && !paused){
       cam.ang -= dx * 0.0055;
-      cam.pitch = clamp(cam.pitch - dy * 0.16, -R.rows * 0.62, R.rows * 0.62);
+      aimBy(-dy * 0.16);
     } else if (tm && tm.drag) tm.drag(dx, dy);
   });
   addEventListener('pointerup', e => {
@@ -17878,7 +18365,10 @@ function spritePass(){
       _noRef = tType[(o.y | 0) * MAP + (o.x | 0)] === T_BRIDGE ? 1 : 0;
       const dep = def.dep !== undefined ? def.dep
                 : MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
-      drawModel(o.x, o.y, pz, def.w, def.h, def.art, def.sl.base, def.sl.dens,
+      /* A prop may carry its own colours - furniture already does, and a
+         body has to, because it wears whoever it used to be. */
+      drawModel(o.x, o.y, pz, def.w, def.h, def.art,
+                o.sb || def.sl.base, o.sd || def.sl.dens,
                 dyn, o.yaw, dep, MODEL_BOXY[o.k] ? 1 : 0);
       _noRef = 0;
     }
@@ -18866,7 +19356,17 @@ function hudPass(){
       }
     }
     const chips = [];
-    if (player.corruption > 0) chips.push('CORRUPT ' + player.corruption);
+    /* A bare number told you nothing about what was coming. The rungs that
+       matter are 3 (doors start refusing you), 4 (the sky takes an interest)
+       and 6 (they hunt, and the rope comes down) - so draw the ladder and
+       mark where you are on it. */
+    if (player.corruption > 0){
+      const c = clamp(player.corruption | 0, 0, 10);
+      let bar = '';
+      for (let i = 1; i <= 10; i++) bar += i <= c ? '#' : (i === 3 || i === 4 || i === 6) ? '+' : '.';
+      chips.push('WANTED ' + bar + ' ' + c +
+                 (c >= 6 ? ' HUNTED' : c >= 4 ? ' WATCHED' : c >= 3 ? ' FLAGGED' : ''));
+    }
     if (godMode) chips.push('GOD');
     if (drug) chips.push(drug.id.toUpperCase().slice(0, 7) +
                          ' ' + Math.ceil(Math.max(0, drug.dur - drug.t)) + 's');
@@ -19175,7 +19675,7 @@ function placePlayer(){
       if (clear) break outer;
     }
   }
-  cam.riding = null; cam.z = 1.62; cam.pitch = 0;
+  cam.riding = null; cam.z = 1.62; setAim(0);
 }
 let buildEpoch = 0;                            // bumped per city, for caches
 function newWorld(seed){
@@ -19733,7 +20233,10 @@ function netEvent(m){
         if (m.c !== undefined ? (!a.interior && a.id === m.c && a.id < CAST0)
                               : (a.interior === m.s && a.iidx === m.i)){
           a.aggro = 1; a.hitT = 0.15;
-          a.hp = (a.hp === undefined ? 30 : a.hp) - m.d;
+          // same rule as dealActorDamage: <= 0 here means nobody set it, not
+          // a body already down, or a guest's first punch kills outright
+          if (a.hp === undefined || a.hp <= 0){ a.hp = CIVIL_HP; a.maxHp = CIVIL_HP; }
+          a.hp -= m.d;
           // the kill is ours to call, but it was not our swing
           if (a.hp <= 0) killActor(a, m.f);
           else if (m.x !== undefined) panicHere(m.x, m.y, 60);
@@ -19788,7 +20291,25 @@ function netEvent(m){
       // allowed to say what it did to us.
       if (m.to !== NET.id || m.d === undefined) return;
       if (player.hp <= 0) return;               // already down
+      /* Remember the hand. playerDown reads this to name who did it, and it
+         is the only place that knowledge exists - damagePlayer is told a
+         number and nothing else. */
+      lastHitBy = { id: m.f, w: m.w || 'fist', t: worldTime };
       damagePlayer(Math.max(1, m.d | 0));
+      return;
+    }
+    case 'body': {
+      if (m.x === undefined || !m.key) return;
+      if (!worldDelta.bodies) worldDelta.bodies = {};
+      worldDelta.bodies[m.key] = m;
+      placeBody(m);
+      return;
+    }
+    case 'pkill': {
+      /* A player went down, and their own machine called it - the same rule
+         that makes them the authority on their own body. Everybody hears it;
+         what each of them is told depends on where they were standing. */
+      pkillHeard(m);
       return;
     }
     case 'slain': {
@@ -19836,7 +20357,9 @@ function netHitPlayer(q, dmg){
   q.hitT = 0.2;
   addFx(q.cam.x, q.cam.y, 1.2);
   sfx('hit', { vol: 0.7 });
-  netBroadcastEvent('pdam', { to: q.id, d: dmg | 0 });
+  // the weapon rides along so that if this is the blow that lands, the city
+  // can say WHAT killed them and not just that somebody did
+  netBroadcastEvent('pdam', { to: q.id, d: dmg | 0, w: weaponId() });
 }
 function netBroadcastEvent(e, o){
   if (!NET.on) return;
@@ -20804,6 +21327,11 @@ function frame(now){
                 (weather === 3 ? 1 - fogLevel * 1.6 : 1);
   viewD += (wantD - viewD) * Math.min(1, dt * 0.7);
   if (!topMode()) updateCam(dt);
+  recoilTick(dt);          // the sight comes back down on its own
+  /* A mode can now have a clock of its own. Until this, a card table could
+     only react to a keypress, which is why the house dealt its whole hand
+     inside one and `phase:'house'` was a state no frame could ever render. */
+  { const tm = topMode(); if (tm && tm.tick) tm.tick(dt); }
   probeInteract();
   audioFrame(dt);
   buildBackground();
