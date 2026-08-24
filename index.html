@@ -10672,6 +10672,13 @@ function openSettingsMenu(){
         hint: 'the air as a medium: thicker in rain and fog, and cut into ' +
               'shafts by whatever is standing in the light',
         adj(){ FOGV.on = !FOGV.on; } },
+      { label: 'FLOOR CULLING', value: () => FOCC.on ? 'ON' : 'OFF',
+        hint: 'stop shading road that a building is standing in front of',
+        adj(){ FOCC.on = !FOCC.on; } },
+      { label: 'GPU COMPOSE', value: () => !(GL && GL.compOK) ? 'N/A' : GPUC.on ? 'ON' : 'OFF',
+        hint: 'hand the world to the card as textures instead of building a ' +
+              'vertex buffer for it every frame',
+        adj(){ GPUC.on = !GPUC.on; } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
         hint: 'traced shadows and bounced colour. costs about half the frame; ' +
               'it settles while you stand still and starts over when you move',
@@ -19211,7 +19218,75 @@ function floorSample(wx, wy, ix, iy){
   const b = buildings[tB[iy * MAP + ix]];
   _wb = b ? b.col : C.asphalt; _wd = 0.5;
 }
+/*---------------- where the floor stops being worth drawing ----------------
+  The floor pass runs before the wall pass, because the wall pass paints the
+  reflections of lit facades down onto the wet road and needs the road to be
+  there first. The cost of that order is that the floor is shaded for the
+  whole screen and then buried: measured at the finest grid, from four
+  different headings, between 46% and 57% of every floor cell shaded is
+  painted over by a wall before the frame is presented. Half the pass, thrown
+  away.
+
+  It can be known in advance, and cheaply, because the wall pass and the floor
+  pass share a projection. A wall standing at distance D has its base at
+  screen row `horizon + cam.z * projRows / D`, and the floor row r sits at
+  distance `cam.z * projRows / (r + 0.5 - horizon)` - the same relation, read
+  the other way round. So the base of the nearest wall in a column IS the
+  floor row where that column's floor stops being visible.
+
+  Finding it is one DDA per column that stops at the first hit instead of
+  running to the view distance, which is a fraction of the walk the wall pass
+  makes and no per-cell work at all.
+
+  Two things make the bound conservative rather than exact, deliberately:
+
+  A tile shorter than the camera is NOT an occluder. You see over a low wall,
+  and the road behind it is visible again beyond it - so only a tile that
+  reaches eye level ends the column. Anything shorter is walked past, and the
+  floor behind it is shaded as before.
+
+  A tile the wall pass will not draw - no building record behind it - is not
+  an occluder either, or the floor would be skipped for a wall that never
+  arrives and the street would show sky.
+
+  Skipping is only ever allowed to remove work the frame was going to discard,
+  so both rules err toward drawing. Indoors it does not run at all: the
+  interior worktop plane can sit NEARER than the floor row it occupies, and
+  this bound is stated in terms of the floor plane alone.
+---------------------------------------------------------------------------*/
+const FOCC = { on: true };
+let floorCut = null;
+function floorOcclude(){
+  const cols = R.cols;
+  if (!floorCut || floorCut.length !== cols) floorCut = new Float32Array(cols);
+  if (!FOCC.on || inside){ floorCut.fill(1e30); return; }
+  const px = cam.x, py = cam.y, eye = cam.z;
+  for (let x = 0; x < cols; x++){
+    floorCut[x] = 1e30;              // nothing stands here: the floor runs on
+    const rdx = rayX[x], rdy = rayY[x];
+    let mapX = Math.floor(px), mapY = Math.floor(py);
+    const ddx = rdx === 0 ? 1e30 : Math.abs(1 / rdx);
+    const ddy = rdy === 0 ? 1e30 : Math.abs(1 / rdy);
+    let stepX, stepY, sdx, sdy;
+    if (rdx < 0){ stepX = -1; sdx = (px - mapX) * ddx; } else { stepX = 1; sdx = (mapX + 1 - px) * ddx; }
+    if (rdy < 0){ stepY = -1; sdy = (py - mapY) * ddy; } else { stepY = 1; sdy = (mapY + 1 - py) * ddy; }
+    let side = 0, guard = 0;
+    while (guard++ < 1700){
+      if (sdx < sdy){ sdx += ddx; mapX += stepX; side = 0; }
+      else          { sdy += ddy; mapY += stepY; side = 1; }
+      const d = side === 0 ? sdx - ddx : sdy - ddy;
+      if (d > viewD) break;
+      if (mapX < 0 || mapY < 0 || mapX >= MAP || mapY >= MAP) break;
+      const id = mapY * MAP + mapX, h = tH[id];
+      if (h <= 0 || h < eye) continue;          // you can see over it
+      if (!buildings[tB[id]]) continue;         // and nothing will be drawn here
+      floorCut[x] = d;
+      break;
+    }
+  }
+}
 function floorPass(){
+  floorOcclude();
   const cols = R.cols, rows = R.rows;
   const r0 = clamp(Math.ceil(horizon), 0, rows);
   for (let r = r0; r < rows; r++){
@@ -19226,6 +19301,12 @@ function floorPass(){
     const dC = (cam.z - 1.05) * projRows / (r + 0.5 - horizon);
     const rowOff = r * cols;
     for (let x = 0; x < cols; x++){
+      /* Everything below reads the floor plane at depth d, and the two
+         branches that leave it - the river bed and its cut bank - only ever
+         land FURTHER away than d, never nearer. So one compare against the
+         column's cutoff throws out the sample, the pool, the write, and the
+         depth alike. */
+      if (d > floorCut[x]) continue;
       const wx = cam.x + rayX[x] * d, wy = cam.y + rayY[x] * d;
       const ix = wx | 0, iy = wy | 0;
       if (wx < 0 || wy < 0 || ix >= MAP || iy >= MAP) continue;
@@ -20963,6 +21044,71 @@ void main(){
   o = vec4(min(c, vec3(1.0)), a * vCol.a);
 }`;
 
+/*================== the world stops being geometry ==========================
+  The glyph pass above draws one instanced quad per non-empty cell, and to
+  feed it the CPU walks all three hundred thousand cells once a frame packing
+  a vertex buffer: cell index, glyph, level, and a palette lookup, sixteen
+  bytes each. That is glPackWorld, and at the finest grid it is most of a
+  millisecond of pure copying plus a two-megabyte upload, every frame, of data
+  the CPU already had sitting in three flat arrays.
+
+  It only had to be a copy because a vertex attribute is the one thing a
+  shader cannot read out of somewhere else. Make them TEXTURES instead and the
+  copy is not optimised, it is deleted: gBuf, bBuf and lBuf are Uint8Arrays of
+  exactly cols x rows, which is exactly an R8 texture, so they go up the bus as
+  themselves with no loop in between. What was a hundred thousand quads
+  becomes one triangle, and every cell the old path skipped for being empty
+  now costs a texel read and a discard.
+
+  This is also the hinge the rest of the port turns on. Once the glyph shader
+  reads the world out of textures rather than out of a vertex buffer, a GPU
+  pass can WRITE those textures through a framebuffer and the compose step
+  never learns the difference. The floor, the walls and the sprites can each
+  move across one at a time, and this shader stays exactly as it is.
+
+  Parity is the whole game here, so the arithmetic below is deliberately the
+  same arithmetic the vertex shader was doing, rearranged rather than
+  reinvented: the cell is recovered from gl_FragCoord by inverting the same
+  origin-and-cell-size mapping, and the fractional part inside the cell is
+  what the rasteriser used to interpolate as `corner`.
+============================================================================*/
+const FS_COMPOSE = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+out vec4 o;
+uniform sampler2D uG;        // R8, one texel per cell: glyph = atlas column
+uniform sampler2D uB;        // R8, palette row
+uniform sampler2D uLv;       // R8, distance level = atlas row
+uniform sampler2D uPal;      // RGBA8, (LV+1) x palette rows
+uniform sampler2D uTex;      // the glyph atlas
+uniform sampler2D uLight;    // per-cell light from the light pass
+uniform float uLightOn;
+uniform vec2 uGrid, uCell, uOrigin, uRes, uAtlas;
+float byteAt(sampler2D t, ivec2 c){ return floor(texelFetch(t, c, 0).r * 255.0 + 0.5); }
+void main(){
+  // gl_FragCoord counts up from the bottom; the grid is laid out from the top
+  vec2 sp = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 cf = (sp - uOrigin) / uCell;
+  if (cf.x < 0.0 || cf.y < 0.0 || cf.x >= uGrid.x || cf.y >= uGrid.y) discard;
+  vec2 cw = floor(cf);
+  ivec2 ci = ivec2(cw);
+  float g = byteAt(uG, ci);
+  if (g < 0.5) discard;                       // empty cell: the sky shows through
+  vec2 f = cf - cw;                           // what the quad used to interpolate
+  float lv = byteAt(uLv, ci);
+  vec4 col = texelFetch(uPal, ivec2(int(lv), int(byteAt(uB, ci))), 0);
+  float a = texture(uTex, vec2((g + f.x) / uAtlas.x, (lv + f.y) / uAtlas.y)).a;
+  if (a < 0.01) discard;
+  vec3 c = col.rgb;
+  if (uLightOn > 0.5){
+    /* the cell CENTRE, not this pixel - light in this renderer can never be
+       finer than a glyph, and sampling per-pixel would gradient-shade one */
+    vec4 L = texture(uLight, (cw + 0.5) / uGrid);
+    c = c * L.a + L.rgb;
+  }
+  o = vec4(min(c, vec3(1.0)), a * col.a);
+}`;
+
 /*===================== the lighting, moved onto the GPU =====================
   Every light pass in this file used to run on the CPU, once per character
   cell, in JavaScript. Costed at the finest grid that was 22.4ms against a
@@ -21141,6 +21287,17 @@ function glInit(){
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
   } catch (e){ G.lightOK = false; }
+  /* Same rule as the light pass: if this will not build, the instanced path
+     is still there and still correct. */
+  G.compOK = false;
+  try {
+    G.pComp = mkProg(VS_FULL, FS_COMPOSE);
+    G.uC = {};
+    for (const k of ['uG','uB','uLv','uPal','uTex','uLight','uLightOn',
+                     'uGrid','uCell','uOrigin','uRes','uAtlas'])
+      G.uC[k] = gl.getUniformLocation(G.pComp, k);
+    G.compOK = true;
+  } catch (e){ G.compOK = false; }
   G.uBG = {};
   for (const k of ['uSky', 'uMid', 'uFog', 'uGround', 'uHz']) G.uBG[k] = gl.getUniformLocation(G.pBG, k);
   G.uG = {};
@@ -21157,6 +21314,10 @@ function glInit(){
   gl.disable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  /* The cell textures are single-channel and the grid width is odd as often
+     as not, so rows are not four-byte aligned. Without this the driver reads
+     each row from the wrong offset and the screen shears. */
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   return G;
 }
 
@@ -21222,6 +21383,23 @@ function glBuildPalette(){
     const r = parseInt(h.substr(1, 2), 16), g = parseInt(h.substr(3, 2), 16), b = parseInt(h.substr(5, 2), 16);
     glPal[(NBASE + k) * (LV + 1) + LV] = (255 << 24) | (b << 16) | (g << 8) | r;
   }
+  glUploadPalette();
+}
+/* The same Uint32Array the packer indexes, handed to the shader as an image:
+   width is the level span, height is the material. It changes with the hour
+   and the drugs and nothing else, so it goes up when it is rebuilt and not
+   once a frame. */
+function glUploadPalette(){
+  if (!GL || !GL.compOK || !glPal) return;
+  const gl = GL.gl, span = LV + 1, rows = glPal.length / span;
+  if (!GL.palT) GL.palT = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, GL.palT);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, span, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                new Uint8Array(glPal.buffer, glPal.byteOffset, glPal.length * 4));
+  for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+  for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
 }
 
 function glResize(){
@@ -21261,6 +21439,22 @@ function glResize(){
   GL.scene = mkTarget(R.W, R.H);
   GL.tap = [mkTarget(Math.max(2, R.W >> 3), Math.max(2, R.H >> 3)),
             mkTarget(Math.max(2, R.W >> 5), Math.max(2, R.H >> 5))];
+  if (GL.compOK){
+    const mkCell = (old) => {
+      if (old) gl.deleteTexture(old);
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, R.cols, R.rows, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+      for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+        gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+      for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+        gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    GL.cellG = mkCell(GL.cellG);
+    GL.cellB = mkCell(GL.cellB);
+    GL.cellL = mkCell(GL.cellL);
+  }
   /* The light buffer is one texel per CHARACTER CELL, not per pixel. Light in
      this renderer can never be finer than a glyph, so anything more is thrown
      away by the glyph pass a moment later. */
@@ -21320,6 +21514,12 @@ const GPUL = {
   shadow: 5,      // taps along the line to the light; 0 turns shafts off
   ao:     0.55    // how dark a fully shut-in cell goes
 };
+/* Whether the world is composed from textures or packed into a vertex
+   buffer. The pack path applies the CPU light buffers as it copies, and the
+   compose path has no way to see them, so a frame that used them has to pack:
+   _cpuLitFrame is worldPasses' honest answer to "did I write any". */
+const GPUC = { on: true };
+let _cpuLitFrame = false;
 let _emitTex = null, _heightUp = false;
 function glUploadHeight(){
   if (!GL || !GL.lightOK || _heightUp) return;
@@ -21436,6 +21636,38 @@ function glPackWorld(){
   }
   return k;
 }
+/* Three uploads and one triangle, in place of a hundred thousand quads and
+   the loop that built them. Returns false if it could not run, in which case
+   the caller falls back to packing. */
+function glComposeWorld(){
+  if (!GL || !GL.compOK || !GPUC.on || _cpuLitFrame) return false;
+  const gl = GL.gl;
+  gl.bindTexture(gl.TEXTURE_2D, GL.cellG);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, gBuf);
+  gl.bindTexture(gl.TEXTURE_2D, GL.cellB);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, bBuf);
+  gl.bindTexture(gl.TEXTURE_2D, GL.cellL);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, lBuf);
+
+  gl.useProgram(GL.pComp);
+  gl.uniform2f(GL.uC.uGrid, R.cols, R.rows);
+  gl.uniform2f(GL.uC.uCell, R.cellW, R.cellH);
+  gl.uniform2f(GL.uC.uOrigin, R.ox, R.oy);
+  gl.uniform2f(GL.uC.uRes, R.W, R.H);
+  gl.uniform2f(GL.uC.uAtlas, GL_COLS, LV + 1);
+  gl.uniform1f(GL.uC.uLightOn, GL._litThisFrame ? 1 : 0);
+  gl.uniform1i(GL.uC.uG, 0);     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.cellG);
+  gl.uniform1i(GL.uC.uB, 1);     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.cellB);
+  gl.uniform1i(GL.uC.uLv, 2);    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, GL.cellL);
+  gl.uniform1i(GL.uC.uPal, 4);   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, GL.palT);
+  gl.uniform1i(GL.uC.uTex, 5);   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, GL.tex);
+  gl.uniform1i(GL.uC.uLight, 3); gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, GL._litThisFrame ? GL.lightT : GL.tex);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindVertexArray(GL.empty);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  return true;
+}
 function glPackHud(start){
   const f32 = GL.f32, u32 = GL.u32, pal = glPal, span = LV + 1;
   const n = R.cols * R.rows;
@@ -21485,7 +21717,11 @@ function glPresent(){
   const hz = clamp(0.5 + cam.pitch / Math.max(1, R.rows), 0.03, 0.97);
 
   GL._litThisFrame = glLightPass();
-  const nw = glPackWorld();
+  /* The world either composes from textures or packs into a vertex buffer,
+     never both; the HUD always packs, because it is drawn after bloom and
+     over the top of the solid panels and is a few hundred cells besides. */
+  const comp = GL.compOK && GPUC.on && !_cpuLitFrame;
+  const nw = comp ? 0 : glPackWorld();
   const nh = glPackHud(nw);
   gl.bindVertexArray(GL.vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, GL.ibuf);
@@ -21513,7 +21749,7 @@ function glPresent(){
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.enable(gl.BLEND);
-  glDrawGlyphs(0, nw);
+  if (comp) glComposeWorld(); else glDrawGlyphs(0, nw);
 
   // --- to the screen, then bloom taps on top ---
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -23777,10 +24013,12 @@ function worldPasses(){
      including the upsample, because the light texture is sampled directly by
      the glyph shader and never comes back across the bus. */
   const gpuLit = !!(GL && GL.lightOK && GPUL.on && !inside);
+  _cpuLitFrame = false;
   if (gpuLit){
     litR.fill(0); litG.fill(0); litB.fill(0); litA.fill(1);
     harvestEmitters();
   } else if (LIGHTV.on || GIR.on || FOGV.on){
+    _cpuLitFrame = true;
     hlR.fill(0); hlG.fill(0); hlB.fill(0); hlA.fill(1);
     harvestEmitters();
     if (LIGHTV.on) emitVolume();
