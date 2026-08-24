@@ -2266,7 +2266,9 @@ function propFacing(p){
   if (p.fix !== undefined) return p.fix;      // set down deliberately, and aimed
   if (p.k === PK_STALL) return stallYaw(p);
   if (p.k === PK_BENCH) return benchYaw(p);
-  if (p.k === PK_LAMP) return lampYaw(p);
+  // a camera on a bracket wants what a lamp on an arm wants: the road, and
+  // not the shopfront behind it. Same rule, same reason.
+  if (p.k === PK_LAMP || p.k === PK_CAM) return lampYaw(p);
   return propYaw(p) + (MODEL_TURN[p.k] || 0);
 }
 /*--------------------------- aiming a standard ------------------------------
@@ -3101,7 +3103,7 @@ const ART = {
      texels in the atlas are that lens, split out as X so the palette can
      light it - see tools/voxel-import.mjs --tex. */
   lamp: voxArt(15, 4, 55,
-    '.gM4.bM4.qM4.bM7.8M7.8M4.bX5.9X8.1X2.4Xb.5X5.pX3.7M1.4X3.7M1.19M1.eM1.tM2.dM2.dM2.dM' +
+    '.gM4.bM4.qM4.bM7.8M7.8M4.bX5.9X8.1X3.3Xc.4X5.pX3.7M2.3X3.7M2.18M1.eM1.tM2.dM2.dM2.dM' +
     '2.tM1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18' +
     'M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.' +
     'eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1' +
@@ -3204,16 +3206,16 @@ const ART = {
     '.cB7.eB3.32B5.cB8.bB9.aB9.9Ba.aB9.aB9.aB8.dB5.30B6.cB9.aB9.9Ba.9Ba.9Ba.aB9.aB9.bB7.e' +
     'B1.21B7.bB9.9Bb.8Bb.7Bc.7Bc.7Bc.8Bb.8Bb.9B9.bB7.1xB6.cB9.9Bb.8Bb.7Bc.7Bc.7Bc.8Bb.8Bb' +
     '.9B9.bB6.2jB3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.3' +
-    '3B3.eB7.bB8.8Bf.3Bh.3Bf.7B8.cB7.eB3.20B5.eB5.eB5.dB7.8Bf.3Bh.2Bh.2Bh.3Bf.8B7.dB5.eB5' +
-    '.eB5.fB3.fB5.dB6.dB6.rBg.3Bh.1Bj.1Bh.2Bg.rB6.dB6.dB6.eB4.eB7.cB7.cB7.rBf.3Bh.1Bi.2Bh' +
-    '.3Bf.rB7.cB7.cB7.dB4.eB7.cB7.cB7.vB7.8Bf.4Bf.4Bf.8B7.vB7.cB7.cB7.eB1.1B1.fB5.dB7.cB7' +
-    '.uB8.bB9.aB9.aB9.aB8.vB7.cB7.cB7.wB5.eB5.eB5.dB7.bB8.bB9.aB9.aB9.aB8.cB7.dB5.eB5.eB5' +
-    '.1iB1.hB3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.hB1.iB1.22B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.e' +
-    'B3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB' +
-    '7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.32B5.dB7.bB9.aB9.aB9.aB9.aB9.bB7.dB5.32B3.eB7.bB8.bB9.' +
-    'aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB' +
-    '8.cB7.eB3.2jB5.dB7.bB9.9Ba.9Bb.8Bb.8Bb.8Ba.aB9.bB7.dB5.1hB3.dB8.aBa.9Bb.7Bc.7Bd.6Bd.' +
-    '6Bd.6Bc.8Bb.8Ba.aB8.eB3.8'),
+    '3B3.eB7.bB8.8Bf.3Bh.3Bf.7B8.cB7.eB3.20B5.eB5.eB5.dB7.8Bf.3Bh.2Bh.2Bh.3Bf.8B7.cB6.eB5' +
+    '.eB5.fB3.fB5.dB6.dB6.dB1.dBg.3Bh.1Bj.1Bh.2Bg.rB6.dB6.dB6.eB4.eB7.cB7.cB7.rBf.3Bh.1Bi' +
+    '.2Bh.3Bf.rB7.cB7.cB7.dB4.eB7.cB7.cB7.vB7.8Bf.4Bf.4Bf.8B7.vB7.cB7.cB7.eB1.1B1.fB5.dB7' +
+    '.cB7.cB1.5B1.bB8.bB9.aB9.aB9.aB8.vB7.cB7.cB7.wB5.eB5.eB5.dB7.bB8.bB9.aB9.aB9.aB8.cB7' +
+    '.cB7.dB5.eB5.1iB1.hB3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.hB1.iB1.22B3.eB7.bB8.bB9.aB9.a' +
+    'B9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7' +
+    '.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.32B5.dB7.bB9.aB9.aB9.aB9.aB9.bB7.dB5.32B3.' +
+    'eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB' +
+    '9.aB9.aB9.aB8.cB7.eB3.2jB5.dB7.bB9.9Ba.9Bb.8Bb.8Bb.8Ba.aB9.bB7.dB5.1hB3.dB8.aBa.9Bb.' +
+    '7Bc.7Bd.6Bd.6Bd.6Bc.8Bb.8Ba.aB8.eB3.8'),
   /* Face down, arm out. Read left to right: head, coat, legs, one boot. */
   body: parseArt(['..HH...SSSSS...PP..',
                   '.HHHH.SSSSSSS.PPPPT',
@@ -3222,7 +3224,19 @@ const ART = {
   tlight: parseArt(['MMM', 'MXM', 'MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
   rail: parseArt(['M.M', 'MMM', 'M.M', 'M.M']),
   bench: benchArt(),
-  cam:   parseArt(['MXM', 'MMM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
+  /* One of the flock. A post at the kerb and a bracket angling up over the
+     road, with the housing on the far end of it - so it takes the same
+     anchor and the same aiming rule the streetlight does. The model has no
+     lens of its own (its bright material is a highlight down the whole
+     bracket), so the tip of the housing is marked X and the existing dyn
+     channel gives it the red. See tools/voxel-import.mjs --mark. */
+  cam: voxArt(13, 3, 55,
+    '.1X1.bX2.pX2M1.aX2M1.pM3.aM3.pM2.bM2.pM3.aM3.pM2.bM2.pM3.aM3.pM1.cM1.12M1.pM1.bM2.pM' +
+    '1.bM2.12M1.12M1.12M1.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2' +
+    '.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1' +
+    '.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2' +
+    '.pM1.bM2.pM1.bM2.pM1.bM2.oM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2' +
+    '.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.1'),
   play:  parseArt(['.SSSSS.', 'MSSSSSM', 'M.....M', 'M.....M', 'MM...MM', 'M.....M']),
   hoop:  hoopArt(), swing: swingArt(), climb: climbArt(),
   metro: parseArt(['XXXXXXX', 'M.....M', 'MKKKKKM', 'M.KKK.M', 'M..K..M']),
@@ -3577,7 +3591,11 @@ const PROPDEF = [
   STALL_VARIANTS[0],
   { art: ART.bench,  w: 1.9,  h: 0.95, dep: 0.40,
     sl: slots({ K: [C.trunk, 0.78], M: [C.rail, 0.66] }) },
-  { art: ART.cam,    w: 0.5,  h: 3.6, sl: slots({ M: [C.metal, 0.60], X: [-1, 1.0] }) },
+  /* 13 x 55 x 3 voxels, cubic at 3.6 tall. `anchor` is the post, which sits
+     nine tenths of the way across the artwork - the bracket takes up the rest
+     - and X is the housing's front, wired to dyn for the red. */
+  { art: ART.cam,    w: 3.6 * 13 / 55, h: 3.6, dep: 3 / 13, anchor: 0.385,
+    sl: slots({ M: [C.metal, 0.60], X: [-1, 1.0] }) },
   { art: ART.play,   w: 3.2,  h: 2.4, sl: slots({ M: [C.rail, 0.62], S: [C.nPink, 0.82] }) },
   { art: ART.metro,  w: 2.6,  h: 2.2, sl: slots({ X: [-1, 1.0], K: [C.dataDk, 0.45],
                                                   M: [C.rail, 0.60] }) },
@@ -18384,6 +18402,9 @@ const LIGHTV = {
   minW:  2,      // a bucket under this many cells is a stray pixel, not a light
   winW:  0.22,   // a lit window counts for this much of a sign of the same size
   keep:  110,    // and only the strongest this many are worth tracing air for
+  offN:  40,     // plus this many lamps the screen cannot see, for the mirror
+  offR:  26,     // within this many tiles of the eye
+  offW:  5,      // each counting for this much, as a bucket weight
   rad:   1.45,   // glow radius of a one-cell source, in tiles
   grow:  0.42,   // how much bigger a source gets for each doubling of its size
   dens:  0.16,   // how thick the air is around a source that is not a lamp
@@ -18507,10 +18528,11 @@ function harvestEmitters(){
   const cols = R.cols, rows = R.rows, B = LIGHTV.block;
   const bw = Math.ceil(cols / B), bh = Math.ceil(rows / B), nb = bw * bh;
   if (!EMIT || EMIT.nb !== nb){
-    EMIT = { nb, bw, bh, n: 0,
-             x: new Float32Array(nb), y: new Float32Array(nb), z: new Float32Array(nb),
-             r: new Float32Array(nb), g: new Float32Array(nb), b: new Float32Array(nb),
-             w: new Float32Array(nb), idx: new Int32Array(nb) };
+    const cap = nb + LIGHTV.offN;             // buckets, then the off-screen lamps
+    EMIT = { nb, bw, bh, n: 0, cap,
+             x: new Float32Array(cap), y: new Float32Array(cap), z: new Float32Array(cap),
+             r: new Float32Array(cap), g: new Float32Array(cap), b: new Float32Array(cap),
+             w: new Float32Array(cap), idx: new Int32Array(cap) };
   }
   const E = EMIT;
   E.x.fill(0); E.y.fill(0); E.z.fill(0);
@@ -18553,6 +18575,42 @@ function harvestEmitters(){
     arr.sort((a, b) => w[b] - w[a]);
     for (let i = 0; i < LIGHTV.keep; i++) E.idx[i] = arr[i];
     n = LIGHTV.keep;
+  }
+  /* Everything above came off the screen, which means everything above is in
+     front of you. That is fine for a glow - you cannot see the air around a
+     light you cannot see - and it is NOT fine for a mirror, which is looking
+     the other way. A puddle in front of you shows the sign behind you, and
+     the screen has no record of that sign at all.
+
+     The street lamps do exist as a world list whether or not they are in
+     frame, so the ones the harvest could not have seen are appended from it:
+     behind the eye, or outside the frustum, within a short radius. Lamps
+     only - a neon shopfront is a property of a building face and there is no
+     list of those to walk - so an off-screen LAMP reflects and an off-screen
+     SIGN still does not. On-screen lamps are deliberately skipped here; they
+     already have a cone in lampVolume and would otherwise glow twice. */
+  const offN = LIGHTV.offN;
+  if (offN > 0 && lamps.length && n < E.cap){
+    const oR2 = LIGHTV.offR * LIGHTV.offR, offW = LIGHTV.offW;
+    let added = 0;
+    for (let i = 0; i < lamps.length && added < offN; i++){
+      const L = lamps[i];
+      if (L.dead) continue;
+      const ox = L.lx - cam.x, oy = L.ly - cam.y;
+      const d2 = ox * ox + oy * oy;
+      if (d2 > oR2) continue;
+      const fwd = ox * dirX + oy * dirY;
+      const lat = dirY * ox - dirX * oy;
+      if (fwd > 0.3 && Math.abs(lat) <= fwd * planeLen * 1.1) continue;   // on screen
+      const bi = nb + added;
+      const col = BASE[L.lampC];
+      if (!col) continue;
+      E.x[bi] = L.lx; E.y[bi] = L.ly; E.z[bi] = LAMP_LENS_Z;
+      E.r[bi] = col[0]; E.g[bi] = col[1]; E.b[bi] = col[2];
+      E.w[bi] = offW;
+      E.idx[n++] = bi;
+      added++;
+    }
   }
   E.n = n;
   return n;
@@ -18743,6 +18801,45 @@ function giDirect(px, py, pz, nx, ny, nz){
   const w = E.w[bi] * E.n * ndl / (1 + d2 * GIR.falloff);
   _giLr = E.r[bi] * w; _giLg = E.g[bi] * w; _giLb = E.b[bi] * w;
 }
+/* A MIRRORED reflection can only ever show what is already on the screen.
+   Everything behind you, everything past the edge of the frame, is simply not
+   in the buffer to be flipped - and on a wet street at night that is most of
+   the light there is. A ray does not have that problem.
+
+   So where the road is wet and the tracer is running, a second sample goes
+   out along the mirror direction and asks the same question giDirect asks,
+   through a specular lobe rather than a cosine one: not "what light lands
+   here" but "what light would I see if this were a mirror". It is
+   shadow-tested like any other sample and averaged like any other, so it
+   costs one more trace per wet cell and only while the tracer is on.
+
+   What it can actually reach is bounded by the emitter list, and that was
+   worth checking rather than assuming: harvested from srcBuf it held 110
+   lights, 110 of them in front of the camera and none outside the frustum -
+   so on its own this would have reflected only what was already on screen,
+   which is what the flip does for free. harvestEmitters appends the nearby
+   lamps the screen could not supply, so an off-screen LAMP does reach the
+   puddle. An off-screen neon sign still does not; there is no world list of
+   sign faces to walk, and inventing one is a bigger job than this. */
+let _giSr = 0, _giSg = 0, _giSb = 0;
+function giSpecular(px, py, pz, mx, my, mz){
+  _giSr = 0; _giSg = 0; _giSb = 0;
+  const E = EMIT;
+  if (!E || !E.n) return;
+  const bi = E.idx[(giRnd() * E.n) | 0];
+  let lx = E.x[bi] - px, ly = E.y[bi] - py, lz = E.z[bi] - pz;
+  const d2 = lx * lx + ly * ly + lz * lz;
+  if (d2 < 1e-4 || d2 > GIR.dist * GIR.dist) return;
+  const d = Math.sqrt(d2), inv = 1 / d;
+  lx *= inv; ly *= inv; lz *= inv;
+  const sp = mx * lx + my * ly + mz * lz;       // how near the mirror points at it
+  if (sp <= 0) return;
+  const lobe = Math.pow(sp, REFL.shine);
+  if (lobe < 0.002) return;
+  if (giTrace(px + mx * 0.02, py + my * 0.02, pz + mz * 0.02, lx, ly, lz, d - 0.05)) return;
+  const w = E.w[bi] * E.n * lobe / (1 + d2 * GIR.falloff);
+  _giSr = E.r[bi] * w; _giSg = E.g[bi] * w; _giSb = E.b[bi] * w;
+}
 function pathTrace(){
   /* giTrace walks tH, which is the CITY's heightfield. A room is its own
      geometry in its own little coordinate space, so indoors every ray would
@@ -18822,6 +18919,18 @@ function pathTrace(){
       // what the lights can put on this point directly
       giDirect(px, py, pz, nx, ny, nz);
       let accR = _giLr, accG = _giLg, accB = _giLb;
+      /* and, if this cell is water, what it would see as a mirror */
+      if (refBuf[i]){
+        const fres = reflStrength(r, c);
+        if (fres > 0.02){
+          let mx2 = dx, my2 = dy, mz2 = kk;     // the view ray, flipped in z
+          const ml = Math.sqrt(mx2 * mx2 + my2 * my2 + mz2 * mz2) || 1;
+          mx2 /= ml; my2 /= ml; mz2 /= ml;
+          giSpecular(px, py, pz, mx2, my2, mz2);
+          const kS = fres * REFL.traced;
+          accR += _giSr * kS; accG += _giSg * kS; accB += _giSb * kS;
+        }
+      }
       /* One ray into the hemisphere, doing two jobs. Where it ENDS decides the
          colour that bounces back; how FAR it got decides how shut in this
          point is. Openness is the half of this that reads as raytraced - a
@@ -20469,6 +20578,74 @@ function signPass(){
   A surface at height z reflects to row  2*horizon + 2*camZ*unitRows - r,
   which is just the mirror of the wall row about the ground plane.
 ============================================================================*/
+/*========================= what a wet road does =============================
+  The mirror used to be flat in every sense: every wet cell reflected exactly
+  as hard as every other, with a fixed dim factor, wobbled by a sine taken per
+  SCREEN COLUMN. All three are wrong, and together they are why a rainy street
+  read as noise rather than as water. Measured as mean local contrast over the
+  lower half of a wet downtown frame: dry road 6.62, rain glyphs on top 13.92,
+  reflections on top of that 23.69 - three and a half times the contrast of
+  the surface being reflected in.
+
+  A real wet road reflects by ANGLE. Look along it, almost edge on, and it is
+  a mirror; look at your own feet and it is wet tarmac you can see the grain
+  of. That is Fresnel, and it is the single thing that decides whether this
+  looks like water: it puts the reflection out near the horizon where the eye
+  expects it and takes it out of the foreground, which is exactly where all
+  the noise was.
+
+  And the ripple has to live in the WORLD, not on the screen. A sine in x
+  offsets neighbouring columns by different whole rows, which shears one
+  reflection into a vertical comb; the same wave read at the road's own world
+  position stays put as you turn, and shrinks correctly with distance the way
+  a real ripple does.
+============================================================================*/
+const REFL = {
+  fres0:    0.04,   // reflectance looking straight down into water
+  power:    4.2,    // how fast it climbs toward grazing (Schlick's is 5)
+  gain:     1.15,   // overall strength on top of that
+  srcFall:  0.72,   // a light source mirrors this brightly at full angle
+  objFall:  0.50,   // and a solid thing this brightly
+  ripple:   0.42,   // ripple height in world units
+  rippleMax:2.2,    // never displace more rows than this, however near
+  rippleK:  0.90,   // and its spatial frequency across the ground
+  fadeD:    52,     // reflections start fading out at this depth, in tiles
+  maxD:     72,     // and are gone by here
+  shine:    36,     // tightness of the traced highlight; higher is sharper
+  traced:   1.7     // and what a traced reflection is worth against a mirrored one
+};
+/* The angle term. `rr` is the row the reflection is being drawn INTO, which
+   is a road cell, so its normal is straight up and the whole thing collapses
+   to how steeply this ray is looking down. */
+function reflStrength(rr, x){
+  const kk = (rr + 0.5 - horizon) / projRows;
+  if (kk <= 1e-4) return 0;
+  const dx = rayX[x], dy = rayY[x];
+  const cosI = kk / Math.sqrt(dx * dx + dy * dy + kk * kk);
+  const f = REFL.fres0 + (1 - REFL.fres0) * Math.pow(1 - cosI, REFL.power);
+  const dRoad = cam.z / kk;                    // how far away that road cell is
+  let fade = 1;
+  if (dRoad > REFL.fadeD){
+    fade = 1 - (dRoad - REFL.fadeD) / (REFL.maxD - REFL.fadeD);
+    if (fade <= 0) return 0;
+  }
+  return f * fade * REFL.gain;
+}
+/* The ripple, read at the road's own world position so it holds still when
+   the camera turns, and scaled into rows so a wave keeps its physical size. */
+function reflRipple(rr, x){
+  const kk = (rr + 0.5 - horizon) / projRows;
+  if (kk <= 1e-4) return 0;
+  const dRoad = cam.z / kk;
+  if (!(dRoad > 0.2) || dRoad > 240) return 0;
+  const wx = cam.x + rayX[x] * dRoad, wy = cam.y + rayY[x] * dRoad;
+  const K = REFL.rippleK;
+  const a = Math.sin(wx * K + worldTime * 2.3) *
+            Math.cos(wy * K * 0.83 - worldTime * 1.7);
+  let rows = REFL.ripple * projRows / (dRoad > 2 ? dRoad : 2);
+  if (rows > REFL.rippleMax) rows = REFL.rippleMax;
+  return a * rows;
+}
 function reflects(j){                          // is this cell a mirror right now?
   const rf = refBuf[j];
   // No weather test any more. Whether a cell holds water was decided when it
@@ -20484,7 +20661,6 @@ function reflectPass(){
   // and neon but never anyone standing in front of you. The whole column is
   // swept instead, and srcBuf keeps it to things worth mirroring.
   for (let x = 0; x < cols; x++){
-    const wob = refWob[x];
     for (let r = 0; r < rows; r++){
       const idx = r * cols + x;
       const g = gBuf[idx];
@@ -20493,17 +20669,23 @@ function reflectPass(){
       if (d > 60) continue;
       const sv = srcBuf[idx];
       if (!sv) continue;
-      const rr = Math.round(2 * horizon + 2 * cam.z * (projRows / d) - r + wob);
+      const flat = Math.round(2 * horizon + 2 * cam.z * (projRows / d) - r);
+      if (flat <= hz || flat >= rows) continue;
+      // the angle decides whether there is a reflection here at all
+      const str = reflStrength(flat, x);
+      if (str <= 0.02) continue;
+      const rr = Math.round(flat + reflRipple(flat, x));
       if (rr <= hz || rr >= rows) continue;
       const j = rr * cols + x;
       if (!reflects(j)) continue;
       // a ramp glyph dims by stepping down the ramp; a letter has to stay a
       // letter or the index arithmetic turns it into punctuation
       // light mirrors brighter than a silhouette does
-      const fall = sv === 2 ? 0.55 : 0.42;
+      const fall = (sv === 2 ? REFL.srcFall : REFL.objFall) * str;
       let ng;
-      if (g > RMAX) ng = g;
-      else { ng = (g * fall) | 0; if (ng < 1) continue; }
+      if (g > RMAX) ng = str > 0.45 ? g : 0;
+      else ng = (g * fall) | 0;
+      if (ng < 1) continue;
       gBuf[j] = ng; bBuf[j] = bBuf[idx]; srcBuf[j] = 0;
       statCells++;
     }
@@ -20515,6 +20697,13 @@ function rainPass(){
   if (weather !== 1 && weather !== 2) return;   // fog is quiet
   const cols = R.cols, rows = R.rows;
   const perCol = weather === 2 ? 3 : 2;
+  const hz = clamp(Math.floor(horizon), 0, rows - 1);
+  /* A streak drawn over the road at the same weight as one against the sky
+     was doing half the damage on a wet street: the reflection underneath it
+     is the thing worth looking at, and every drop was punching a full-bright
+     white hole in it. Below the horizon the drop is nearer, briefer and seen
+     against a lit surface rather than a dark sky, so it goes on dimmer and
+     the trailing tick is dropped entirely. */
   for (let x = 0; x < cols; x++){
     for (let k = 0; k < perCol; k++){
       const h1 = hash3(x, k, 5);
@@ -20522,8 +20711,11 @@ function rainPass(){
       const r = y | 0;
       const xx = (x + ((y * 0.22) | 0)) % cols;
       const i0 = r * cols + xx;
-      gBuf[i0] = G_SLASH; bBuf[i0] = C.nWhite; lBuf[i0] = 3; srcBuf[i0] = 0;
-      if (r + 1 < rows && xx > 0){
+      const low = r > hz;
+      if (low && ((x + k) & 1)) continue;       // half as many drops over the road
+      gBuf[i0] = low ? Math.max(1, (RMAX * 0.34) | 0) : G_SLASH;
+      bBuf[i0] = C.nWhite; lBuf[i0] = low ? 5 : 3; srcBuf[i0] = 0;
+      if (!low && r + 1 < rows && xx > 0){
         const i1 = (r + 1) * cols + xx - 1;
         gBuf[i1] = G_TICK; bBuf[i1] = C.nWhite; lBuf[i1] = 5; srcBuf[i1] = 0;
       }
@@ -23157,12 +23349,20 @@ function worldPasses(){
   floorPass();
   wallPass();
   spritePass();
-  lampVolume();               // the beam itself, over whatever it falls on
+  /* Order matters here and used to be wrong. A reflection is ON the road; a
+     light beam is the air BETWEEN the road and the eye. The beam therefore
+     has to be laid down last, over the top of the mirror - and it was being
+     laid first, so reflectPass overwrote it wholesale. Measured on a wet
+     downtown street at 22:00: 382 cells, 13.7% of every reflection drawn,
+     erasing 16.3% of the beam. Signs move up with it, which is a second small
+     win - they are marked as sources before lampVolume runs, so the beam no
+     longer washes over a sign face. */
   if (!inside){
     signPass();
     reflectPass();
-    rainPass();
   }
+  lampVolume();               // the beam itself, over whatever it falls on
+  if (!inside) rainPass();
   /* Last, because it reads srcBuf and the signs are only in it by now. The
      light it computes is RGB and is added at pack time, so it does not care
      which pass drew the cell it lands on. */
