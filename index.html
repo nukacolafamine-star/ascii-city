@@ -471,6 +471,38 @@ function buildAtlases(){
   }
   hudAtlas = hcv;
 }
+/*---- the same glyphs again, at the size the big layer draws them ----------
+  The big HUD layer's first cut magnified the ordinary atlas: one drawImage
+  from a cw x ch source into a cw*sc x ch*sc box. That is not bigger text, it
+  is a bigger picture OF small text - on the 3px grid a nine-by-fifteen blob
+  grown out of a three-by-five glyph, and unreadable in a way the small
+  version at least was not.
+
+  A glyph has to be RENDERED at the size it is drawn at. So the big layer gets
+  its own atlas, baked at the big cell size, and blits from it one to one.
+
+  Built on demand and kept until the cell size or the scale moves, because
+  the call sites that would otherwise have to know about it - initRender,
+  glResize - are not this layer's business.
+--------------------------------------------------------------------------*/
+let hudAtlasBig = null, hudBigKey = '';
+function hudBigAtlas(){
+  const cw = R.cellW * bScale, ch = R.cellH * bScale;
+  const key = cw + 'x' + ch;
+  if (hudAtlasBig && hudBigKey === key) return hudAtlasBig;
+  const cn = document.createElement('canvas');
+  cn.width = 95 * cw; cn.height = HUDC.length * ch;
+  const g = cn.getContext('2d');
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'bold ' + (Math.min(ch * 0.99, cw / 0.575) * 0.94).toFixed(2) + 'px ' + FONT;
+  for (let k = 0; k < HUDC.length; k++){
+    g.fillStyle = HUDC[k];
+    for (let i = 1; i < 95; i++)
+      g.fillText(String.fromCharCode(32 + i), i * cw + cw * 0.5, k * ch + ch * 0.5);
+  }
+  hudBigKey = key;
+  return (hudAtlasBig = cn);
+}
 
 let bgPitch = NaN, bgTime = -1, bgDist = -1, bgIns = -1;
 function buildBackground(){
@@ -3225,23 +3257,24 @@ const ART = {
      G its shaded underside, K the trunk - and it turns as you walk round it.
      tools/voxel-import.mjs, from "voxel models/tree.zip". */
   tree: voxArt(25, 23, 26,
-    '.bxV1.f8V2.nV3.akV1.oV3.mV3.mV1.5V2.nV2.8V3.cV2.8V3.lV5.1V3.7V2.8V8.5V1.1V2.8V7.6V1.' +
-    '9lV3.kV5.3V4.cV6.3V3.dV7.1V4.8V2.1V9.1V4.7Va.1V2.1V5.5Va.3V7.5Va.3V7.5Va.3V6.6V9.4V7' +
-    '.5V6.8V3.dV1.67V4.lV4.8V2.aV5.8V2.aV5.3V2.3V2.9Vb.3V6.aV6.3V6.aV7.1V5.6G1Vc.1V5.6Vl.' +
-    '3Vm.2Vd.1V8.3Vc.2V8.4Vb.2V7.5V7.1V3.2V7.6V6.6V6.9V3.4cV2.eV5.3V2.fV6.2V3.2V2.9V7.2V8' +
-    '.8V7.2V8.8V7.2V8.7V8.2V8.7Vl.9Vh.4G2V2G3V3G1V9.4G1Vl.2G1Vm.1G1VlG1.2G1Vl.3G1Vl.4G1Vb' +
-    'G1V7.6G1V6.4V8.7V6.4G1V6.2lV3.mV4.dV3.4V5.bV6.3V8.8V7.1Va.6V8.1Va.6V8.1V9G1.6Vi.7Vl.' +
-    '4Vl.7V9G1V9.6G2.3G3.1G1V9.4G7V3G2Va.2VkG2.2G1VjG1.4G1VjG1.4G2V4G2Vd.5G1V4G2V4.1V7G1.' +
-    '6G1V3G7V6G1.7G6.5G7.1vV4.lV4.cV3.6V4.bV5.4V6.1G1.7V7.2V7G1V2.6V7G2Va.6V7G2V9G1.6V7G2' +
-    'V9.7V7G2V9.7V7G2V3G1V6G1V1.4V7G2V3G1V9.4V1G4V1G2V2G1.1V9.iV5G1V1G1.aG3.2G1V5G4.2Gk.5' +
-    'G6V1Gc.6G9V3G7.7G4.2G2V2G9.6G4.2G4.1G2V1G4.8G3.7G6.1wG1.nG1V1G3.kV2G4.aV5.4V4G2.9V6G' +
-    '1.2V6G1.9V6G1.2G1V5G1.1G2.6V6G1.2G1V5G2V1G1.5G1V6G1.2G1V5G1V2.7G1V6.2G1V5G1V2.7G1V3G' +
-    '2V1.2G1V5G1V2.7G1V3G3.2G3.1G6.1G1.4G7.2G3.1G1V1G7.4G1.4G1.2G2.2V2G3V1G3.hV1G5.1G1.hV' +
-    '1G4.11G1.3K1.nG3.mG2.sG1.3dG1.nG2.eG5.4G4.bG1V2G3.3G2V2G2.aG1V2G3.4G1V3G1.aV3G3.4V4G' +
-    '1.2G1.7G1V2G3.4V4G1.1G2.8G1V1G4.3G1V3G1.1G2.8G3.2G1.3G1V1G3.1G2.8G3.zG1.nG2.3G1.jG2.' +
-    'oG1.8nG2.8G2.dG2.8G3.bG3.7G4.cG2.7G4.dG1.8G3.mG1.eiK2.mK2.mK3.fxK2.42K1.oK1.b5K2.42K' +
-    '1.oK1.b5K2.nK2.1fK1.19K1.nK2.ciK2.nK2.nK4.kK2.nK1.d7K2.nK3.mK3.lK3.dvK1.nK3.mK2.nK1.' +
-    'elK1.nK2.f9K1.nK2.f9K1.nK2.f9K1.nK2.f8K2.nK2.f8K2.nK2.f8K3.mK2.f8K3.mK2.7b'),
+    '.b7V2.nV2.f7V6.jV7.iV6.9tV3.mV3.mV3.3V2.hV3.3V2.nV2.7V6.9V3.7Va.4V4.7Va.3V5.7Va.3V5.' +
+    '7Va.3V5.8V7.8kV3.dV7.1V6.aVf.9Vg.8Vh.5Vk.4Vl.4Vl.3Vm.3Vm.3Vc.2V8.4Va.3V8.5V8.62V6.jV' +
+    '7.2V2.3V3.8V7.1V4.1V4.8Vi.7Vk.5Vk.4Vm.3Vm.2Vn.2Vn.1Vn.2Vm.3Vm.4Vl.4Va.3V7.7V6.5V7.38' +
+    'V4.lV5.aV8.2V6.9V8.2V8.7V8.1V9.7Vj.6Vj.6Vl.4Vm.3Vn.2Vn.1Vo.1Vn.1G1Vm.2G1Vl.3G1Vl.4Vl' +
+    '.4Vk.7V6.4V8.9G1.dV1.1vV6.jV6.9V7.2V9.7Vj.6Vk.5Vk.5Vj.6Vj.6Vl.4Vm.3Vn.2G5Vi.1G5Vj.1G' +
+    '1Vm.2G1Vl.3G1Vk.4G1Vk.4G1Vk.4G1Vj.7V6.4G2V6.nG1.hV4.lV5.kV6.aV5.4V6.9V7.2V9G1.5V8G2V' +
+    'a.5V8G1VbG1.4VkG1.4Vk.5Vk.5Vm.4Vm.3Vn.7G6Vc.6G8Vb.2GbVb.3G5V5G2V6G3.4G5VcG3.5G7V9G4.' +
+    '5G8V8G4.5Gj.7G6.6G6.15V4.lV5.cV2.6V6.aV5.4V6.9V7.2V9.6V8.2Va.5V8.2Va.5V8.1Vb.5Vk.5Vk' +
+    '.5Vm.4Vm.4V6G4VbG1.dVaG2.eV5G1V2G3.dV6G5.9V3G1K2V4G2.dV3G4V2G2.fV1G8.hG8.2mG5.kG6.aG' +
+    '1V2G1.4G1V4G2.8G1V6G1.2V6G1.8V7G1.2V7G2.6V7G1.2V7G3.5V8.1V8G3.5V8G3V6G3.5V7G4V6G3.5V' +
+    '8G3V6G4.4G1V3G2VaG6.3G7V1G4V3G8.3G7.4Gb.eG1V1G8.gV1G4.1G2.gG6.dG2V1G1.3G4.eG2V1G1.4G' +
+    '2.hG1.4pG2.6G4.bG6.3G6.9G7.3G7.8G7.3V1G6.8G8.1V3G5.8G7V1K3V2G4.8G6V1K4V2G4.8G6V2K3V2' +
+    'G4.9G3.2G1V1G8.gG1.4G3.1cG1.oG1.iK1.nK2G1.mK2G1.7oG1.nG1V1G1.kG1K3V1G1.iG1K4V1G1.iG1' +
+    'V1K3V1G1.jG1.1K2.24K2.iK1.5K1.hK2.nK2.nK2.8eG1.nK2G1.kK4G1.kG1K3G1.lK3.1fK1.oK2.hK3.' +
+    '3K2.hK3.mK2.nK2.93K1.mK3.mK3.mK3.nK2.pK3.iK2.2K3.iK2.3K2.hK3.mK3.mK2.9rK2.mK3.nK3.lK' +
+    '5.jK7.iK7.iK3.3K1.iK2.mK3.b4K3.lK5.kK5.kK5.jK7.iK4.lK3.bsK3.lK4.lK5.kK5.kK5.jK3.nK1.' +
+    'btK2.nK3.lK4.lK5.kK5.kK1.d7K3.mK3.lK4.lK4.dtK3.mK3.mK3.mK3.dtK2.nK3.mK3.mK3.dtK3.lK4' +
+    '.lK4.mK2.dtK4.lK4.lK4.mK2.dtK4.lK4.lK4.mK2.dtK4.lK4.lK4.lK4.dsK4.lK4.lK4.lK4.6l'),
   /* Three things a big park has and a playground does not: something with
      water in it, something with a dead man on it, and something to stand a
      band under. Authored as elevations rather than volumes - the voxeliser
@@ -3345,29 +3378,28 @@ const ART = {
      bracket), so the tip of the housing is marked X and the existing dyn
      channel gives it the red. See tools/voxel-import.mjs --mark. */
   cam: voxArt(13, 3, 55,
-    '.1X1.bX2.pX2M1.aX2M1.pM3.aM3.pM2.bM2.pM3.aM3.pM2.bM2.pM3.aM3.pM1.cM1.12M1.pM1.bM2.pM' +
-    '1.bM2.12M1.12M1.12M1.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2' +
-    '.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1' +
+    '.1X1.bX2.pX2M1.aX2M1.pM3.aM3.pM2.bM2.pM3.aM3.pM2.bM2.oM4.9M4.nM3.aM3.oM2.bM2.oM2.bM2' +
+    '.oM2.bM2.oM2.bM2.pM1.bM2.oM2.bM2.oM2.bM2.oM2.bM2.oM2.bM2.oM2.bM2.oM2.bM2.oM2.bM2.oM2' +
     '.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2' +
-    '.pM1.bM2.pM1.bM2.pM1.bM2.oM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2' +
-    '.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.1'),
+    '.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1' +
+    '.bM2.pM1.bM2.pM1.bM2.pM1.bM2.pM1.bM2.oM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2' +
+    '.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.bM3.aM3.aM2.1'),
   play:  parseArt(['.SSSSS.', 'MSSSSSM', 'M.....M', 'M.....M', 'MM...MM', 'M.....M']),
   hoop:  hoopArt(), swing: swingArt(), climb: climbArt(),
   metro: parseArt(['XXXXXXX', 'M.....M', 'MKKKKKM', 'M.KKK.M', 'M..K..M']),
   // the orchard tree: S is the fruit, and the model came with it
   apple: voxArt(14, 15, 26,
-    '.43V1.3tV2.dV4.cV3.bV2.aV4.aV3.cS1.3eV4S1V1.8V7.8V7.8V6.8V5.9V4.aV2.32V1.1S1.8V8.6V9' +
-    '.4Va.4Vb.3Va.8V5.9V2S1V1.aV1.2dV2.9V7.4Vb.3Vb.3Vb.2VcS1.1VbS1.3VaS1.6V7.8V4.1uV5.9V6' +
-    '.5V9G1.3SaV1.3Sb.2Vd.1Vd.1Vc.1Vd.3S1V9.7V7.8V2.rG1V1.9G2V4G1.6V8G1.4Va.4S9V1.4SaV1.3' +
-    'SbV1.2SbV1.1Vd.1Vc.1G1Vc.3SaV1.5V8.7V6G1.oG1.bG1V2G1.6G4V4G1.5V9G1.4Va.4Vb.3Vc.2Vc.1' +
-    'Vd.1Vd.1Vc.3Vb.4V9.6V6G1.cS1.cS1.cG1S2.aG1V2G1.6V2G1V5G1.5V9G1.3VbG1.2VcG1.1VcG1.1Vc' +
-    'G1.1VcG1.1Vc.2S1VaG1.3S1V8G1.6V4S1.15G1.cV2.7G2.1G1V3G1.6V8G1.4G1V9G1.3VbG1.2VbG1.2V' +
-    '1G1Va.2G2Va.2G1VaG1.2G1V9G1.5V7G1.7G1V4.1iG2.bV2G1.7G2V6.6V9.4G1V9G1.3G1Va.3G1S9V1G1' +
-    '.2S9V2G1.2S1G1V7G2.4G1V7G1.6G1V6.9G1V3G1.1uG2.aG2V2G2.6G3V5G1.4S1G2V6G1.4S1G1V8G1.4S' +
-    '1V8G1.3S2V7G2.3S2G1V5G1.7G3V3G1.8G6.aG3.29G2.bG2V1G2.8G1V4G1.7G2V5G1.6G2V4G2S1.5G3V2' +
-    'G2.8G5.bG3.3gG1.bG4.aG5.9G2V1G1.bG2.50K2.cK1G1.5eK2.cK2.5eK2.cK2.5eK2.cK2.5eK2.cK2.b' +
-    'K2.51K2.cK2.cK1.51K2.cK2.5eK2.cK2.5eK2.cK2.5eK2.cK2.50K1.cK3.bK3.cK1.4nK1.cK3.bK3.cK' +
-    '2.24'),
+    '.42V2.3tV5.9V6.8V6.9V5.9V5.9V5.9V1S2V1.3cV4S1V3.6V8.6V8.6V8.7V7.8V6.8V2S1V2.2xV4S2V2' +
+    '.4Va.4Vb.3Vb.3Vb.3Vb.4Va.5V4S1V3.7V5.28V6.5Va.3Vb.3Vc.1Vd.1VcS1.1VbS2.1VbS1.4Va.5V8.' +
+    '1dV5.8V8.4S1V9.4S1Va.3SaV1.3SbV1.1Vd.1V15.2S1Va.4Va.5V8.nV3.7V8.5Va.4Va.4S9V2.3SaV1.' +
+    '3SbV1.1V1SbV1.1VdG1VdG1Vd.1V1SaV1.3Vb.5V8.nV1G2.7G2V6.5Va.4Va.4Vb.3Vb.2Vd.1Vd.1Vd.1V' +
+    'd.1Vd.1Vc.3Vb.5V8.bS2.aG1S2.9G1V2S2V1.5G2V8.4Va.4VaG1.2Vc.2VcG1.1VcG1.1VcG1.1VcG1.1V' +
+    'cG1.1S1Vb.3S1Va.5V4S2V1G1.7G1.sG5.7G1V6G1.4G2V8.4Va.3Vc.2Vc.2Vc.2V1G1Va.2G2Va.2G1Vb.' +
+    '2Vc.3S1V9G1.5V7.1eG6.7G1V5G2.4V9G1.3VbG1.2G1VaG1.2G1VaG1.2G1S9V1G1.2S9V2G1.2S1G1V9G1' +
+    '.2VaG2.3V8G2.6V6G1.1sG5.6G1V7G1.4G2V8G1.3S1G1V9.3S1G1V9.3S2V8G1.3S2V9.3S2V8G1.3G2V7G' +
+    '1.5G8.8G6.25G7.7G2V5G1.6G2V5G2.5G2V5G2.5G2V5G1S1.5G2V5G2.5G8.6G7.3dG5.9G1V2G2.9G5.9G' +
+    '2V1G2.9G5.4kG2.cK2.cK1G1.5eK2.cK2.5eK2.cK2.5eK2.cK2.5eK2.bK3.bK2.51K2.bK3.bK2.51K2.c' +
+    'K2.5dK3.bK3.5dK3.bK3.5dK3.bK3.50K2.bK3.bK3.cK2.4mK2.bK4.aK3.cK2.24'),
   turbine: parseArt(['.X...X.', '..X.X..', '...X...', '..XXX..', '...X...', '...M...',
                      '...M...', '...M...', '...M...', '...M...', '...M...', '...M...',
                      '...M...', '..MMM..']),
@@ -3376,14 +3408,14 @@ const ART = {
   // cherry blossom: one material in the file, so the trunk is derived
   sakura: voxArt(16, 12, 22,
     '.12V6.aV6.aV6.aV6.aV6.aV6.aV6.aV6.22V6.aV6.aV6.aV6.aV6.aV6.aV6.aV6.16V6.aV6.8Va.6Va.' +
-    '6Va.6Va.6Va.6Va.6Va.6Va.6V8.8V8.aV6.aV6.8Va.6Va.6Va.6Va.6Va.6Va.6Va.6Va.6V8.8V8.8Va.' +
-    '6Va.6Va.6Va.6Va.6Va.4Vc.4Vc.4Vc.4Vc.6Va.6Va.6Va.6Va.6Va.6Va.6Va.6Va.4Vc.4Vc.4G2Va.4G' +
-    '2Va.6V8G2.6V8G2.6Va.6Va.8V8.8V8.6Vc.4Vc.2Vc.4Vc.6Va.6Va.6V8.8V8.8V6G4.6V6G4.8V8.8V8.' +
-    '6VaG2.4VaG2.2Vc.4G2Va.6V8G2.6V8G2.6G8.8G8.6V8.8V8.6Ve.2Ve.4Vc.4Vc.4G2.2V8.8V8.6V8.8V' +
-    '8.12V4G4.8V4G4.6V8G6.2V8G6.4V8G4.4V8G4.8V1G7.8V1G7.6V2G6.8G8.12V4.cV4.aV8.8V8.8V8.8V' +
-    '8.cV2G1.dV2G1.dG2.1oG4.cG4.aG2V4G2.8G2V4G2.8G2V4G2V1.7G2V4G2V1.bG2.eG2.30V4.cV4.cV4.' +
-    '2V2.8V4.2V2.3sG4.cG4.cG4.2G2.8G4.2G2.4uK2.eK2.4uK2.eK2.4uK2.eK2.4uK2.eK2.4sK3.dK3.4t' +
-    'K2.eK2.4uK2.eK2.4uK2.eK2.2w'),
+    '6Va.6Va.6Va.6Va.6Va.6Va.6V8.8V8.aV6.9V8.7Va.6Va.6Va.6Va.6Va.6Va.6Va.6Va.6V9.7V8.8Va.' +
+    '6Va.6Va.6Va.6Va.6Va.4Vc.4Vc.4Vc.4Vc.6Va.6Va.6Va.6Va.6Va.6Va.6Va.6Va.4Vc.4Vc.4G1Vb.4G' +
+    '2Va.6V9G1.6V8G2.6Va.6Va.7V9.7V9.6Vc.4Vc.2Vc.4Vc.5G1Va.6Va.6V8G1.7V8.8V6G4.6V7G3.7V9.' +
+    '7V9.6VaG2.3VbG2.2Vc.4G2Va.6V9G1.6V8G2.6G8.8G8.6V8.8V8G1.5Ve.2Ve.4Vc.4Vc.4G2Va.7V9.6V' +
+    '8G1.7V8.12V4G4.8V5G3.6V8G6.2V8G6.3V9G4.4V8G4.7V3G6.7V2G7.6V3G5.8G8.12V4.cV4G1.9V8.8V' +
+    '8.8V9.7V9.bV3G1.cV2G1.dG3.1nG4.cG4.aG2V4G2.8G2V4G2.8G2V4G2V1.7G2V4G2V1.bG3.dG2.30V4.' +
+    'cV4.cV4.2V2.8V4.2V2.3sG4.cG4.cG4.2G2.8G4.2G2.4uK2.eK2.4uK2.eK2.4uK2.eK2.4uK2.eK2.4sK' +
+    '3.dK3.4tK2.eK2.4uK2.eK2.4uK2.eK2.2w'),
   corn: parseArt(['..V..', '.VVV.', 'V.V.V', '.VVV.', 'V.V.V', '..K..', '..K..']),
   rock: parseArt(['.XXX.', 'XXXXM', 'XXXMM']),
   stair: parseArt(['....X', '...XX', '..XXX', '.XXXX', 'XXXXX', 'MMMMM'])
@@ -7456,7 +7488,9 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { keys[e.code] = 0; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
 function onCanvasClick(e){
-  if (TOUCH.on) return;                      // taps are handled by the touch layer
+  // a FINGER's taps belong to the touch layer; a mouse still needs this, or
+  // on a hybrid it can never take the pointer lock and so can never attack
+  if (TOUCH.on && lastPointerTouch) return;
   audioUnlock();
   const m = topMode();
   if (m && m.name === 'map' && e && e.target && !document.pointerLockElement){
@@ -7475,7 +7509,8 @@ function onCanvasClick(e){
 cv.addEventListener('click', onCanvasClick);
 glv.addEventListener('click', onCanvasClick);
 addEventListener('mousedown', e => {
-  if (TOUCH.on) return;                      // touch drives its own fire button
+  // touch drives its own fire button; a real mouse keeps the left one
+  if (TOUCH.on && lastPointerTouch) return;
   if (e.button === 0 && document.pointerLockElement === view && !topMode()){
     fireHeld = true;
     fireWeapon();
@@ -8426,6 +8461,8 @@ function makeListMenu(def){
     tap(cx, cy){                              // touch: rows are buttons
       const h = this.hit;
       if (!h) return;
+      // the card may have been laid out on the big lattice; a tap never is
+      if (h.s > 1){ cx = Math.floor(cx / h.s); cy = Math.floor(cy / h.s); }
       if (cx < h.x || cx >= h.x + h.w || cy < h.y || cy >= h.y + h.h){
         this.onKey('Escape');                 // tapping past the card backs out
         return;
@@ -8569,6 +8606,7 @@ function openTree(title, tree){
     draw(){ drawTree(this); },
     tap(cx, cy){
       const h = this.hit;
+      if (h && h.s > 1){ cx = Math.floor(cx / h.s); cy = Math.floor(cy / h.s); }
       const opts = this.pageDone() ? this.visibleOpts() : [];
       if (h && opts.length && cx >= h.x && cx < h.x + h.w){
         const oi = cy - h.optStart;
@@ -11065,18 +11103,29 @@ function openSettingsMenu(){
           let m = !GPUW.on ? 0 : Math.max(0, seq.indexOf(GPUW.stages & 7));
           m = (m + (d < 0 ? -1 : 1) + seq.length) % seq.length;
           GPUW.on = m > 0; GPUW.stages = seq[m];
-          /* Pin the grid while it is on. Auto-res drops a step whenever a frame
-             stays over 14ms, on the assumption that a coarser grid is cheaper -
-             and this pass costs the same at 1,518 cells as at 106,600, because
-             the readback is per call and not per cell. Left to itself auto-res
-             walks the resolution to the floor, a full initRender every ninety
-             frames, and the world visibly rebuilds itself coarser on the way
-             down. Until the readback is gone this switch has to hold the grid
-             still or it cannot be compared against anything. */
-          if (GPUW.on && !CFG.manualRes){
-            CFG.manualRes = true;
-            toast('gpu world: grid pinned at ' + R.cols + 'x' + R.rows);
-          }
+          /* The grid is held while this is on, and let go again when it is
+             off - the auto-res step itself checks, rather than this switch
+             latching CFG.manualRes on the way past and never releasing it.
+             See the note in frame(): a readback costs the same at 1,518 cells
+             as at 106,600, so a coarser grid does not help and auto-res will
+             walk the resolution to nothing trying. */
+          if (GPUW.on && !CFG.manualRes)
+            toast('gpu world: grid held at ' + R.cols + 'x' + R.rows + ' while this is on');
+        } },
+      { label: 'GPU SOLIDS', value: () => !(GL && GL.spriteOK) ? 'N/A' : !GPUS.on ? 'OFF'
+                 : (GPUS.stages & 3) === 1 ? 'SOLIDS' : 'ON',
+        hint: 'march the pedestrians, cars and props on the card, sharing the ' +
+              'world pass trip back rather than paying for a second one. ' +
+              'needs GPU WORLD on all the way, and stops at a doorway. ' +
+              'SOLIDS is the bisect step and draws no reflections at all',
+        adj(d){
+          // OFF -> SOLIDS -> ON -> OFF
+          const seq = [0, 1, 3];
+          let m = !GPUS.on ? 0 : Math.max(0, seq.indexOf(GPUS.stages & 3));
+          m = (m + (d < 0 ? -1 : 1) + seq.length) % seq.length;
+          GPUS.on = m > 0; GPUS.stages = seq[m] || 3;
+          if (GPUS.on && !(GPUW.on && (GPUW.stages & 7) === 7))
+            toast('gpu solids: needs gpu world set to ON');
         } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
         hint: 'traced shadows and bounced colour. costs about half the frame; ' +
@@ -16249,6 +16298,7 @@ function waitOnBench(){
   further down, the way a body does.
 ============================================================================*/
 function hudCell(cx, cy2, ch, ci){
+  if (hudScaled) return hudBigCell(cx, cy2, ch, ci);
   if (cx < 0 || cx >= R.cols || cy2 < 0 || cy2 >= R.rows) return;
   const code = ch.charCodeAt(0) - 32;
   if (code <= 0 || code > 94) return;
@@ -18330,16 +18380,22 @@ function openMap(){
       this.cy = clamp(this.cy - dy / (R.cellH * L.blk) * L.za, 0, MAP);
     },
     tap(cx, cy){
-      if (cy <= 6 && cx >= R.cols - 8){         // the corner buttons
-        if (cy <= 2) this.onKey('KeyQ');
-        else if (cy <= 4) this.onKey('KeyE');
+      /* The buttons are drawn on the big layer, so they are hit-tested there
+         too - a tap arrives in chart cells and the two lattices are not the
+         same size. On every ordinary grid S is 1 and this is what it was. */
+      const S = hudScale();
+      const bx = Math.floor(cx / S), by = Math.floor(cy / S);
+      const bc = Math.max(8, (R.cols / S) | 0), br = Math.max(4, (R.rows / S) | 0);
+      if (by <= 6 && bx >= bc - 8){             // the corner buttons
+        if (by <= 2) this.onKey('KeyQ');
+        else if (by <= 4) this.onKey('KeyE');
         else this.onKey('KeyF');
         return;
       }
-      if (cy <= 6 && cx >= R.cols - 16 && cx < R.cols - 8){
-        this.onKey(cy <= 3 ? 'KeyZ' : 'KeyC'); return;
+      if (by <= 6 && bx >= bc - 16 && bx < bc - 8){
+        this.onKey(by <= 3 ? 'KeyZ' : 'KeyC'); return;
       }
-      if (cy >= R.rows - 3){ this.onKey('Escape'); return; }
+      if (by >= br - 3){ this.onKey('Escape'); return; }
       // anywhere else: that is where you want to go - read back through the
       // same lattice the chart was drawn on, so the pin lands under the thumb
       const L = mapLattice(this);
@@ -18582,10 +18638,31 @@ function drawMapMode(m){
      own mark claims one before any of them - so the name of the district you
      are standing in can never land across your own position, which is what it
      was doing. */
+  /* Words ride the BIG layer, marks and terrain ride the chart's own.
+
+     The chart takes the finest grid because it wants every sample it can get,
+     and at three pixels to a cell that is exactly the wrong size for a word -
+     the map got more legible as a picture and completely illegible as a
+     document. They are two different lattices and they always were: a base
+     layer of samples and a label layer over it, which is how a paper map is
+     drawn too.
+
+     Claims stay in CHART cells so the two agree about what has room. A word
+     is S cells wide per character and S rows tall, where S is one big cell in
+     chart cells - one on every ordinary grid, where none of this applies. */
+  const S = hudScale();
+  const tw = n => n * S;                              // a word, in chart cells
   const taken = [];
-  const free  = (x, y, w) => !taken.some(p => p.y === y && x < p.x1 && x + w > p.x0);
-  const claim = (x, y, w, pad) => { taken.push({ x0: x - pad, x1: x + w + pad, y }); };
-  const word  = (x, y, s, col) => { claim(x, y, s.length, 1); hudStr(x, y, s, col); };
+  const free  = (x, y, w) => !taken.some(p =>
+    y < p.y1 && y + S > p.y0 && x < p.x1 && x + w > p.x0);
+  const claim = (x, y, w, pad, h) => {
+    taken.push({ x0: x - pad, x1: x + w + pad, y0: y, y1: y + (h || 1) });
+  };
+  const word  = (x, y, s, col) => {
+    claim(x, y, tw(s.length), 1, S);
+    if (S > 1) hudBigStr(Math.round(x / S), Math.round(y / S), s, col);
+    else hudStr(x, y, s, col);
+  };
   // The marks go down before the words do, so a word can never be printed
   // through one: your own position first, then every pin on the chart.
   const px2 = sx(cam.x), py2 = sy(cam.y);
@@ -18608,8 +18685,8 @@ function drawMapMode(m){
       const x = sx(l.x), y = sy(l.y);
       if (onChart(x, y)) claim(x, y, 1, 0);
     }
-  if (qt && qt.name && onChart(qx, qy) && qx + 2 + qt.name.length < cols - 1 &&
-      free(qx + 2, qy, qt.name.length))
+  if (qt && qt.name && onChart(qx, qy) && qx + 2 + tw(qt.name.length) < cols - 1 &&
+      free(qx + 2, qy, tw(qt.name.length)))
     word(qx + 2, qy, qt.name, H_YEL);
   /* Landmark names, at every zoom, nearest the cursor first. The name is the
      whole value of a landmark on a chart - a yellow star with no word on it
@@ -18623,19 +18700,21 @@ function drawMapMode(m){
       const x = sx(l.x), y = sy(l.y);
       if (!onChart(x, y)) continue;
       const col = l.col !== undefined ? l.col : H_YEL;
+      const w = tw(l.name.length);
       // to the right if it fits, to the left if it does not
-      if (x + 2 + l.name.length < cols - 1 && free(x + 2, y, l.name.length))
+      if (x + 2 + w < cols - 1 && free(x + 2, y, w))
         word(x + 2, y, l.name, col);
-      else if (x - 2 - l.name.length > 0 && free(x - 1 - l.name.length, y, l.name.length))
-        word(x - 1 - l.name.length, y, l.name, col);
+      else if (x - 2 - w > 0 && free(x - 1 - w, y, w))
+        word(x - 1 - w, y, l.name, col);
     }
   }
   // the named places, once one of them is bigger than the glass
   if (z >= 4){
     for (const d of m.dlbl){
-      const x = sx(d.x) - (d.name.length >> 1), y = sy(d.y);
-      if (!onChart(x, y) || x < 1 || x + d.name.length > cols - 1) continue;
-      if (!free(x, y, d.name.length)) continue;
+      const w = tw(d.name.length);
+      const x = sx(d.x) - (w >> 1), y = sy(d.y);
+      if (!onChart(x, y) || x < 1 || x + w > cols - 1) continue;
+      if (!free(x, y, w)) continue;
       word(x, y, d.name, H_PUR);
     }
   }
@@ -18653,11 +18732,11 @@ function drawMapMode(m){
         if (zoneAt(k2, k) >= 4) continue;
         const x = sx(k2 * P + RW / 2) + 1, y = sy(k * P + RW / 2);
         const id = xingId(k2, k);
-        if (!onChart(x, y) || x + id.length > cols - 1 || !free(x, y, id.length)) continue;
+        const w = tw(id.length);
+        if (!onChart(x, y) || x + w > cols - 1 || !free(x, y, w)) continue;
         word(x, y, id, H_DIM);
       }
   }
-
   // ---- every trade announces itself at close zoom -----------------------
   if (z <= 2){
     for (const d of doors){
@@ -18709,43 +18788,49 @@ function drawMapMode(m){
     hudCell(px2, py2, dirCh, pc2);
   }
 
-  // ---- the key ---------------------------------------------------------
+  /* ---- the key, and the chrome round it -------------------------------
+     All of it on the big layer, and all of it laid out in BIG cells: a key
+     measured in chart cells at three pixels each is a row of grey lint. `bc`
+     is how many big cells the chart is across. */
+  const bc = Math.max(8, (cols / S) | 0), br = Math.max(4, (rows / S) | 0);
+  const mstr = (bx, by, s, col) => {
+    if (S > 1) hudBigStr(bx, by, s, col); else hudStr(bx, by, s, col);
+  };
   // whichever of the two charts you are looking at is the one explained
   if (z <= 2){
     let leg = 'T tools  A arms  D disp  J gold  C threads  M market  ' +
               'B bodega  G goods  $ casino  X parlor  W condemned  H home  & fixer';
-    if (leg.length > cols - 2){            // cut on a gap, never through a word
-      leg = leg.slice(0, cols - 2);
+    if (leg.length > bc - 2){              // cut on a gap, never through a word
+      leg = leg.slice(0, bc - 2);
       leg = leg.slice(0, Math.max(0, leg.lastIndexOf('  ')));
     }
-    hudStr(Math.max(1, (cols - leg.length) >> 1), rows - 2, leg, H_DIM);
+    mstr(Math.max(1, (bc - leg.length) >> 1), br - 2, leg, H_DIM);
   } else {
-    const [parts, gap] = mapKeyParts(cols, streets);
-    let x = Math.max(1, (cols - parts.reduce((a, t) => a + t[0].length + gap, -gap)) >> 1);
+    const [parts, gap] = mapKeyParts(bc, streets);
+    let x = Math.max(1, (bc - parts.reduce((a, t) => a + t[0].length + gap, -gap)) >> 1);
     for (const [txt, col] of parts){       // each named in the colour it is drawn in
-      hudStr(x, rows - 2, txt, col);
+      mstr(x, br - 2, txt, col);
       x += txt.length + gap;
     }
   }
-  // ---- chrome ----------------------------------------------------------
   // how much ground is on the glass, which is the only zoom readout that means
   // anything to anybody - a tile is about two metres
   const across = bw * z * 2;
   const scale = across >= 1000 ? (across / 1000).toFixed(1) + ' km'
                                : Math.round(across / 10) * 10 + ' m';
-  hudStr(2, 0, ' CITY MAP  ' + scale + ' across  ' + (L.zi + 1) + '/' + L.nz + ' ', H_GRN);
-  hudStr(cols - 8, 1, '[ + ]', H_GRN);
-  hudStr(cols - 8, 3, '[ - ]', H_GRN);
-  hudStr(cols - 8, 5, '[ F ]', H_YEL);
+  mstr(2, 0, ' CITY MAP  ' + scale + ' across  ' + (L.zi + 1) + '/' + L.nz + ' ', H_GRN);
+  mstr(bc - 8, 1, '[ + ]', H_GRN);
+  mstr(bc - 8, 3, '[ - ]', H_GRN);
+  mstr(bc - 8, 5, '[ F ]', H_YEL);
   // stepping through the marked places: back, and on
-  hudStr(cols - 16, 1, '[ < ]', H_YEL);
-  hudStr(cols - 16, 3, '[ > ]', H_YEL);
+  mstr(bc - 16, 1, '[ < ]', H_YEL);
+  mstr(bc - 16, 3, '[ > ]', H_YEL);
   {
     const marks = mapMarks(m);
     const at = m.markI >= 0 && m.markI < marks.length ? marks[m.markI] : null;
     const tag = at ? (m.markI + 1) + '/' + marks.length + ' ' + at.n
                    : marks.length + ' marked';
-    hudStr(Math.max(1, cols - 17 - tag.length), 5, tag.slice(0, Math.max(0, cols - 20)), H_YEL);
+    mstr(Math.max(1, bc - 17 - tag.length), 5, tag.slice(0, Math.max(0, bc - 20)), H_YEL);
   }
   /* The search box. It only exists while it is being typed into, and it says
      how many things the letters so far match and which one ENTER would take
@@ -18757,20 +18842,20 @@ function drawMapMode(m){
     const line = 'FIND: ' + m.find + '_' +
       (m.find ? '   ' + n + (n === 1 ? ' match' : ' matches') +
                 (hit ? '   ->  ' + hit.n : '   nothing') : '');
-    const w = Math.min(cols - 4, line.length + 2);
-    const x = (cols - w) >> 1;
-    hudPanel(x, rows - 4, w, 1);
-    hudStr(x + 1, rows - 4, line.slice(0, w - 2), hit || !m.find ? H_YEL : H_RED);
+    const w = Math.min(bc - 4, line.length + 2);
+    const x = (bc - w) >> 1;
+    hudPanel(x * S, (br - 4) * S, w * S, S);
+    mstr(x + 1, br - 4, line.slice(0, w - 2), hit || !m.find ? H_YEL : H_RED);
   }
   const foot = m.find !== null
-    ? mapFitLine(cols, ['type a name or a trade   ENTER go   ESC cancel',
-                        'ENTER go   ESC cancel'])
-    : mapFitLine(cols, [
+    ? mapFitLine(bc, ['type a name or a trade   ENTER go   ESC cancel',
+                      'ENTER go   ESC cancel'])
+    : mapFitLine(bc, [
       'WASD pan   Q/E zoom   Z/C step marks   F find   ENTER pin   X clear   M close',
       'WASD pan  Q/E zoom  Z/C marks  F find  ENTER pin  X clear  M close',
       'Q/E zoom  Z/C marks  F find  M close',
       'Q/E zoom  M close']);
-  hudStr((cols - foot.length) >> 1, rows - 1, foot, H_DIM);
+  mstr((bc - foot.length) >> 1, br - 1, foot, H_DIM);
 }
 
 /*=========================== 13i. TOUCH ====================================
@@ -18782,10 +18867,31 @@ function drawMapMode(m){
   coarse-pointer devices; DOM overlay, so the engine never knows.
 ============================================================================*/
 const TOUCH = { on: false, f: 0, s: 0 };
+/*---- glass, or a machine that merely has some -----------------------------
+  `'ontouchstart' in window` is true of every laptop with a touchscreen, and
+  turning the phone UI on for those was quietly breaking the mouse: the touch
+  layer swallows mousedown, so the left button never reached fireWeapon, and
+  its own tap handler ran on the mouse's pointerup and opened a conversation
+  instead. Attacking somebody talked to them, and the attack never landed.
+
+  `(pointer: coarse)` already means the PRIMARY pointer is a finger. The
+  touchstart fallback stays for the devices that report nothing useful, but
+  only where there is no fine pointer at all. Everything else is a desktop
+  with a touchscreen, and it gets the desktop.
+---------------------------------------------------------------------------*/
 function touchWanted(){
-  try { return matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window; }
-  catch (e){ return false; }
+  try {
+    if (matchMedia('(pointer: coarse)').matches) return true;
+    return 'ontouchstart' in window && !matchMedia('(any-pointer: fine)').matches;
+  } catch (e){ return false; }
 }
+/* Which kind of pointer was used last. A hybrid gets both behaviours - the
+   finger drives the touch layer, the mouse drives the mouse - rather than one
+   of them being wrong all the time. */
+let lastPointerTouch = false;
+addEventListener('pointerdown', e => {
+  lastPointerTouch = e.pointerType !== 'mouse' && e.pointerType !== undefined;
+}, true);
 function touchCell(px, py){ return [((px - R.ox) / R.cellW) | 0, ((py - R.oy) / R.cellH) | 0]; }
 function touchTap(px, py){
   const m = topMode();
@@ -18882,6 +18988,10 @@ function buildTouchUI(){
   addEventListener('pointerdown', e => {
     if (e.target.closest && e.target.closest('#touchui')) return;
     audioUnlock();
+    // the look pad and its tap are for fingers. A mouse press here used to
+    // end as touchTap -> tryInteract, which is how attacking somebody opened
+    // a conversation with them instead.
+    if (e.pointerType === 'mouse') return;
     if (lookId !== null) return;
     lookId = e.pointerId; lx = e.clientX; ly2 = e.clientY; moved = 0; downT = performance.now();
   });
@@ -20810,6 +20920,9 @@ function wallMirror(){
 
 /*----------------------------- billboards ----------------------------------*/
 function drawSprite(sx, sy, zb, wW, wH, art, sb, sd, mirror, dyn){
+  // a billboard is not a solid and has no place in the instance table; the
+  // few of them in a frame are put by and drawn once the buffers are back
+  if (_cap){ GS.defer.push([sx, sy, zb, wW, wH, art, sb, sd, mirror, dyn]); return; }
   const relX = sx - cam.x, relY = sy - cam.y;
   const tY = relX * dirX + relY * dirY;
   if (tY < 0.30 || tY > viewD) return;
@@ -20990,6 +21103,7 @@ const FACE_DIM = [1.0, 0.84, 1.14];             // side, front/back, top
    using was the road it stands on and not the water it stands over. Anything
    over the channel is drawn without one. */
 let _noRef = 0;
+let _refDbg = null, _refDbg2 = null;
 function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const cols = R.cols, rows = R.rows;
   const relX = ox - cam.x, relY = oy - cam.y;
@@ -21069,6 +21183,24 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const tn = tC / viewD, lvl = levelOf(tn), dm = densMul(tn);
   const lit = art.lit;
   const tCap = Math.min(viewD, tC + rad + 1);
+  /* Everything above is per-SOLID and everything below is per-cell, so this
+     is where the two paths part. The card is handed exactly the numbers the
+     loop below was about to use - nothing is recomputed on the other side of
+     the bus, because a recomputation is a place to drift. A volume with no
+     atlas slot, or an art carrying its own colours, is put by to be drawn
+     here afterwards rather than dropped. */
+  if (_cap){
+    const slot = lit ? null : (GS.n < GS.max ? spriteSlot(m) : null);
+    if (!slot){
+      GS.over++;
+      GS.defer.push([ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy, _noRef]);
+      return;
+    }
+    spriteCapture(m, slot, Ou, Ov, Oz, tCap, cy, sy, step, nMax,
+                  bu0, bu1, bv0, bv1, bz0, bz1, lvl, dm,
+                  wW, dW, hW, c0, c1, r0, r1, tNear, tFar, zb, sb, sd, dyn);
+    return;
+  }
   for (let x = c0; x <= c1; x++){
     const rx = rayX[x], ry = rayY[x];
     const Du =  rx * cy + ry * sy, Dv = -rx * sy + ry * cy;
@@ -21152,7 +21284,13 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
           const j = rr * cols + x;
           if (reflects(j)){
             const ng = (g * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
-            if (ng >= 1){ gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0; statCells++; }
+            if (ng >= 1){ gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0; statCells++;
+              /* The card gathers this mirror instead of scattering it, and the
+                 only way to hold the two side by side is to record what the
+                 scatter wrote. Off unless something is being chased. */
+              if (_refDbg){ _refDbg[j] = ng | (base << 8) | 0x10000 | (r + 512) * 0x100000;
+                            _refDbg2[j] = t; }
+            }
           }
         }
       }
@@ -21496,7 +21634,11 @@ const drawList = [];
 const HIT_SB = new Int16Array(NROLE).fill(C.nWhite);   // struck: white silhouette
 const WIND_SB = new Int16Array(NROLE).fill(C.camRed);  // winding up: red tell
 function spritePass(){
-  hizBuild();                    // the walls are down; read what they buried
+  // The pyramid is built from dBuf, and while the solids are being captured
+  // for the card dBuf has not come back yet. It costs nothing: the cull it
+  // does is conservative, and what it would have dropped the depth test
+  // drops anyway, one cell at a time on hardware that has cells to spare.
+  if (!_cap) hizBuild();         // the walls are down; read what they buried
   drawList.length = 0;
   const MD = viewD;
   /* A solid whose CENTRE is beside you still has half of itself in front of
@@ -22397,13 +22539,25 @@ function glInit(){
                      'uProjRows','uDeckT','uGBar','uWorldTime','uWTick','uDome','uDomeC',
                      'uEmis','uWallM','uWallM2','uLvT',
                      'uGrid','uCam','uCamI','uCamF','uCamM','uCamH',
-                     'uHorizon','uHz','uR0','uRMAX','uStages',
+                     'uHorizon','uHz','uR0','uRMAX','uStages','uDFar',
                      'uViewD','uMap','uP','uRW','uNB','uDensK',
                      'uNight','uSunOn','uSunRow','uDay','uSkyMat','uLineW',
                      'uWet','uWayOn','uRiverY','uRural','uWave','uLamp','uMat'])
       G.uW[k] = gl.getUniformLocation(G.pWorld, k);
     G.worldOK = true;              // glWorldTargets has the final say
   } catch (e){ G.worldOK = false; G.pWorld = null; }
+  /* And the solids. Same rule again: drawModel is still there and still the
+     reference, so a driver that will not take an integer array texture or a
+     gl_FragDepth write costs frame time and nothing else. */
+  G.spriteOK = false;
+  try {
+    G.pSprite = mkProg(VS_SPRITE, FS_SPRITE);
+    G.uS = {};
+    for (const k of ['uInst','uPal','uCol','uDep','uVox','uGrid','uHorizon',
+                     'uProjRows','uRMAX','uDFar','uCamZ','uMode','uMJ'])
+      G.uS[k] = gl.getUniformLocation(G.pSprite, k);
+    G.spriteOK = true;             // glSpriteTargets has the final say
+  } catch (e){ G.spriteOK = false; G.pSprite = null; }
   G.uBG = {};
   for (const k of ['uSky', 'uMid', 'uFog', 'uGround', 'uHz']) G.uBG[k] = gl.getUniformLocation(G.pBG, k);
   G.uG = {};
@@ -22600,6 +22754,11 @@ function glResize(){
     }
   }
   if (GL.pWorld) glWorldTargets();
+  /* NOT built here. The volume atlas is four megabytes and the switch is off
+     by default, and initRender runs every time auto-res moves the grid - so
+     the sprite targets are built the first time the pass actually runs, and
+     invalidated by the grid changing under them. */
+  GS.grid = '';
   glBuildAtlas();
   glBuildPalette();
   glUploadHeight();
@@ -22757,7 +22916,7 @@ const GPUW = {
   stages: 7,     // bit 0 sky, bit 1 floor, bit 2 walls
   max:    7
 };
-const GW = { qa: null, qa32: null, qb: null, qb32: null, colD: null, rowD: null, ran: 0 };
+const GW = { qa: null, qa32: null, qb: null, qb32: null, colD: null, rowD: null, ran: 0, pend: 0 };
 const FS_WORLD = `#version 300 es
 precision highp float;
 precision highp int;
@@ -22781,6 +22940,7 @@ uniform sampler2D uTagArt;   // 10 x 32: four stencils of eight rows
 uniform sampler2D uDomeF;    // the dome's current frame, one bit a cell
 
 uniform vec2  uGrid;         // cols, rows
+uniform float uDFar;         // what a depth of 1.0 means, in metres
 uniform vec3  uCam;
 /*--- the camera, split so the fraction is not lost in the whole -------------
   Everything the ground pass decides is decided about a SMALL quantity: where
@@ -23286,7 +23446,7 @@ bool roofSpan(Bld bb, float h, float dNear, float dFar, int ceilLimit,
   float gg = jround(jclamp(_wd * densMul(tr), 0.0, 1.0) * uRMAX);
   oDep = dr; oWet = 0.0;
   if (gg == 0.0) return true;
-  oG = gg; oPal = float(_wb); oLv = levelOf(tr); oWrote = 255.0;
+  oG = gg; oPal = float(_wb); oLv = levelOf(tr); oWrote = 16.0;
   if (emissive(_wb)){ oSrc = 2.0; oEmit = 1.0; } else oSrc = 0.0;
   return true;
 }
@@ -23327,7 +23487,7 @@ void main(){
       }
     }
     float gg = jround(jclamp(dens, 0.0, 1.0) * uRMAX);
-    if (gg != 0.0){ oG = gg; oPal = base; oLv = 3.0; oWrote = 255.0; }
+    if (gg != 0.0){ oG = gg; oPal = base; oLv = 3.0; oWrote = 16.0; }
   }
 
   /*------------------------- the ground plane ------------------------
@@ -23399,7 +23559,7 @@ void main(){
         if (!drop){
           float gg = jround(jclamp(_wd * dmm, 0.0, 1.0) * uRMAX);
           oDep = uD; oWet = float(_wwet);
-          if (gg != 0.0){ oG = gg; oPal = float(_wb); oLv = lvl; oWrote = 255.0; }
+          if (gg != 0.0){ oG = gg; oPal = float(_wb); oLv = lvl; oWrote = 16.0; }
         }
       }
     }
@@ -23471,7 +23631,7 @@ void main(){
             float gg = jround(jclamp(dd * dm2, 0.0, 1.0) * uRMAX);
             if (gg != 0.0){
               oG = gg; oPal = f < 0.28 ? uMat[M_DECK] : uMat[M_DECKOLD];
-              oLv = levelOf(tt); oDep = d; oWet = 0.0; oSrc = 0.0; oWrote = 255.0;
+              oLv = levelOf(tt); oDep = d; oWet = 0.0; oSrc = 0.0; oWrote = 16.0;
             }
           }
         }
@@ -23504,7 +23664,7 @@ void main(){
         if (_wg >= 0) oG = float(_wg);
         else if (edge && lvl < 4.0) oG = uGBar;
         else oG = jround(jclamp(_wd * dm, 0.0, 1.0) * uRMAX);
-        oPal = float(_wb); oLv = lvl; oDep = d; oWet = 0.0; oWrote = 255.0;
+        oPal = float(_wb); oLv = lvl; oDep = d; oWet = 0.0; oWrote = 16.0;
         if (emissive(_wb)){ oSrc = 2.0; oEmit = 1.0; } else oSrc = 0.0;
         painted = true;
       }
@@ -23529,9 +23689,23 @@ void main(){
     }
   }
 
-  oA = vec4(oG, oPal, oLv, oWet) / 255.0;
-  oB = vec4(oSrc, oEmit, oWrote, 0.0) / 255.0;
+  /*--- four bytes, and the fourth one is three things -----------------------
+    The wetness, the source kind and the did-write flag are 0..2, 0..2 and a
+    bit, so they ride in one byte and leave the SECOND attachment holding the
+    emitter kind on its own. That is not tidiness. A solid drawn over a lit
+    window keeps that window's emitter kind on the CPU - the sprite pass never
+    touched emitKind - and a fragment shader cannot keep a byte it is not
+    allowed to read. So the byte lives where the sprite pass writes NOTHING,
+    and the sprites bind that attachment to NONE. ---*/
+  oA = vec4(oG, oPal, oLv, oWet + oSrc * 4.0 + oWrote) / 255.0;
+  oB = vec4(oEmit, 0.0, 0.0, 0.0) / 255.0;
   oD = vec4(oDep, 0.0, 0.0, 0.0);
+  /* The same distance again, this time where the card can test against it.
+     It carries the sprite pass's 0.02 bias ALREADY ADDED, so the sprites can
+     write their own t unbiased and still reproduce the CPU's
+     dBuf[idx] < t - 0.02 exactly: a fragment at t passes LEQUAL against a wall at t + 0.02 on
+     precisely the cells the CPU let through. */
+  gl_FragDepth = clamp((oDep + 0.02) / uDFar, 0.0, 1.0);
 }`;
 /*------------------ the framebuffer the world lands in ---------------------
   Rebuilt with the grid, like every other per-cell target here. The depth
@@ -23560,6 +23734,19 @@ function glWorldTargets(){
   mk(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, 0);
   mk(gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, 1);
   mk(gl.R32F,  gl.RED,  gl.FLOAT,         2);
+  /* And a real depth buffer, which the world pass does not need and the
+     sprite pass cannot do without. A voxel marcher is one fragment per cell
+     per solid, and which solid owns a cell is exactly what a depth test is
+     for - so the world writes gl_FragDepth alongside its R32F, the sprites
+     test against it, and the card resolves an order the CPU had to get by
+     sorting the draw list far to near. It is a renderbuffer because nothing
+     samples it: what the CPU reads back is still the R32F attachment. */
+  if (GL.wD) gl.deleteRenderbuffer(GL.wD);
+  GL.wD = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, GL.wD);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT32F, W, H);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, GL.wD);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, null);
   GL.worldOK = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   const n = W * H;
@@ -23745,7 +23932,7 @@ function glWorldStatics(){
 }
 /* The whole world pass. Returns a bitmask of which stages it actually did,
    so worldPasses can run the CPU original for whatever is left. */
-function glWorldPass(){
+function glWorldPass(defer){
   if (!GL || !GL.worldOK || !GL.pWorld || !GPUW.on || inside) return 0;
   const stages = GPUW.stages & GPUW.max;
   if (!stages) return 0;
@@ -23841,6 +24028,14 @@ function glWorldPass(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
   gl.viewport(0, 0, cols, rows);
   gl.disable(gl.BLEND);
+  /* ALWAYS, not LESS: this pass picks its own nearest surface analytically
+     and every cell is written exactly once. The test is enabled only because
+     GL will not write depth with it disabled, and the sprite pass needs the
+     buffer filled. No clear either - the full-screen triangle covers it. */
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.ALWAYS);
+  gl.depthMask(true);
+  // all three again: the sprite pass leaves attachment 1 bound to NONE
   gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
   gl.useProgram(GL.pWorld);
   const U = GL.uW;
@@ -23872,6 +24067,7 @@ function glWorldPass(){
   gl.uniform1f(U.uR0, clamp(Math.ceil(horizon), 0, rows));
   gl.uniform1f(U.uRMAX, RMAX);
   gl.uniform1f(U.uViewD, viewD);
+  gl.uniform1f(U.uDFar, viewD + 4);
   gl.uniform1f(U.uMap, MAP);
   gl.uniform1f(U.uP, P);
   gl.uniform1f(U.uRW, RW);
@@ -23946,6 +24142,7 @@ function glWorldPass(){
   gl.uniform1fv(U.uMat, GW.mat);
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.DEPTH_TEST);
 
   /*--- and back ------------------------------------------------------------
     Never readPixels straight into a typed array. On this driver that path
@@ -23958,8 +24155,28 @@ function glWorldPass(){
     the card the length of two more issues to finish the pass it is still
     working on. Four one-byte buffers ride in one four-byte read, so the only
     JS loop left is the unpack, which is a shift and a store. ---*/
-  _T.draw += performance.now() - _t0; _t0 = performance.now();
+  _T.draw += performance.now() - _t0;
+  GW.ran++;
+  GW.pend = stages;
+  if (defer) return stages;
+  glWorldRead();
+  return stages;
+}
+/*--- the trip back, on its own, so a pass can be drawn BETWEEN the draw and
+  the read ------------------------------------------------------------------
+  Stage 3 needs exactly that: the sprites go onto the card after the world and
+  before anything comes off it, so the two of them share one sync instead of
+  paying for two. Nothing below moved; it was cut here and nothing else. ---*/
+function glWorldRead(){
+  if (!GW.pend) return 0;
+  const stages = GW.pend; GW.pend = 0;
+  const gl = GL.gl, cols = R.cols, rows = R.rows;
+  const _T = GW.t;
+  let _t0 = performance.now();
   const n = cols * rows;
+  /* Bound explicitly rather than inherited from the draw: the sprite pass
+     runs between the two and binds its own target on the way past. */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
   const PB = GL.wPack;
   for (let i = 0; i < 3; i++){
     gl.readBuffer(gl.COLOR_ATTACHMENT0 + i);
@@ -23976,18 +24193,555 @@ function glWorldPass(){
   gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   gl.readBuffer(gl.COLOR_ATTACHMENT0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  glSpriteRead();
   gl.enable(gl.BLEND);
   _T.read += performance.now() - _t0; _t0 = performance.now();
   const qa = GW.qa32, qb = GW.qb32;
   for (let i = 0; i < n; i++){
-    const v = qa[i], w = qb[i];
-    gBuf[i] = v; refBuf[i] = v >>> 24;
-    srcBuf[i] = w; emitKind[i] = w >>> 8;
-    if (w & 0xff0000){ bBuf[i] = v >>> 8; lBuf[i] = v >>> 16; }
+    const v = qa[i], f = v >>> 24;
+    gBuf[i] = v; refBuf[i] = f & 3; srcBuf[i] = (f >>> 2) & 3;
+    emitKind[i] = qb[i];
+    if (f & 16){ bBuf[i] = v >>> 8; lBuf[i] = v >>> 16; }
   }
   _T.unpack += performance.now() - _t0; _T.n++;
-  GW.ran++;
   return stages;
+}
+/*=========================== stage 3: the sprites ===========================
+  drawModel is a voxel ray marcher walking one screen cell at a time, and a
+  voxel ray marcher is what a fragment shader IS. Every solid in the frame
+  becomes one quad over the screen box it can touch; the fragment marches the
+  same volume, in the same local frame, with the same step, and the card
+  settles which solid owns a cell with a depth test instead of the CPU's sort
+  from far to near.
+
+  Three things had to move for that to work, and each is worth knowing:
+
+  1. THE READBACK MOVED. glWorldPass now draws and returns; the trip back is
+     glWorldRead, and the sprites go on the card in between. The two passes
+     share one sync rather than paying for two - which is the whole economics
+     of this port, because the sync is eight milliseconds and the shader is
+     free.
+
+  2. THE VOLUMES LIVE ON THE CARD. voxelize already caches one rasterisation
+     per (art, depthScale, round) and hands back a Uint8Array laid out x
+     fastest, then depth, then height - which is exactly what texSubImage3D
+     wants. They are shelf-packed into one array texture, uploaded once each,
+     and never touched again.
+
+  3. THE MIRROR TURNED ROUND. The reflection in drawModel is a scatter: it
+     writes to a cell in a DIFFERENT row from the one it is shading, which is
+     the one thing a fragment shader cannot do - the same wall the wall pass
+     hit. But the flip is exact planar geometry rather than a screen trick:
+     a point at height h and distance t sits at row horizon + (camz-h)*pr/t,
+     and its mirror at -h sits at 2*horizon + 2*camz*pr/t minus that row. So
+     the reflection of a solid is the SOLID MIRRORED ABOUT THE STREET, and a
+     fragment below the horizon can march that instead of waiting to be
+     written to. Gather, not scatter, and the same picture.
+============================================================================*/
+const GPUS = {
+  /* Off, and gated on the world pass being fully on: the solids test against
+     a depth buffer the world pass fills, and indoors the world pass does not
+     run at all. Bit 0 is the solids, bit 1 is their reflections. */
+  on:     false,
+  stages: 3,
+  max:    3
+};
+const GS = {
+  W: 256, H: 256, L: 64,           // the volume atlas
+  px: 0, py: 0, rowH: 0, gen: 1, packed: 0, full: 0,
+  max: 1024, n: 0, over: 0, data: null, pal: null, defer: [],
+  /*--- how far the mirror searches for the row that wrote a cell -----------
+    hi, lo, verify, occlude. The gather knows the exact CONTINUOUS row this
+    cell is the reflection of; the CPU walked INTEGER rows and rounded, and on
+    a slanted surface the row that actually wrote here can be several off. The
+    candidates are tried from the top down, because the CPU's inner loop runs
+    upward and its last write wins. Measured at the busy vantage, cells that
+    disagree with the scatter: 884 at +-0, 437 at +-2, 159 at +-5, 72 at +-8,
+    and 72 again at +-16 - so it converges at eight and buys nothing after. ---*/
+  mj: [8, -9, 1, 1],
+  t: null, ran: 0
+};
+let _cap = 0;                       // capturing instead of drawing
+const VS_SPRITE = `#version 300 es
+precision highp float;
+uniform sampler2D uInst;
+uniform vec2 uGrid;
+uniform int uMode;
+flat out int vI;
+void main(){
+  vI = gl_InstanceID;
+  vec4 q = texelFetch(uInst, ivec2(6, gl_InstanceID), 0);
+  vec4 m = texelFetch(uInst, ivec2(7, gl_InstanceID), 0);
+  // the solid's own screen box. Rows above the frame are marched for the
+  // mirror only, so the direct quad starts at the top of the screen
+  float r0 = uMode == 0 ? max(0.0, q.z) : m.x;
+  float r1 = uMode == 0 ? q.w : m.y;
+  if (r1 < r0 || q.y < q.x){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  float px = (gl_VertexID & 1) == 0 ? q.x : q.y + 1.0;
+  float py = (gl_VertexID & 2) == 0 ? r0  : r1 + 1.0;
+  gl_Position = vec4(px / uGrid.x * 2.0 - 1.0, py / uGrid.y * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const FS_SPRITE = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp usampler2DArray;
+layout(location = 0) out vec4 oA;    // glyph, palette, level, wetness
+layout(location = 1) out vec4 oB;    // source kind, emitter kind, did-write
+layout(location = 2) out vec4 oD;    // depth
+
+uniform sampler2D uInst;        // 8 texels a solid, see spriteCapture
+uniform sampler2D uPal;         // 14 texels a solid: base, density, emissive
+uniform sampler2D uCol;         // the world pass's per-column ray data
+uniform sampler2D uDep;         // the depth the world and the solids just wrote
+uniform usampler2DArray uVox;   // every volume in the frame, shelf packed
+uniform vec2  uGrid;
+uniform float uHorizon, uProjRows, uRMAX, uDFar, uCamZ;
+uniform vec4  uMJ;              // mirror search: hi, lo, verify, occlude
+uniform int   uMode;            // 0 the solid, 1 its reflection
+flat in int vI;
+
+vec4 I0, I1, I2, I3, I4, I5, I6, I7;
+
+float jround(float v){ return floor(v + 0.5); }
+float jclamp(float v, float a, float b){ return min(max(v, a), b); }
+/* side, front/back, top - FACE_DIM, and the same three numbers */
+float faceDim(int f){ return f == 0 ? 1.0 : (f == 1 ? 0.84 : 1.14); }
+
+/*--- one march, one for one with drawModel's inner loop ---------------------
+  Ozz and Dzz are handed in rather than derived, because the mirror marches
+  the same volume with its height axis turned over and that is the whole of
+  the difference between a solid and its reflection. ---*/
+int march(float rx, float ry, float k, float Ozz, float Dzz,
+          out int face, out float tOut){
+  float Ou = I0.x, Ov = I0.y, tCap = I0.w;
+  float cy = I1.x, sy = I1.y, stp = I1.z;
+  int nMax = int(I1.w);
+  float wW = I4.x, dW = I4.y, hW = I4.z;
+  float awf = I5.x, vdf = I5.y, ahf = I5.z;
+  int aw = int(awf), vd = int(vdf), ah = int(ahf);
+  int ax = int(I7.z), ay = int(I7.w);
+  float Du =  rx * cy + ry * sy;
+  float Dv = -rx * sy + ry * cy;
+  // the width and depth slabs depend only on the column, the height slab only
+  // on the row - solved in the order the CPU solves them
+  float t0 = 0.15, t1 = tCap;
+  for (int a = 0; a < 2; a++){
+    float o  = a == 0 ? Ou   : Ov;
+    float d  = a == 0 ? Du   : Dv;
+    float lo = a == 0 ? I2.x : I2.z;
+    float hi = a == 0 ? I2.y : I2.w;
+    if (abs(d) < 1e-9){ if (o < lo || o > hi) return 0; continue; }
+    float ta = (lo - o) / d, tb = (hi - o) / d;
+    if (ta > tb){ float sw = ta; ta = tb; tb = sw; }
+    if (ta > t0) t0 = ta;
+    if (tb < t1) t1 = tb;
+    if (t0 > t1) return 0;
+  }
+  if (abs(Dzz) < 1e-9){ if (Ozz < I3.x || Ozz > I3.y) return 0; }
+  else {
+    float ta = (I3.x - Ozz) / Dzz, tb = (I3.y - Ozz) / Dzz;
+    if (ta > tb){ float sw = ta; ta = tb; tb = sw; }
+    if (ta > t0) t0 = ta;
+    if (tb < t1) t1 = tb;
+    if (t0 > t1) return 0;
+  }
+  float L = length(vec3(rx, ry, k));
+  if (L == 0.0) L = 1.0;
+  float dt = stp / L;
+  /* t comes off n rather than being accumulated. The CPU accumulates, but it
+     accumulates in DOUBLE, where sixty-four additions are exact to a part in
+     1e16 - so the closed form is nearer to what the CPU actually got than a
+     float accumulation of the same additions would be. */
+  int px = -1, py = -1;
+  for (int n = 0; n < nMax; n++){
+    float t = t0 + dt * (float(n) + 0.5);
+    if (t > t1) break;
+    float u = Ou + Du * t, v = Ov + Dv * t, w = Ozz + Dzz * t;
+    // int(), not floor(): the CPU truncates with |0, and a sample a hair
+    // outside the near face lands on index 0 in both languages
+    int ix = int((u + wW * 0.5) / wW * awf);
+    int iy = int((v + dW * 0.5) / dW * vdf);
+    int iz = int((1.0 - w / hW) * ahf);
+    if (ix < 0 || ix >= aw || iy < 0 || iy >= vd || iz < 0 || iz >= ah){
+      px = ix; py = iy; continue;
+    }
+    uint role = texelFetch(uVox, ivec3(ax + ix, ay + iy, iz), 0).r;
+    if (role == 0u){ px = ix; py = iy; continue; }
+    face = ix != px ? 0 : (iy != py ? 1 : 2);
+    tOut = t;
+    return int(role);
+  }
+  return 0;
+}
+
+void main(){
+  I0 = texelFetch(uInst, ivec2(0, vI), 0);
+  I1 = texelFetch(uInst, ivec2(1, vI), 0);
+  I2 = texelFetch(uInst, ivec2(2, vI), 0);
+  I3 = texelFetch(uInst, ivec2(3, vI), 0);
+  I4 = texelFetch(uInst, ivec2(4, vI), 0);
+  I5 = texelFetch(uInst, ivec2(5, vI), 0);
+  I6 = texelFetch(uInst, ivec2(6, vI), 0);
+  I7 = texelFetch(uInst, ivec2(7, vI), 0);
+  int x = int(gl_FragCoord.x);
+  int r = int(gl_FragCoord.y);
+  vec4 cd = texelFetch(uCol, ivec2(x, 0), 0);
+  float rx = cd.x, ry = cd.y;
+  float lvl = I3.z, dm = I3.w, noRef = I4.w, Oz = I0.z;
+  gl_FragDepth = 1.0;
+
+  if (uMode == 0){
+    float k = (float(r) - uHorizon) / uProjRows;
+    int face; float t;
+    int role = march(rx, ry, k, Oz, -k, face, t);
+    if (role == 0) discard;
+    vec4 P = texelFetch(uPal, ivec2(role, vI), 0);
+    float g = jround(jclamp(P.y * faceDim(face) * dm, 0.0, 1.0) * uRMAX);
+    if (g == 0.0) discard;
+    /* Wetness 0 - a solid is not a puddle - the source kind, and the wrote
+       bit, in the one byte the world pass packs them into. srcBuf is the mask
+       reflectPass sweeps afterwards, and a post standing over the river is
+       kept out of it the same way it is kept out of the inline mirror.
+       Attachment 1 is bound to NONE for this draw, so the emitter kind under
+       the solid survives exactly as it does on the CPU. */
+    float src = noRef > 0.5 ? 0.0 : (P.z > 0.5 ? 2.0 : 1.0);
+    oA = vec4(g, P.x, lvl, src * 4.0 + 16.0) / 255.0;
+    oD = vec4(t, 0.0, 0.0, 0.0);
+    /* Unbiased, against a world that stored itself 0.02 further away. The
+       CPU draws where the buffer is not already nearer than t by more than
+       0.02, and this is that test with the bias on the other operand. */
+    gl_FragDepth = jclamp(t / uDFar, 0.0, 1.0);
+    return;
+  }
+
+  /*--- the reflection, marched rather than scattered ------------------------
+    This cell is a puddle looking up. What it can see is the solid turned over
+    about the street plane, so the march is the same one with the height axis
+    inverted - Ozz goes to Oz - 2*camz and Dzz to +k. What comes back is a
+    distance, and the distance says which ROW of the direct image this is the
+    mirror of; that row is then marched properly, because the glyph the CPU
+    reflected is the glyph it drew there, face shading and all. ---*/
+  float wob = cd.z;
+  float ks = (float(r) - wob - uHorizon) / uProjRows;
+  int fm; float tm;
+  if (march(rx, ry, ks, Oz - 2.0 * uCamZ, ks, fm, tm) == 0) discard;
+  float mb = 2.0 * uHorizon + 2.0 * uCamZ * (uProjRows / tm);
+  /* The mirrored march has answered the continuous question exactly: this
+     cell is the reflection of the point at distance tm, which sits at row
+     mb - r + wob. But the CPU walked INTEGER rows and rounded the target, so
+     the row that actually wrote here is that number rounded - and where the
+     surface is slanted, more than one row can round onto this cell. The CPU's
+     inner loop runs upward and the last write wins, so the candidates are
+     tried from the top down and the first that both lands here and survives
+     its own depth test is the one that owns this cell. */
+  int ri0 = int(floor(mb - float(r) + wob + 0.5));
+  float rows = uGrid.y;
+  for (int j = int(uMJ.x); j >= int(uMJ.y); j--){
+    int cand = ri0 + j;
+    if (float(cand) < I6.z || float(cand) > I6.w || float(cand) >= rows) continue;
+    float k2 = (float(cand) - uHorizon) / uProjRows;
+    int face; float t2;
+    int role = march(rx, ry, k2, Oz, -k2, face, t2);
+    if (role == 0) continue;
+    float mbc = 2.0 * uHorizon + 2.0 * uCamZ * (uProjRows / t2);
+    if (uMJ.z > 0.5 && int(floor(mbc - float(cand) + wob + 0.5)) != r) continue;
+    // a source row on the screen only reflects if the solid actually won it
+    if (uMJ.w > 0.5 && cand >= 0 &&
+        texelFetch(uDep, ivec2(x, cand), 0).r < t2 - 0.02) continue;
+    vec4 P = texelFetch(uPal, ivec2(role, vI), 0);
+    float g = jround(jclamp(P.y * faceDim(face) * dm, 0.0, 1.0) * uRMAX);
+    if (g == 0.0) continue;
+    float ng = floor(g * (P.z > 0.5 ? 0.55 : 0.42));
+    if (ng < 1.0) continue;
+    oA = vec4(ng, P.x, 255.0, 0.0) / 255.0;
+    return;
+  }
+  /* uMJ.z at 2 marks the fragments that got as far as a hit on the mirrored
+     solid and then found no source row that rounds onto this cell. It goes in
+     the one byte nothing reads, so applySpriteRefl still ignores the cell -
+     it is there to tell "the search was too short" apart from "the mirrored
+     ray never saw the solid at all", which are different bugs with different
+     fixes and look identical in a percentage. */
+  if (uMJ.z > 1.5){ oA = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  discard;
+}`;
+/*------------------- the volume atlas, and its shelf packer -----------------
+  One R8UI array texture holds every volume the frame can ask for. voxelize
+  hands back exactly the layout texSubImage3D wants, so a volume goes up in
+  one call and is never touched again. A volume that will not fit - too tall
+  for the layer count, or the shelves are full - gets no slot, and the solid
+  wearing it is drawn on the CPU afterwards rather than dropped. */
+function glSpriteAtlas(){
+  const gl = GL.gl;
+  if (GL.sVox) gl.deleteTexture(GL.sVox);
+  GL.sVox = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, GL.sVox);
+  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.R8UI, GS.W, GS.H, GS.L);
+  for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, pn, gl.NEAREST);
+  for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, pn, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  GS.px = 0; GS.py = 0; GS.rowH = 0; GS.gen++; GS.packed = 0; GS.full = 0;
+}
+function spriteSlot(m){
+  if (m._sg === GS.gen) return m._slot;
+  m._sg = GS.gen; m._slot = null;
+  if (m.ah > GS.L) return null;
+  if (GS.px + m.aw > GS.W){ GS.px = 0; GS.py += GS.rowH; GS.rowH = 0; }
+  if (GS.py + m.vd > GS.H){ GS.full++; return null; }
+  const gl = GL.gl, x = GS.px, y = GS.py;
+  GS.px += m.aw;
+  if (m.vd > GS.rowH) GS.rowH = m.vd;
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, GL.sVox);
+  /* UNPACK_ALIGNMENT is 1 for the whole session, set once in glInit, and it
+     must be left that way. Every one-byte-per-texel upload in this renderer
+     depends on it: an R8 image of width `cols` has rows of exactly `cols`
+     bytes, and at an alignment of 4 the driver expects them padded to a
+     multiple of four, reads past the end of the array and rejects the upload
+     outright. This function used to set it to 1 and then politely put it back
+     to 4 - which broke glComposeWorld at every grid whose column count is not
+     a multiple of four, for the rest of the session, INCLUDING after the
+     switch was turned off again. The world stopped updating and then went
+     when the next initRender handed compose an empty texture. 205, 130, 110,
+     90 and 75 columns wide, all of them; 480, 360, 288, 240, 160 and 60 fine.
+     A one-line courtesy that cost the whole picture. */
+  gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, 0, m.aw, m.vd, m.ah,
+                   gl.RED_INTEGER, gl.UNSIGNED_BYTE, m.vox);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  GS.packed++;
+  return (m._slot = { x, y });
+}
+/*----------- the reflection target, and the per-solid data textures ---------
+  The reflections go to a target of their own rather than into the world's
+  attachments, for two reasons. They must not clear the wetness byte the way
+  a solid does - a puddle with a reflection in it is still a puddle - and the
+  pass has to SAMPLE the depth the solids just wrote, which it cannot do
+  while that same attachment is bound as a target. */
+function glSpriteTargets(){
+  const gl = GL.gl, W = R.cols, H = R.rows;
+  if (GL.sRefF) gl.deleteFramebuffer(GL.sRefF);
+  if (GL.sRefT) gl.deleteTexture(GL.sRefT);
+  GL.sRefT = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, GL.sRefT);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+  for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+  GL.sRefF = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, GL.sRefF);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, GL.sRefT, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (GL.sRefP) gl.deleteBuffer(GL.sRefP);
+  GL.sRefP = gl.createBuffer();
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, GL.sRefP);
+  gl.bufferData(gl.PIXEL_PACK_BUFFER, W * H * 4, gl.STREAM_READ);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  GS.rq = new Uint8Array(W * H * 4);
+  GS.rq32 = new Uint32Array(GS.rq.buffer);
+  if (!GS.data){
+    GS.data = new Float32Array(GS.max * 32);
+    GS.pal  = new Float32Array(GS.max * NROLE * 4);
+  }
+  const mkData = (w, h) => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+    for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+    for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  if (!GL.sInst) GL.sInst = mkData(8, GS.max);
+  if (!GL.sPal)  GL.sPal  = mkData(NROLE, GS.max);
+  /* Once, and NOT with the grid. A volume is a solid's own shape and does not
+     know how many character cells the screen has - rebuilding four megabytes
+     of array texture and re-uploading two hundred volumes every time the
+     window is dragged was a cost with nothing at all on the other side of it. */
+  if (!GL.sVox) glSpriteAtlas();
+  GL.spriteOK = ok && !!GL.pSprite;
+}
+/*---------------------- capture: one solid, thirty-two floats ---------------
+  Called from drawModel at the point where every per-solid quantity is
+  settled and the per-cell loop is about to start - so what the card is told
+  is exactly what the CPU was about to walk, and nothing is recomputed on the
+  other side of the bus that could drift. */
+function spriteCapture(m, slot, Ou, Ov, Oz, tCap, cy, sy, step, nMax,
+                       bu0, bu1, bv0, bv1, bz0, bz1, lvl, dm,
+                       wW, dW, hW, c0, c1, r0, r1, tNear, tFar, zb, sb, sd, dyn){
+  const i = GS.n++;
+  const D = GS.data, o = i * 32;
+  D[o]      = Ou;  D[o + 1]  = Ov;  D[o + 2]  = Oz;   D[o + 3]  = tCap;
+  D[o + 4]  = cy;  D[o + 5]  = sy;  D[o + 6]  = step; D[o + 7]  = nMax;
+  D[o + 8]  = bu0; D[o + 9]  = bu1; D[o + 10] = bv0;  D[o + 11] = bv1;
+  D[o + 12] = bz0; D[o + 13] = bz1; D[o + 14] = lvl;  D[o + 15] = dm;
+  D[o + 16] = wW;  D[o + 17] = dW;  D[o + 18] = hW;   D[o + 19] = _noRef;
+  D[o + 20] = m.aw; D[o + 21] = m.vd; D[o + 22] = m.ah; D[o + 23] = tNear;
+  D[o + 24] = c0;  D[o + 25] = c1;  D[o + 26] = r0;   D[o + 27] = r1;
+  /* The rows the reflection can land in: the same four corners of the same
+     box, with the solid turned over about the street. Two rows of margin
+     cover the wobble - 1.5 at its worst - and the rounding. */
+  let m0 = 1, m1 = 0;
+  if (!_noRef){
+    const eT = cam.z + zb + bz0, eB = cam.z + zb + bz1;
+    const a1 = horizon + eT * projRows / tNear, a2 = horizon + eT * projRows / tFar;
+    const a3 = horizon + eB * projRows / tNear, a4 = horizon + eB * projRows / tFar;
+    m0 = Math.max(hzRow + 1, Math.floor(Math.min(a1, a2, a3, a4)) - 2);
+    m1 = Math.min(R.rows - 1, Math.ceil(Math.max(a1, a2, a3, a4)) + 2);
+  }
+  D[o + 28] = m0; D[o + 29] = m1; D[o + 30] = slot.x; D[o + 31] = slot.y;
+  const P = GS.pal, po = i * NROLE * 4;
+  for (let q = 0; q < NROLE; q++){
+    let b = sb[q];
+    if (b === undefined) b = 0;
+    if (b < 0) b = dyn;
+    const k = po + q * 4;
+    P[k] = b; P[k + 1] = sd[q] || 0; P[k + 2] = EMISSIVE[b] ? 1 : 0; P[k + 3] = 0;
+  }
+}
+/*--------------------------- and the pass itself ---------------------------*/
+function glSpritePass(){
+  const gl = GL.gl, cols = R.cols, rows = R.rows;
+  const _T = GS.t || (GS.t = { build: 0, up: 0, draw: 0, apply: 0, n: 0 });
+  const stages = GPUS.stages & GPUS.max;
+  if (!(stages & 1)) return 0;      // the mirror has nothing to mirror
+  const key = cols + 'x' + rows;
+  if (GS.grid !== key){ glSpriteTargets(); GS.grid = key; }
+  if (!GL.spriteOK) return 0;
+  let _t0 = performance.now();
+  GS.n = 0; GS.over = 0; GS.defer.length = 0;
+  _cap = 1;
+  try { spritePass(); } finally { _cap = 0; }
+  const n = GS.n;
+  _T.build += performance.now() - _t0; _t0 = performance.now();
+  if (n){
+    gl.bindTexture(gl.TEXTURE_2D, GL.sInst);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 8, n, gl.RGBA, gl.FLOAT,
+                     GS.data.subarray(0, n * 32));
+    gl.bindTexture(gl.TEXTURE_2D, GL.sPal);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NROLE, n, gl.RGBA, gl.FLOAT,
+                     GS.pal.subarray(0, n * NROLE * 4));
+  }
+  _T.up += performance.now() - _t0; _t0 = performance.now();
+  gl.useProgram(GL.pSprite);
+  const U = GL.uS;
+  const bind = (unit, tgt, tex, loc) => {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(tgt, tex);
+    gl.uniform1i(loc, unit);
+  };
+  bind(0, gl.TEXTURE_2D, GL.sInst, U.uInst);
+  bind(1, gl.TEXTURE_2D, GL.sPal, U.uPal);
+  bind(2, gl.TEXTURE_2D, GL.wCol, U.uCol);
+  bind(3, gl.TEXTURE_2D_ARRAY, GL.sVox, U.uVox);
+  /* NOT the depth attachment, yet. uDep is an active sampler in this program
+     whichever branch runs, and WebGL calls a texture that is bound to a unit
+     AND attached to the bound framebuffer a feedback loop and refuses the
+     draw outright. The mirror binds it below, where its own target is bound
+     and the world's is not. */
+  bind(4, gl.TEXTURE_2D, GL.wCol, U.uDep);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform2f(U.uGrid, cols, rows);
+  gl.uniform1f(U.uHorizon, horizon);
+  gl.uniform1f(U.uProjRows, projRows);
+  gl.uniform1f(U.uRMAX, RMAX);
+  gl.uniform1f(U.uDFar, viewD + 4);
+  gl.uniform1f(U.uCamZ, cam.z);
+  gl.uniform4f(U.uMJ, GS.mj[0], GS.mj[1], GS.mj[2], GS.mj[3]);
+  gl.bindVertexArray(GL.empty);
+  gl.disable(gl.BLEND);
+  gl.viewport(0, 0, cols, rows);
+  if (n && (stages & 1)){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2]);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    gl.uniform1i(U.uMode, 0);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n);
+    gl.disable(gl.DEPTH_TEST);
+  }
+  if (stages & 2){
+    /* The mirror writes only its own target, so it can read the depth the
+       solids just wrote. No depth test: a reflection is painted ON the road,
+       and which reflection wins is draw order - the same far-to-near order
+       the CPU used, kept because the instances go up in list order. */
+    gl.bindFramebuffer(gl.FRAMEBUFFER, GL.sRefF);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (n){
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, GL.wT[2]);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.uniform1i(U.uMode, 1);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n);
+    }
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, GL.sRefP);
+    gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    /* Issued here, collected at the tail of glWorldRead. Every read in the
+       frame is issued before any of them is waited on, which is the whole
+       reason the round trip costs 0.9ms instead of 5. */
+    GS.pendRead = 1;
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.enable(gl.BLEND);
+  _T.draw += performance.now() - _t0; _T.n++;
+  GS.ran++;
+  return stages;
+}
+function glSpriteRead(){
+  if (!GS.pendRead) return 0;
+  GS.pendRead = 0;
+  const gl = GL.gl;
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, GL.sRefP);
+  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GS.rq);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  return 1;
+}
+/*--- and laid down, after wallMirror and gated the same way it is ----------
+  A reflection lands only where the cell is still a mirror. A solid that
+  claimed the cell cleared its wetness on the way through, which is exactly
+  what stops the CPU writing there too - so running this after the solids
+  rather than interleaved with them is the same picture. */
+function applySpriteRefl(){
+  const q = GS.rq32, n = R.cols * R.rows;
+  const _T = GS.t;
+  const t0 = performance.now();
+  for (let i = 0; i < n; i++){
+    const v = q[i];
+    if (!(v & 0xff0000)) continue;
+    const rf = refBuf[i];
+    if (rf !== 1 && rf !== 2) continue;
+    gBuf[i] = v & 255; bBuf[i] = (v >>> 8) & 255; srcBuf[i] = 0;
+    statCells++;
+  }
+  if (_T) _T.apply += performance.now() - t0;
+}
+/* Whatever the card could not take: a volume with no slot, and the billboard
+   sparks, which are not solids at all. There are rarely any. */
+function spriteReplay(){
+  const D = GS.defer;
+  for (let i = 0; i < D.length; i++){
+    const a = D[i];
+    if (a.length === 10){
+      drawSprite(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
+    } else {
+      _noRef = a[12];
+      drawModel(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+      _noRef = 0;
+    }
+  }
+  D.length = 0;
 }
 function glQuad(x, y, w, h, r, g, b, a){
   const gl = GL.gl;
@@ -24103,6 +24857,37 @@ function glPackHudBig(start){
   }
   return k - start;
 }
+/* The big layer's glyphs, rendered at the size they are drawn at rather than
+   magnified from the small atlas - the same repair as hudBigAtlas, on the
+   card. Same layout, so the shader's UVs are unchanged: they are in CELLS and
+   normalised, and only the pixels behind them got bigger.
+
+   Built on demand and kept, so this needs nothing of glInit or glResize. */
+let _glBigKey = '';
+function glBigAtlas(){
+  const gl = GL.gl, sc = bScale;
+  const cw = R.cellW * sc, ch = R.cellH * sc;
+  const key = cw + 'x' + ch;
+  if (GL.texBig && _glBigKey === key) return GL.texBig;
+  if (!GL.texBig) GL.texBig = gl.createTexture();
+  const cn = document.createElement('canvas');
+  cn.width = GL_COLS * cw; cn.height = (LV + 1) * ch;
+  const g = cn.getContext('2d');
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff';
+  g.font = 'bold ' + (Math.min(ch * 0.99, cw / 0.575) * 0.94).toFixed(2) + 'px ' + FONT;
+  // only the HUD row is ever sampled at this scale; the distance rows below
+  // it stay empty rather than costing a bake nothing reads
+  for (let i = 1; i < GL_COLS; i++)
+    g.fillText(String.fromCharCode(32 + i), i * cw + cw * 0.5, LV * ch + ch * 0.5);
+  gl.bindTexture(gl.TEXTURE_2D, GL.texBig);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cn);
+  for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+  for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+  _glBigKey = key;
+  return GL.texBig;
+}
 function glDrawGlyphs(first, count, sc){
   if (!count) return;
   const gl = GL.gl;
@@ -24119,7 +24904,8 @@ function glDrawGlyphs(first, count, sc){
   gl.uniform2f(GL.uG.uAtlas, GL_COLS, LV + 1);
   gl.uniform1i(GL.uG.uTex, 0);
   gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, GL.tex);
+  // the big layer draws from glyphs baked at its own size, not from these
+  gl.bindTexture(gl.TEXTURE_2D, sc > 1 ? glBigAtlas() : GL.tex);
   gl.uniform1f(GL.uG.uLightOn, GL._litThisFrame ? 1 : 0);
   gl.uniform1i(GL.uG.uLight, 3);
   gl.activeTexture(gl.TEXTURE3);
@@ -24262,6 +25048,7 @@ let toastMsg = '', toastT = 0;
 function toast(m){ toastMsg = m; toastT = 2.6; }
 let hudR0 = 1e9, hudR1 = -1;
 function hudStr(col, row, s, ci){
+  if (hudScaled) return hudBigStr(col, row, s, ci);
   if (row < 0 || row >= R.rows) return;
   if (row < hudR0) hudR0 = row;
   if (row > hudR1) hudR1 = row;
@@ -24293,26 +25080,32 @@ function hudSolidRun(x, y, w){
 }
 const hudRects = [];
 function hudPanel(x, y, w, h){
-  hudRects.push(R.ox + x * R.cellW, R.oy + y * R.cellH, w * R.cellW, h * R.cellH);
+  /* While a card is drawing itself scaled, its coordinates are BIG cells and
+     everything below wants chart cells. One multiply, and both modes then run
+     the same code - `s` is 1 the rest of the time. */
+  const s = hudScaled ? bScale : 1;
+  const fx = x * s, fy = y * s, fw = w * s, fh = h * s;
+  hudRects.push(R.ox + fx * R.cellW, R.oy + fy * R.cellH,
+                fw * R.cellW, fh * R.cellH);
   // a panel owns its cells: clear whatever the HUD drew under it
-  const x1 = Math.min(R.cols, x + w), y1 = Math.min(R.rows, y + h);
-  for (let r = Math.max(0, y); r < y1; r++){
+  const x1 = Math.min(R.cols, fx + fw), y1 = Math.min(R.rows, fy + fh);
+  for (let r = Math.max(0, fy); r < y1; r++){
     const off = r * R.cols;
-    for (let c = Math.max(0, x); c < x1; c++){ hGlyph[off + c] = 0; }
+    for (let c = Math.max(0, fx); c < x1; c++){ hGlyph[off + c] = 0; }
   }
   /* and the big layer with it, or nothing ever covers a big message: a space
      carries no glyph code, so writing over one leaves the character that was
      underneath showing through the gaps between the words. */
-  if (bAny && bScale > 1){
-    const bx0 = Math.max(0, (x / bScale) | 0), by0 = Math.max(0, (y / bScale) | 0);
-    const bx1 = Math.min(bCols, Math.ceil((x + w) / bScale));
-    const by1 = Math.min(bRows, Math.ceil((y + h) / bScale));
+  if (bScale > 1 && (bAny || hudScaled)){
+    const bx0 = Math.max(0, (fx / bScale) | 0), by0 = Math.max(0, (fy / bScale) | 0);
+    const bx1 = Math.min(bCols, Math.ceil((fx + fw) / bScale));
+    const by1 = Math.min(bRows, Math.ceil((fy + fh) / bScale));
     for (let r = by0; r < by1; r++){
       const off = r * bCols;
       for (let c = bx0; c < bx1; c++) bGlyph[off + c] = 0;
     }
   }
-  if (y < hudR0) hudR0 = Math.max(0, y);
+  if (fy < hudR0) hudR0 = Math.max(0, fy);
   if (y1 - 1 > hudR1) hudR1 = y1 - 1;
 }
 /*========================= the HUD, at twice the size ======================
@@ -24334,10 +25127,41 @@ function hudPanel(x, y, w, h){
   against 7x12 at the default - rather than at some arbitrary multiple.
 ===========================================================================*/
 let bGlyph = null, bCol = null, bCols = 0, bRows = 0, bScale = 1, bAny = 0;
+/* Four cells to a character on the finest grid, three on the next, two on the
+   5px rung - which lands all three between 10 x 18 and 12 x 21 real pixels,
+   about the same size in the hand whichever of them you picked and getting on
+   for twice the default grid's 7 x 12.
+
+   The first cut at 3 and 2 was sized to MATCH the default, which is the wrong
+   target: somebody who has gone looking for a 3px world grid has done it to
+   see more city, not to read a smaller menu. 5px was left out of it entirely
+   and was the one rung still struggling - big enough that the HUD did not
+   look broken, small enough that it could not be read. */
 function hudScale(){
   const n = CFG.CELLW.length;
-  return CFG.resIdx >= n - 1 ? 3 : CFG.resIdx >= n - 2 ? 2 : 1;
+  return CFG.resIdx >= n - 1 ? 4 : CFG.resIdx >= n - 2 ? 3
+       : CFG.resIdx >= n - 3 ? 2 : 1;
 }
+/*---- drawing a whole card at that size ------------------------------------
+  The messages moved to the big layer one call at a time, which is right for
+  a toast - it is one line. A menu is a hundred calls that all agree about a
+  coordinate system, and rewriting each of them is how you get a card whose
+  border is in one lattice and whose rows are in another.
+
+  So the layer becomes a MODE instead. Turn it on and hudStr, hudCell and
+  hudPanel take big cells and write to the big layer; `hudCols`/`hudRows` hand
+  back the size of the lattice the card is actually being laid out on. Every
+  card then works exactly as written, on a grid that happens to be a quarter
+  the size and four times the scale.
+
+  On every ordinary grid bScale is 1, the mode refuses to turn on, and none of
+  this is reachable.
+---------------------------------------------------------------------------*/
+let hudScaled = 0;
+function hudScaleOn(){ return (hudScaled = bScale > 1 ? 1 : 0); }
+function hudScaleOff(){ hudScaled = 0; }
+function hudCols(){ return hudScaled ? bCols : R.cols; }
+function hudRows(){ return hudScaled ? bRows : R.rows; }
 function hudHD(){ return hudScale() > 1; }
 function hudBigCell(bx, by, ch, ci){
   if (bx < 0 || bx >= bCols || by < 0 || by >= bRows) return;
@@ -24377,8 +25201,13 @@ function hudBox(x, y, w, h, title){
 // Renders any list-menu mode: centred card, live right-aligned values, the
 // selected item's hint along the bottom. Scrolls when the card cannot hold
 // every item, which small grids and long inventories will both hit.
+/* Every card in the game draws itself at the size of the lattice it is handed
+   - on the HD grids that is the big one, four cells to a character, because a
+   menu at three pixels is a menu you cannot use. `hudScaleOff` at every exit,
+   including the early ones, or the next thing to draw inherits the mode. */
 function drawListMenu(m){
-  const items = m.items, cols = R.cols, rows = R.rows;
+  hudScaleOn();
+  const items = m.items, cols = hudCols(), rows = hudRows();
   let w = m.title.length + 8;
   for (const it of items){
     if (it.sep) continue;
@@ -24396,7 +25225,9 @@ function drawListMenu(m){
   const maxIt = h - 4;
   const first = items.length > maxIt
     ? clamp(m.cursor - (maxIt >> 1), 0, items.length - maxIt) : 0;
-  m.hit = { x, y, w, h, first };    // where the rows landed, for tapping
+  // where the rows landed, for tapping - with the lattice they landed on,
+  // because a tap arrives in chart cells whatever the card was drawn at
+  m.hit = { x, y, w, h, first, s: hudScaled ? bScale : 1 };
   for (let i = 0; i < Math.min(items.length, maxIt); i++){
     const it = items[first + i], r = y + 1 + i, sel = first + i === m.cursor;
     if (it.sep){ hudStr(x + 2, r, '-'.repeat(Math.max(0, w - 4)), H_GRN); continue; }
@@ -24410,6 +25241,7 @@ function drawListMenu(m){
   }
   const cur = items[m.cursor];
   if (cur && cur.hint) hudStr(x + 2, y + h - 2, cur.hint.slice(0, w - 4), H_DIM);
+  hudScaleOff();
 }
 function wrapText(s, w){
   const words = s.split(' '), lines = [];
@@ -24422,7 +25254,8 @@ function wrapText(s, w){
   return lines;
 }
 function drawDialog(m){
-  const cols = R.cols, rows = R.rows;
+  hudScaleOn();
+  const cols = hudCols(), rows = hudRows();
   const w = Math.min(cols - 6, 72);
   const lines = wrapText(m.pages[m.idx], w - 6);
   const h = lines.length + 4;
@@ -24439,9 +25272,11 @@ function drawDialog(m){
   const hint = !m.pageDone() ? '[SPACE] skip'
              : m.idx < m.pages.length - 1 ? '[SPACE] more' : '[SPACE] end';
   hudStr(x + w - hint.length - 3, y + h - 2, hint, H_DIM);
+  hudScaleOff();
 }
 function drawTree(m){
-  const cols = R.cols, rows = R.rows;
+  hudScaleOn();
+  const cols = hudCols(), rows = hudRows();
   const w = Math.min(cols - 6, 74);
   const node = m.cur();
   const lines = wrapText(treeText(m), w - 6);
@@ -24452,7 +25287,7 @@ function drawTree(m){
   // on touch the card centres, clear of thumbs; on desktop it sits low
   const x = (cols - w) >> 1;
   const y = TOUCH.on ? Math.max(1, ((rows - h) >> 1) - 2) : Math.max(1, rows - h - 8);
-  m.hit = { x, y, w, h, optStart: y + 2 + lines.length };
+  m.hit = { x, y, w, h, optStart: y + 2 + lines.length, s: hudScaled ? bScale : 1 };
   hudPanel(x, y, w, h); hudPanel(x, y, w, h);
   hudBox(x, y, w, h, m.title);
   let shown = m.t0 < 0 ? 1e9 : ((performance.now() - m.t0) * 0.06) | 0;
@@ -24470,6 +25305,7 @@ function drawTree(m){
     const hint = !done ? '[SPACE] skip' : node.next ? '[SPACE] more' : '[SPACE] end';
     hudStr(x + w - hint.length - 3, y + h - 2, hint, H_DIM);
   }
+  hudScaleOff();
 }
 /* The corner map is 33 x 15 of its own cells whatever grid you are on, so on
    the HD rungs it is a hundred pixels across and tells you nothing. `sc` is
@@ -24575,6 +25411,8 @@ let fps = 60;
 function hudPass(){
   hGlyph.fill(0);
   if (bAny){ bGlyph.fill(0); bAny = 0; }
+  // no card can strand the scaled mode on, however badly it goes wrong
+  hudScaled = 0;
   hudRects.length = 0;
   hudSolids.length = 0;
   hudR0 = 1e9; hudR1 = -1;
@@ -24870,9 +25708,15 @@ function hudPass(){
                : w === 'fist' ? '' : '  ' + ITEMS[w].name.toUpperCase().slice(0, 10);
     const strip = 'HP ' + '#'.repeat(hpn) + '.'.repeat(12 - hpn) + ' ' +
                   hpTxt + '/' + player.maxHp + ammo;
-    const sx0 = Math.max(1, (cols - strip.length - 2) >> 1);
-    hudPanel(sx0, rows - 2, strip.length + 2, 1);
-    hudStr(sx0 + 1, rows - 2, strip, player.hp < 30 ? H_RED : H_GRN);
+    /* The one thing on the screen you have to be able to read while something
+       is hitting you, so it is drawn at the card size rather than the world's.
+       Everything in here is in whatever lattice the mode handed back - `vc`
+       and `vr` - and on every ordinary grid that is the chart itself. */
+    hudScaleOn();
+    const vc = hudCols(), vr = hudRows();
+    const sx0 = Math.max(1, (vc - strip.length - 2) >> 1);
+    hudPanel(sx0, vr - 2, strip.length + 2, 1);
+    hudStr(sx0 + 1, vr - 2, strip, player.hp < 30 ? H_RED : H_GRN);
     // the pinned three, riding just over the strip's left shoulder
     if (player.hotbar && player.hotbar.some(h => h)){
       let hb = '';
@@ -24881,8 +25725,9 @@ function hudPass(){
         if (hid) hb += (i + 1) + ' ' + ITEMS[hid].name.slice(0, 8) + ' x' + invCount(hid) + '  ';
       }
       hb = hb.trim();
-      hudStr(Math.max(1, (cols - hb.length) >> 1), rows - 4, hb.slice(0, cols - 2), H_DIM);
+      hudStr(Math.max(1, (vc - hb.length) >> 1), vr - 4, hb.slice(0, vc - 2), H_DIM);
     }
+    hudScaleOff();
   }
   /* ---- prompts: drawn AFTER the arms, for the same reason the toast is.
      Both of these sit around two thirds of the way down the screen, which is
@@ -24939,15 +25784,18 @@ function hudPass(){
       ctx.drawImage(hudAtlas, g * cw, hCol[idx] * ch, cw, ch, ox + x * cw, py, cw, ch);
     }
   }
-  // the big layer last, so a message is never printed through
+  // the big layer last, so a message is never printed through - and out of
+  // its OWN atlas, one to one, because magnifying the small one is what made
+  // it unreadable
   if (bAny){
+    const at = hudBigAtlas();
     const bw = cw * bScale, bh = ch * bScale;
     for (let r = 0; r < bRows; r++){
       const py = oy + r * bh, off = r * bCols;
       for (let x = 0; x < bCols; x++){
         const g = bGlyph[off + x];
         if (g === 0) continue;
-        ctx.drawImage(hudAtlas, g * cw, bCol[off + x] * ch, cw, ch,
+        ctx.drawImage(at, g * bw, bCol[off + x] * bh, bw, bh,
                       ox + x * bw, py, bw, bh);
       }
     }
@@ -26553,7 +27401,17 @@ function worldPasses(){
      the stages it actually did - it does nothing at all indoors, or with the
      switch off, or if the program would not build - so the passes below are
      the fallback and the reference in the same breath. */
-  const gw = glWorldPass();
+  /* Stage 3 wants the sprites drawn BETWEEN the world's draw and the world's
+     readback, so the two of them share one sync. That is only on the table
+     when the card owns the whole world - the solids test against a depth
+     buffer the world pass fills - so it is gated on all three stages, and
+     off indoors for the same reason the world pass is. */
+  const wantS = GPUS.on && (GPUS.stages & GPUS.max) !== 0 &&
+                GPUW.on && (GPUW.stages & GPUW.max) === 7 && !inside &&
+                GL && GL.spriteOK && GL.worldOK && GL.pWorld;
+  const gw = glWorldPass(wantS);
+  const gs = (wantS && gw === 7) ? glSpritePass() : 0;
+  glWorldRead();
   if (!(gw & 1)){ if (inside) ceilingPass(); else skyPass(); }
   if (!(gw & 2)) floorPass();
   /* wallMirror is the one part of the wall pass that stays on the CPU - it
@@ -26561,7 +27419,10 @@ function worldPasses(){
      a fragment shader cannot do - so when the card takes the walls it still
      has to run, on the buffers that just came back. */
   if (!(gw & 4)) wallPass(); else wallMirror();
-  spritePass();
+  /* The solids' reflections land after it and are gated the same way, which
+     is what keeps the two mirrors in the order they were written in. */
+  if (gs & 2) applySpriteRefl();
+  if (gs & 1) spriteReplay(); else spritePass();
   /* Order matters here and used to be wrong. A reflection is ON the road; a
      light beam is the air BETWEEN the road and the eye. The beam therefore
      has to be laid down last, over the top of the mirror - and it was being
@@ -26775,7 +27636,23 @@ function frame(now){
   // at this character density, so drop one step and try again.
   if (workN >= 90){
     const avg = workAcc / workN; workAcc = 0; workN = 0;
-    if (!CFG.manualRes && avg > 14 && CFG.resIdx > 0){
+    /*--- and it must not run while the card owns the world --------------------
+      Auto-res assumes frame time falls when the grid gets coarser. The GPU
+      world path breaks that assumption at the root: its cost is a readback
+      SYNC, per call and not per cell, so a coarser grid does not bring the
+      frame back under the threshold - and the resolution walks all the way to
+      the floor doing a full initRender on the way down. Every one of those
+      rebuilds the atlas, the palette and every buffer, which on screen is the
+      world freezing, flickering black and coming back smaller until there is
+      nothing of it left.
+
+      Measured with the sprites on and the grid unpinned: 212x106 down to
+      61x29 in twelve seconds, and 114x55 still took 19.6ms. The switches used
+      to defend against this by latching CFG.manualRes on the way past, which
+      both missed the sprite switch and never let go afterwards. The grid is
+      held here instead, for exactly as long as the switch is on. */
+    const gpuFixedCost = GPUW.on && GL && GL.worldOK;
+    if (!CFG.manualRes && !gpuFixedCost && avg > 14 && CFG.resIdx > 0){
       CFG.resIdx--; autoRes = true; initRender();
       toast('auto-res: frame time high, coarser grid ' + R.cols + 'x' + R.rows + '  ([ ] to override)');
     }

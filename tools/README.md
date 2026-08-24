@@ -29,12 +29,48 @@ node tools/voxel-import.mjs "voxel models/Streetlight.fbx" --name lamp --tex "M,
 | `--textol` | how close a voxel's colour must be to claim a `--tex` target (default 90) |
 | `--axis`   | `"<across>,<up>,<depth>"`, each `x`/`y`/`z` with an optional minus |
 | `--lit`    | `"S:X"` — the underside of role S becomes role X, a light strip. `"M:X@0-2"` confines it to those rows, which is how you light the head of a lamp without lighting the foot of its post |
+| `--solid`  | occupancy a target cell needs to survive the resample, default `0.5`. Right for a casting, wrong for foliage: a branch one source voxel thick cannot reach half of a cell twice its size, so it goes — and what it leaves is a canopy in lobes with slits through it |
+| `--close`  | `"3x3"` — fill any air cell with 3 or more of its six neighbours solid, three times over. Repeatable with commas and takeable to a row span: `"3x3,2x2@9-25"`, because where a canopy has slits a trunk has forks and the two do not want the same number. A slit through a slab has four solid neighbours, a pit in a surface five, a flat outside face one — so this closes holes without growing the silhouette |
+| `--prune`  | drop any component this size or smaller, keeping the largest. One stray voxel reads as dirt on the screen rather than as part of a tree |
 | `--trunk`  | `"K@0.18"` — every level from the ground up that holds no more than that fraction of the model's fattest level becomes K. For a one-material tree that is exactly the trunk, derived rather than authored, the same way `--lit` derives an underside. Tighten the fraction if a low branch comes out brown |
 | `--mark`   | `"X@0-2,0-1"` — role X over that span of the width and those rows. For the part that is neither a material nor an underside: the flock camera's bright slot turns out to be a highlight down the whole bracket, so its lens is marked by hand at the tip of the housing. Repeatable |
 
 Two models in the set carry their parts as material slots; the other two carry
 them in a texture. `--roles` and `--tex` are the same idea against whichever
 one a model happens to use.
+
+## A role must never land on a material's slot
+
+`roles` is indexed **by material slot**, and a mesh owns slots `1..n` for its
+`n` materials however short `--roles` was — the fallback only decides what a
+slot past the end is *painted*, not that the slot stops existing.
+
+So a role added after the fact by `--trunk`, `--lit` or `--mark` cannot simply
+be pushed onto the end. The flock camera came in with three material slots and
+one role letter; `--mark X` pushed X to slot 2, which the second material
+already owned, and **every voxel of that material has been drawn as the lens
+ever since** — with the report cheerfully saying `marked 7 voxels` the whole
+time. `addRole` pads out to the material count before it pushes.
+
+Nothing else in the set was exposed: it needs `--roles` to be shorter than the
+material count *and* something to add a role afterwards, and the camera is the
+only model that is both.
+
+## The round trip
+
+The encoder and `voxArt` are two implementations of one format, and when they
+disagreed nothing said so. Every import now decodes its own output string and
+compares it against the grid it came from, printing the role histogram of what
+actually got encoded:
+
+```
+#   roles out    M:234 X:7
+```
+
+Read that line. It is the only check in the pipeline that looks at the
+**output** rather than at the working grid, and it is what a wrong slot, a
+truncated run or a drifted decoder shows up in. A mismatch prints
+`ROUND TRIP … <- the string does NOT match the grid`.
 
 ## Repairs, done automatically and reported
 
@@ -181,9 +217,9 @@ Three OBJs, and between them all three ways a part gets named.
 | underside | `--lit V:G` | `--lit V:G` | `--lit V:G` |
 
 ```
-node tools/voxel-import.mjs "voxel models/tree.obj"   --name tree   --roles V,K   --lit "V:G" --height 26
-node tools/voxel-import.mjs "voxel models/apple.obj"  --name apple  --roles S,V,K --lit "V:G" --height 26
-node tools/voxel-import.mjs "voxel models/sakura.obj" --name sakura --roles V --trunk "K@0.12" --lit "V:G" --height 22
+node tools/voxel-import.mjs "voxel models/tree.obj"   --name tree   --roles V,K   --solid 0.30 --close "3x3,2x2@9-25" --prune 40 --lit "V:G" --height 26
+node tools/voxel-import.mjs "voxel models/apple.obj"  --name apple  --roles S,V,K --solid 0.38 --close "4x2,3x2"     --prune 20 --lit "V:G" --height 26
+node tools/voxel-import.mjs "voxel models/sakura.obj" --name sakura --roles V --trunk "K@0.12" --solid 0.42 --close "4x2,3x1" --prune 20 --lit "V:G" --height 22
 ```
 
 The apple tree's own file already separates its fruit — slot 0 came in at
@@ -195,6 +231,16 @@ for the stem and `--lit` for the shaded underside of the canopy.
 whole level was still under the limit. 0.12 cuts it where the trunk actually
 ends. **Read the elevation**; the number is a starting point, not a rule.
 
+The first cut of these went in at the default half-occupancy and came out
+holed: the street tree lost enough connective material in the resample that
+its canopy fell into lobes with one-voxel slits running through it, and
+mid-canopy slices measured **13% full**. On screen that reads exactly as the
+model having had bites taken out of it, because it had. `--solid 0.30` keeps
+the thin material through the resample and `--close` shuts whatever is still
+open afterwards; the street tree went 1,738 → 2,745 voxels, one connected
+piece, and got 0.2 ms *cheaper* to draw, because a denser solid stops a ray
+sooner.
+
 These replaced hand-drawn front elevations that the voxeliser inflated into
 solids of revolution — right for a post, wrong for a canopy, because the same
 silhouette came back from every angle and a park of forty read as one tree
@@ -202,6 +248,17 @@ stamped forty times. Measured standing in the densest tree patch in the city,
 44 of them within 22 tiles: 2.85 ms of an 8.07 ms frame, a 124 fps ceiling.
 
 ## Seven models in, so far
+
+The flock camera also arrived with a **pinch**: its post drops to a single
+voxel at four rows where the bracket meets it, which reads as the head being
+severed from the pole. That is in the source mesh, not the pipeline — no
+resampling happens for this model at all — so it is closed with
+`--close "2x2@6-20"`, which takes the post to a consistent two voxels without
+touching the stepped diagonal of the arm above it.
+
+```
+node tools/voxel-import.mjs "voxel models/flock cam.fbx" --name cam --roles M --axis "-z,y,-x" --close "2x2@6-20" --mark "X@0-2,0-1"
+```
 
 | | hydrant | market stand | streetlight | flock camera |
 |---|---|---|---|---|

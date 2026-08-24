@@ -1,17 +1,17 @@
 # ASCII CITY — GPU renderer port, handoff
 
-Rewritten at commit `1d2a88c` on branch `fog-and-hd`. Line numbers drift; the
-function names do not.
+Rewritten after stage 3 (the sprites) landed, on branch `fog-and-hd`. Line
+numbers drift; the function names do not.
 
 ---
 
-## 1. The goal, and the one number that matters
+## 1. The goal, and where the frame actually is
 
-**Target:** 180fps at the finest grid — 479×255, 122,145 cells — with no
+**Target:** 180fps at the finest grid — 480×256, 122,880 cells — with no
 perceivable loss of fidelity. That is a 5.56ms frame.
 
-Where it started, measured inside the real frame loop at that grid with ~364
-models in view:
+Where it started, measured inside the real frame loop at that grid with a few
+hundred models in view:
 
 ```
 spritePass      11.23      harvestEmitters  0.85
@@ -27,38 +27,81 @@ CPU total       27.30ms    GPU present      0.33ms      →  35fps
 the problem, the GPU is not the problem. **The frame is CPU rasterisation and
 the card is idle.**
 
-**Sky, floor and walls are written for the card, correct, and switched OFF.**
-Read that before you read anything else in here.
+**Sky, floor, walls and now the sprites are written for the card, correct, and
+switched OFF.** Read that before you read anything else in here.
 
-`GPUW` defaults to off because on screen the pass is **slower than the CPU
-passes it replaces, at every grid the game offers**. Mean frame time, switch on
-against switch off, page visible:
+Both switches are off because the readback is still there and because
+**the condition that decides has not been measurable from an agent session
+since the browser pane stopped compositing** (§3.4). Every millisecond below is
+the quiet condition. What that does and does not threaten is spelled out at the
+end of this section.
+
+Two adjacent runs at the same vantage, same minute, whole frames timed end to
+end in alternating blocks (`GPUT.blockAB`):
 
 ```
-  66x23      5.41 / 1.09        145x50    16.59 / 1.74
- 100x34      5.43 / 1.41        228x83    16.49 / 3.00
- 320x111    16.52 / 4.68        533x200   21.99 / 11.76
+the sprites alone, world pass held ON on both sides - three samples
+  26.25ms  →  20.12ms      0.767x     −6.13ms
+  36.72ms  →  31.92ms      0.869x     −4.80ms
+  36.73ms  →  32.76ms      0.892x     −3.97ms
+       last sample, block by block
+       off  37.04 36.73 36.46 36.65 37.03 36.71
+       on   31.79 32.76 32.00 33.05 32.98 32.06
+
+the whole port against the CPU path
+  33.28ms  →  19.38ms      0.583x     −13.89ms
+  32.67ms  →  19.24ms      0.589x     −13.43ms
+  33.92ms  →  20.44ms      0.603x     −13.48ms
 ```
 
-The cost is **fixed, not per cell** — a `readPixels` round trip costs the same
-for 1,518 cells as for 106,600 — so there is no grid at which it pays, and
-coarsening does not help. That interacts with auto-res catastrophically:
-auto-res drops a step whenever a frame stays over 14ms, the GPU path is over
-14ms nearly everywhere, and dropping the grid does not bring it back under. So
-it walks the resolution from 533×200 down to 66×23, ten steps, **one full
-`initRender` every ninety frames** — atlas rebuild, palette rebuild, every
-buffer reallocated — which on screen reads as the world flickering black about
-once a second while it rebuilds itself coarser. That shipped to Pages for about
-an hour before it was caught.
+**Read the range, not a figure.** Those three sprite samples are within an hour
+of each other and the machine's own baseline moved from 26ms to 37ms between
+them, which is the drift §6 warns about doing exactly what it says on the tin.
+Each sample's blocks are tight — the third varies by 1.3ms across twelve blocks
+— so each is a good measurement of a machine that was not the same machine
+twice. The port is **4 to 6ms of sprite pass deleted, 0.77x to 0.89x**, and the
+whole port is **0.58x to 0.60x**, which is the more stable of the two because
+the gap it measures is bigger than the drift.
 
-`glWorldPass` breaks down as **read 6.73, unpack 1.76, setup 0.25, upload 0.08,
-draw 0.05**. The shader is free; the readback is the entire cost. That is both
-why it does not pay today and the shape of the only thing that can fix it.
+And the pass profile either side of it, at 122,880 cells with ~340 models:
 
-**There is a number in this repo's history that says 0.86×.** It was measured
-with the page backgrounded, where the compositor is not contending for the card
-and the same readback costs 1.6ms instead of 16.2ms. It is real, it is
-reproducible, and it is not the condition the game runs in. See §3.
+```
+        all on the CPU                world + sprites on the card
+  floorPass        10.60        glWorldPass          0.26   submit
+  spritePass        9.22        glWorldRead          6.09   THE TOLL
+  wallPass          5.51*       glSpritePass         0.63   (0.59 of it CPU)
+  lampVolume        3.98        applySpriteRefl      0.14
+  wallMirror        2.73*       wallMirror           2.65
+  reflectPass       2.60        reflectPass          2.35
+  harvestEmitters   0.61        lampVolume           4.78
+  signPass          0.41        harvestEmitters      0.60
+  skyPass           0.32        signPass             0.40
+  hizBuild          0.21
+  ─────────────────────        ─────────────────────
+  worldPasses      33.52        worldPasses         18.16
+```
+
+`*` wallPass calls wallMirror at its own tail, so the 5.51 already contains the
+2.73. The two columns are minutes apart and this machine drifts by more than
+2×, so read the shape, not the difference — the difference is the blockAB
+above.
+
+**The one number that still decides everything: `glWorldRead` is 6.1ms and it
+is a sync, not a transfer.** It is what the port pays for existing. Sprites
+were nearly free to move because they went on the card *between* the world's
+draw and the world's read and shared that sync. Every pass left is in the same
+position. The moment the last CPU reader of these buffers moves, the readback
+deletes itself and takes six to eight milliseconds with it.
+
+**What the quiet condition threatens, and what it does not.** A backgrounded
+pane does not contend with the compositor, and readback measured there costs
+1.6ms where the same call on screen cost 16.2ms. So:
+
+- the **sprite** ratio holds the readback constant on *both* sides. It is CPU
+  work deleted, and compositing cannot take it back. Trust it.
+- the **whole-port** ratio compares a side that reads the card back against a
+  side that does not. On screen the left-hand number is the one that grows. Do
+  not quote 0.58 as the port's win until somebody has run it on a visible page.
 
 ---
 
@@ -88,17 +131,24 @@ is `GPUL.on` false or indoors.
 
 ### The world pass — sky, floor and walls (`GPUW`, `FS_WORLD`, `glWorldPass`)
 
-One fragment per **character cell**, not per pixel, into two RGBA8 attachments
-and an R32F:
+One fragment per **character cell**, not per pixel, into two RGBA8 attachments,
+an R32F and a real depth buffer:
 
 ```
-colour 0   RGBA8   glyph, palette, distance level, wetness
-colour 1   RGBA8   source kind, emitter kind, did-write
-colour 2   R32F    depth
+colour 0   RGBA8   glyph, palette, distance level, [wetness | source | wrote]
+colour 1   RGBA8   emitter kind
+colour 2   R32F    distance
+depth      D32F    the same distance, plus the sprite pass's 0.02 bias
 ```
 
-which is `gBuf/bBuf/lBuf/refBuf`, `srcBuf/emitKind`, and `dBuf`. It comes back
-across the bus and every pass downstream is untouched.
+**The fourth byte of attachment 0 is three things, and that is not tidiness.**
+Wetness is 0..2, source kind is 0..2, did-write is a bit; packing them frees
+attachment 1 to hold the emitter kind *alone*. A solid drawn over a lit window
+keeps that window's `emitKind` on the CPU — the sprite pass never touched the
+array — and a fragment shader cannot keep a byte it is not allowed to read. So
+the byte lives in the one attachment the sprite pass binds to `NONE`. Before
+that repack, 1,459 cells a frame disagreed on `emitKind` alone and swamped
+every other number in the report.
 
 `GPUW.stages` is a bitmask — 1 sky, 2 floor, 4 walls — and `worldPasses` runs
 the CPU original for whatever the card did not do. That is what makes it
@@ -113,61 +163,96 @@ heightfield march per cell. The march may stop the moment something claims the
 cell, because every row is claimed exactly once: `ceilLimit` drops past a tile's
 top the moment that tile is drawn, so every later tile is clamped above it.
 
-Three things do not obey that and are handled where they are:
+Three things do not obey that and are handled where they are: a **bridge deck**
+is depth-tested rather than claiming a row; the **lid of the tile the camera
+stands on** is drawn before the loop and does not move `ceilLimit`; and
+**`wallMirror`** stays on the CPU, because it is the only thing in the wall pass
+that writes to a cell other than the one being drawn.
 
-- a **bridge deck** is depth-tested rather than claiming a row, so the march
-  does not stop on one;
-- the **lid of the tile the camera stands on** is drawn before the loop and does
-  not move `ceilLimit` at all, so a later tile may still paint over it;
-- **`wallMirror`** stays on the CPU. It is the only thing in the wall pass that
-  writes to a cell other than the one being drawn, which is the one thing a
-  fragment shader cannot do. It was lifted out of `wallPass` into its own
-  function with its own DDA, and it runs after the pass rather than inside it —
-  the same picture, because a reflection is blocked when a wall has claimed the
-  row it would land in, every row below the horizon is claimed by the nearest
-  tile that reaches it, and the one writer that clears wetness without drawing a
-  glyph (a roof) cannot round its glyph to zero.
+### The sprite pass — every solid in the frame (`GPUS`, `FS_SPRITE`, `glSpritePass`)
 
-### What the shader is fed
+`drawModel` is a voxel ray marcher walking one screen cell at a time, and a
+voxel ray marcher is what a fragment shader **is**. Three things had to move.
 
-Static, uploaded when the city is built: `wTile` (RGBA8 MAP², surface type +
-riverbed, the building index across two bytes, the crossing's painted
-character), `wLampG` (R32F, nearest lamp), `wDist`, `wFont`, `wTagArt`,
-`heightT`. Per frame: `wCol` (per column — ray, wobble, occlusion cutoff, sky
-angle) and `wRow` (per row — the two floor distances, the sky glow ramp, the fog
-level and density multiplier), the lamp table, and the dome's current frame.
+**1. The readback moved.** `glWorldPass(defer)` now draws and returns;
+`glWorldRead()` is the trip back. The sprites go on the card in between, so the
+two passes share one sync instead of paying for two. This is the whole
+economics of the port and it is why stage 3 cost 0.04ms of submission.
 
-**Three things in there are not static and pretending they were cost real time:**
+**2. The volumes live on the card.** `voxelize` already caches one
+rasterisation per `(art, depthScale, round)` and hands back a `Uint8Array` laid
+out x fastest, then depth, then height — which is exactly what `texSubImage3D`
+wants. They are shelf-packed into one `R8UI` `TEXTURE_2D_ARRAY`, 256×256×64,
+uploaded once each and never touched again. **Every art in the game** — 149 of
+them, 198 volumes once the depth-scale variants are counted — fits in 147 of
+the 256 shelf rows. A volume that will not fit gets no slot and the solid
+wearing it is drawn on the CPU afterwards (`GS.defer`, `spriteReplay`), which
+has not happened yet.
 
-- **`litP`** — how many of a building's windows are lit is re-rolled every time
-  the hour crosses into a new part of the day. `bldEpoch` is bumped where
-  `updateClock` rerolls it and the building table goes up again.
-- **`wayG`** — the red line home, recomputed twice a second at most. `wayEpoch`,
-  and its own single-channel texture rather than a channel of `wTile`, because
-  rebuilding four megabytes of interleaved bytes to move a red line would cost
-  more than the pass.
-- **`tags`** — graffiti, sprayed by hand and pruned daily. `tagEpoch`.
+**3. The mirror turned round.** The reflection inside `drawModel` is a scatter:
+it writes to a cell in a *different row* from the one it is shading. But the
+flip is exact planar geometry rather than a screen trick — a point at height h
+and distance t sits at row `horizon + (camz-h)*pr/t`, and its mirror at −h sits
+at `2*horizon + 2*camz*pr/t` minus that row. So **the reflection of a solid is
+the solid mirrored about the street**, and a fragment below the horizon can
+march *that* instead of waiting to be written to. In the shader it is the same
+march with `Ozz = Oz - 2*camz` and `Dzz = +k`. Gather, not scatter. The
+reflections land in a target of their own (`GL.sRefF`) and are applied by
+`applySpriteRefl` after `wallMirror`, gated on the same wetness byte the CPU
+gates on — which is what keeps the two mirrors in the order they were written
+in, and what makes "a solid claimed this cell so it is no longer a mirror" work
+without any ordering bookkeeping at all.
+
+The instance table is eight RGBA32F texels a solid, written by `spriteCapture`
+at the exact point in `drawModel` where the per-solid work ends and the
+per-cell loop would start — so **nothing is recomputed on the other side of the
+bus**, because a recomputation is a place to drift. That is why the solids came
+out byte-identical on the first run.
+
+**Depth.** The world writes `gl_FragDepth = (t + 0.02)/uDFar`; the sprites write
+`t/uDFar` and test `LEQUAL`. That is `dBuf[idx] < t - 0.02` — the CPU's own test
+— with the bias moved onto the other operand. Sprite against sprite is the one
+place it is not exact: the CPU compares `t' - 0.02 <= t` and the card compares
+`t' <= t`, because a fixed-function test has one value to write and to compare.
+
+`GPUS.stages` is a bitmask — 1 the solids, 2 their reflections — and the menu
+steps OFF → SOLIDS → ON. **SOLIDS draws no reflections at all**: it is the
+bisect step, not a shipping mode, and it measures 49,497 differing cells of
+which 49,493 are the mirror it deliberately left out and 4 are the same 4
+surface cells. That is the shape of an isolated stage, and it is what tells you
+the 3,668 in the full mode really are the gather and not the marcher.
+
+**Gated on `GPUW.stages === 7` and on being outdoors.** The solids test against
+a depth buffer the world pass fills, and the world pass does not run indoors.
+So `GPUS` is inert in a room, and the pose set now proves that rather than
+assuming it.
+
+**`hizBuild` does not run when the sprites are captured**, because the pyramid
+is built from `dBuf` and `dBuf` has not come back yet. It costs nothing: its
+cull is conservative and the depth test drops the same cells one at a time on
+hardware that has cells to spare. Parity says so — zero surface cells differ.
+
+**One thing the GPU path does not do:** `statCells`, the HUD's glyph counter,
+is not incremented by the solids. Only the reflections add to it.
+
+**And the volume atlas is not rebuilt with the grid.** A volume is a solid's own
+shape and knows nothing about how many character cells the screen has;
+`glSpriteTargets` resizes only the reflection target and its pack buffer, and
+`glSpriteAtlas` runs once. Rebuilding four megabytes of array texture and
+re-uploading two hundred volumes every time the window was dragged was a cost
+with nothing on the other side of it.
 
 ### Already on the card from earlier work
 
 `FS_LIGHT` / `glLightPass()` / `GPUL` — per-cell lighting, with the heightfield
-uploaded once as R32F for shadow taps. The working reference for "upload data,
-run a shader, sample the result".
-
-### Also landed, both byte-identical
-
-- **`FOCC` / `floorOcclude()`** — the floor pass is shaded for the whole screen
-  and then half of it is painted over by walls. One short DDA per column finds
-  where each column's floor stops being visible. 1.28ms. Still used, and now
-  uploaded to the shader so the ground stage is comparable cell for cell rather
-  than only after the walls have painted.
-- **`HIZ` / `hizBuild()` / `hizHidden()`** — a max-depth pyramid, 8×8 cells a
-  tile, so a solid the buildings already hide is dropped once instead of once
-  per cell. 0.33ms.
+uploaded once as R32F for shadow taps. **`FOCC` / `floorOcclude()`** — one short
+DDA per column finds where each column's floor stops being visible, 1.28ms,
+byte-identical. **`HIZ` / `hizBuild()` / `hizHidden()`** — a max-depth pyramid,
+8×8 cells a tile, 0.33ms, byte-identical.
 
 ---
 
-## 3. The rig, and the three things about it that lie
+## 3. The rig, and the four things about it that lie
 
 Load it in the browser pane console:
 
@@ -185,130 +270,208 @@ bound, and the tab stops answering the debugger at all, which reads exactly like
 a hung renderer and is not.
 
 **2. The pane resizes itself back a beat after you resize it**, and
-`initRender` reads `window.innerWidth` directly — so the grid silently halves
-under a benchmark that is still running. `GPUT.pin()` makes `innerWidth` and
-`innerHeight` constants.
+`initRender` reads `window.innerWidth` directly. `GPUT.pin()` makes
+`innerWidth` and `innerHeight` constants.
 
-**3. COMPOSITING CONTENDS WITH READBACK, AND IT IS TEN TIMES — AND THE QUIET
-SIDE IS THE WRONG SIDE.** Same build, same frame, same code:
+**3. THE POSE SET HAS NOW HAD TWO DEAD PROPERTIES IN IT.** Both had the same
+shape and both made a thin sweep look like a thorough one:
+
+- `window.clock = p.clock` — ASCII CITY is one classic `<script>`, so its
+  top-level `let`s live in the global **lexical** environment and never appear
+  on `window`. Thirty-five poses all ran at whatever hour the game happened to
+  be at. Found last session.
+- `cam.a = p.a` — **there is no `cam.a`. The camera's heading is `cam.ang`.**
+  So thirty-five poses that claimed to cover every heading all rendered at one
+  heading, for the whole of stages 1 and 2. Found this session.
+
+The second one had been reporting a **thirtyfold** overstatement of the world
+pass's error. With the heading axis actually connected, the world pass measures
+**46 differing cells in 4,792,320 — 0.00096%** — against the 0.028% this doc
+used to call an irreducible floor. It was not a floor. It was one heading, held
+still, being hit thirty-five times: the city is laid out on round numbers, the
+material tests are written against round numbers, and a camera parked on a tie
+sits on that same tie in every pose you think you are varying.
+
+If you add a field to a pose, **print it back off the object it is supposed to
+have landed on** before you believe the sweep covers it.
+
+**4. COMPOSITING CONTENDS WITH READBACK, IT IS TEN TIMES, AND THE QUIET SIDE IS
+THE WRONG SIDE.** Same build, same frame, same code:
 
 ```
 page on screen      bare getBufferSubData  16.2ms      fps 19
 page backgrounded   bare getBufferSubData   1.6ms      fps 30
 ```
 
-This is the single biggest source of nonsense in this port's measurements, and
-it has now caused a bad number in both directions. First it made the same commit
-measure 0.84× and 1.32× twenty minutes apart. Then, having found it, the last
-session "controlled for" it by backgrounding the page — because that is where
-the numbers are quiet and reproducible — and shipped a 14% regression as a 14%
-win.
+This has now caused a bad number in both directions. First it made the same
+commit measure 0.84× and 1.32× twenty minutes apart. Then a session
+"controlled for" it by backgrounding the page — because that is where the
+numbers are quiet — and shipped a 14% regression as a 14% win.
 
-**Backgrounded is the quiet condition. On screen is the real one.** A player is
-looking at the page. Anything whose cost involves the GPU pipeline must be
-measured with the page visible, and accepted as noisy, rather than measured
-somewhere clean that does not exist in play. Use backgrounding only to isolate
-a signal you already understand, never to produce the number you report.
+**And `document.hidden` lies about which side you are on, in both directions.**
+It read `true` on a fronted tab in a pane that was not being displayed, and
+`false` on the same tab a moment later while the pane was still not
+compositing — `computer{action:"screenshot"}` failed with *"the Browser pane is
+not displayed, so the page is not compositing frames"* in the same breath. The
+only reliable test of the condition is whether a screenshot comes back.
 
-Note that `document.hidden` reads `false` on a backgrounded pane tab, so you
-cannot test for this — you have to arrange it, and you have to know which way
-round you have arranged it.
+**Stage 3 was measured entirely in the quiet condition**, because the pane could
+not be made to composite from the session at all. §1 says which numbers that
+threatens.
 
 **And `GPUT.boot()` sets `CFG.manualRes = true`, which disables auto-res.** So
-the rig never exercises the interaction in §1 at all. A change with a fixed
-per-frame cost can be a mild loss in the rig and a death spiral in the game.
-After any perf change, run once at true defaults with no rig at all and watch
-`CFG.resIdx` for fifteen seconds; if it moves, you have shipped a flicker.
+the rig never exercises the interaction in §6 at all. After any perf change, run
+once at true defaults with no rig — `GPUT.drive()` only, no `pin()` — and watch
+`CFG.resIdx`. Stage 3 was checked this way: **974 frames, sixteen seconds,
+`resIdx` never moved off 6, and the volume atlas was never allocated**, because
+the sprite targets are now built the first time the pass runs rather than on
+every `initRender`.
 
 ---
 
-## 4. Proving a change, and what "byte-identical" turned into
+## 4. Proving a change, and the two tolerances
 
-Every change gets an on/off switch in the settings menu (`GPUW`, `GPUC`, `FOCC`,
-`HIZ` all have one), and is proved against the path it replaces before it is
-committed.
+Every change gets an on/off switch in the settings menu (`GPUW`, `GPUS`, `GPUC`,
+`FOCC`, `HIZ` all have one), and is proved against the path it replaces before
+it is committed.
 
 ```js
-GPUT.parity(7)      // 35 poses, both paths, all seven buffers, cell by cell
-GPUT.blockAB(2200, 5)   // whole frames, alternating blocks, on vs off
-GPUT.measure(4000)      // the per-pass profile
+GPUT.parity(7)              // the world pass, 39 poses, all seven buffers
+GPUT.parityS(3)             // the sprites, world pass held ON on both sides
+GPUT.blockAB(2200, 5, 'sprite')   // whole frames, alternating blocks
+GPUT.measure(4000)                // the per-pass profile
 ```
 
-The poses cover every heading, the whole clock, all four weathers, a rooftop,
-both river banks, and four steep looks down. That last group is not decoration:
-the off-screen mirror in the wall pass needs `2*horizon + 2*cam.z*unitRows` to
-fall inside the frame, and at eye level with a level view it never does —
-**nothing at all at pitch 0 from any heading, two to five thousand cells a frame
-at −40 and below.** A pose set without them tests that code by not reaching it.
+A switch nested inside another cannot be compared on its own: the sprites only
+run when the world pass is fully on, so `parityS` and `blockAB(...,'sprite')`
+hold `GPUW` on for **both** sides and flip only `GPUS`. That is what makes the
+number below a statement about the sprite shader and not about the world one.
 
 `GPUT.parity` also **proves the switch switches** (a flag being ignored produces
-perfect parity) and **asserts the frame has content** (an empty frame compares
+perfect parity), and **asserts the frame has content** (an empty frame compares
 equal to another empty frame). Read pixels from `GL.scene.f`, never the default
 framebuffer — the canvas has `preserveDrawingBuffer: false`.
 
-### The instrument bug that hid inside the harness for a whole stage
+### The pose set
 
-`applyPose` did `window.clock = p.clock`. ASCII CITY is one classic `<script>`,
-so its top-level `let`s live in the global **lexical** environment and never
-appear on `window`. That line quietly created a dead property and left the real
-clock alone, so thirty-five poses all ran at whatever hour the game happened to
-be at — and the parity number looked excellent while an entire class of bug
-(the stale `litP` table, §2) sat behind it. A module can assign the real binding
-by name, because the binding is in scope. **Bare assignment, never `window.x =`,
-for `clock`, `weather`, `wetLevel`, `_lampNight`, `lamps`, `inside`.**
+39 poses: four busy vantages, every heading, a look up and four steep looks
+down, a crouch and two rooftop eye heights, the clock all the way round, all
+four weathers, both river banks — **and two that stage 3 added**:
 
-### The stated tolerance, and why it is irreducible
+- **an interior.** `glWorldPass` returns 0 indoors, so no pose ever had to enter
+  a room and nothing about one was on the card. `GPUS` is gated the same way,
+  which makes these poses a test that the switch is *inert* indoors rather than
+  a test of a shader — worth proving rather than assuming, because it is a whole
+  branch of `worldPasses`. It measures 0 differing cells against 122,880 cells
+  of real content.
+- **a moving camera.** Occlusion between solids is the one place a buffer one
+  frame stale would show, and a still pose cannot see it. These walk the camera
+  five frames before the frame that is compared, identically on both sides.
+  Surface cells differing: **0**.
 
-Over 35 poses, 4,300,800 cells: **1,196 differ, 0.028%**, worst pose 0.23%,
-five to eight poses exactly identical. Depth agrees to **1.2e-7 relative**.
-Composed output at a wet downtown night vantage: **zero differing bytes across
-all 7.4 million of the 1440×1280 frame.**
+The steep looks down are not decoration either: the off-screen mirror in the
+wall pass needs `2*horizon + 2*cam.z*unitRows` to fall inside the frame, and at
+eye level with a level view it never does — **nothing at all at pitch 0 from any
+heading, two to five thousand cells a frame at −40 and below.**
 
-Every difference is one of two things, and both were tracked to the cell:
+### The world pass: 0.00096%
 
-- a glyph one rung along the density ramp, where `Math.round` falls either side
-  of a half;
-- a material either side of a threshold **that the scene sits exactly on**.
+**46 cells differ out of 4,792,320.** One of them is a surface; the other 45 are
+cells nobody claimed with a source kind (floor and mirror). Depth agrees to
+1.2e-7 relative. Worst pose 0.0049%.
 
-The second is worth understanding before trying to fix it. The columns that flip
-are **2.7e-7 and 9e-14** from a window-grid boundary; their neighbours that do
-not flip are **0.013 and 0.093** away — four to eleven orders of magnitude
-further. `gu` comes out at exactly 513.55 and 514.95, so `wf` is exactly 0.10
-and 0.90, against tests written `wf > 0.10` and `wf < 0.90`. The city is laid
-out on round numbers and so are the tests, so exact ties are common rather than
-rare, and the CPU's own answer at such a tie is an artifact of double rounding.
-No float implementation decides them reproducibly. This is the floor.
+Every difference is still one of the two things the last session tracked them
+to — a glyph one rung along the density ramp where `Math.round` falls either
+side of a half, and a material either side of a threshold the scene sits exactly
+on. What changed is how *often*: the columns that flip are 2.7e-7 and 9e-14 from
+a window-grid boundary, and a camera that actually turns stops parking on them.
 
-### What WAS worth fixing, and is already done
+Everything that could be kept out of the float arithmetic already was, and all
+of it still stands: the camera's whole part held apart from its fraction
+(`uCamI/uCamF/uCamM/uCamH`), the fog level off a CPU-solved table rather than
+GLSL `pow`, "is this row past the view distance" decided on the CPU and ridden
+in as a negative distance, the water's four time phases wrapped into one turn
+before upload, and `bBuf`/`lBuf` never cleared so a cell nobody draws keeps last
+frame's palette.
 
-Everything that could be kept out of the float arithmetic was:
+### The sprites: 0.0766%, and it is all one thing
 
-- **The camera's whole part is held apart from its fraction** (`uCamI/uCamF/
-  uCamM/uCamH`, and `guv/hxv/hyv` inside `facade`). A kerb strip is a tenth of a
-  metre wide and was being tested at an absolute world coordinate around 400,
-  where a float has thirty microns between neighbours — a third of a percent of
-  the kerb's own width as noise. The CPU, in double precision, came down the
-  other side of it along whole diagonals of the screen.
-- **The fog level comes off a table of boundaries solved on the CPU**, not off
-  GLSL `pow`. A level is a truncation and a wall face shares one down its whole
-  height, so that error lands as a block of the frame rather than a cell.
-- **"Is this row past the view distance" is decided on the CPU**, and rides in
-  as a negative distance. `projRows` comes out `144.00000000000003`, so a row
-  landing on exactly the view distance is `96.00000000000001` in double and
-  exactly `96` after the trip to the card — and the two disagree about a whole
-  row of the frame.
-- **The water's four time phases are wrapped into one turn before upload.**
-  `worldTime` reaches thousands, where a float has microradians between
-  neighbours; the two window-flicker clocks are truncated on the CPU for the
-  same reason.
-- **`bBuf` and `lBuf` are never cleared by `worldPasses`**, so a cell nobody
-  draws keeps last frame's palette. The pass carries a did-write flag and the
-  unpack leaves those cells alone, rather than writing a zero the check would
-  rightly shout about.
+**3,672 cells differ out of 4,792,320 — and 4 of them are surfaces.**
+
+```
+                        cells differing, 39 poses
+  the solids                    4
+  their reflections         3,668
+  level / wetness / source / emitter / depth        0
+```
+
+**The voxel marcher reproduced exactly.** `lBuf`, `refBuf`, `srcBuf`,
+`emitKind` and `dBuf` are identical everywhere; only `gBuf` and `bBuf` move, and
+only where a reflection landed. Depth agrees to 2.3e-7 relative. That is what
+the capture point buys: the shader is handed `Ou/Ov/Oz`, the slabs, the step and
+the level the CPU had already solved, so the only arithmetic it does for itself
+is the march, and `int()` truncates the way `|0` does.
+
+**The reflections cannot be exact, and every cell is accounted for.** At the
+busy vantage, warm, 311 models in frame, with the same wetness gate applied to
+both sides:
+
+```
+  the CPU's scatter wrote            4,317 cells
+  the card's gather wrote            3,774 cells
+    of which also CPU cells          3,774      it invents NOTHING
+    of which the same glyph+palette  3,770      99.89%
+  cells the scatter wrote and the gather did not     543
+    the source cell ends up occluded by a nearer solid   232
+    the search for the source row was too short           0
+    the mirrored ray never saw the solid at that cell    311
+```
+
+Two causes, and neither is a rounding shrug:
+
+- **232 — the ordering artefact.** The scatter writes its mirror at the moment
+  a solid is drawn, against the depth buffer as it stood *then*. A solid that
+  won a cell and was covered a moment later by a nearer one still threw its
+  reflection. The gather only ever sees the buffer as it ended up, and no
+  fragment shader can recover an order it was not present for.
+- **311 — the mirror image is thinner than a cell.** The scatter starts from
+  wherever it hit and *rounds* to a target; the gather has to hit at that
+  target. A railing or a leg at thirty metres has a mirror image narrower than
+  the cell the rounding put it in, and the ray through that cell's centre goes
+  past it.
+
+**Zero** were the search window being too short, which is the one that would
+have been worth chasing. The rest was tuned rather than shrugged at. The gather knows
+the exact *continuous* row a cell is the reflection of; the CPU walked *integer*
+rows and rounded the target, and on a slanted surface the row that actually
+wrote a cell can be several off. So the shader tries candidate rows from the top
+down — the CPU's inner loop runs upward and its last write wins — and takes the
+first that both lands on this cell and survives its own depth test. Cells
+disagreeing with the scatter at the busy vantage, against the width of that
+search:
+
+```
+  ±0    884        ±5    159
+  ±2    437        ±8     72
+              ±16     72
+```
+
+It converges at eight and buys nothing after, so `GS.mj` is `[8, -9, 1, 1]`.
+Timed in whole-frame blocks against `±1`: **19.40ms against 19.28ms**, inside
+the block-to-block spread of either. The card has the headroom; the search is
+free.
+
+`_refDbg` / `_refDbg2` are left in `drawModel` behind a null check. They record
+what the scatter wrote, cell by cell with its source row and distance, which is
+the only way to hold the two mirrors side by side. And `GS.mj[2] = 2` makes the
+shader mark, in the one byte nothing reads, every fragment that got as far as a
+hit on the mirrored solid and then found no source row rounding onto its cell —
+which is what turned "543 cells missing" into the table above. A percentage on
+its own would have told you none of it.
 
 ---
 
-## 5. What is left, and what the next stage has to do
+## 5. What is left
 
 `worldPasses()` order:
 
@@ -317,125 +480,156 @@ skyPass / ceilingPass → floorPass → wallPass → spritePass
   → signPass → reflectPass → lampVolume → rainPass → harvestEmitters
 ```
 
-The first three are done. What remains, on the same slow afternoon:
+The first four are done. What remains, on the same afternoon:
 
 ```
-spritePass     10.08      signPass    0.49
-lampVolume      6.35      hizBuild    0.55
-reflectPass     2.89      harvest     1.34
+glWorldRead     6.09     ← the toll, and the prize
+lampVolume      4.78
+wallMirror      2.65
+reflectPass     2.35
+harvestEmitters 0.60
+signPass        0.40
+spritePass      0.59     ← what is left of it: the draw LIST, on the CPU
+applySpriteRefl 0.14
 ```
-
-**The readback is the whole toll, it does not get bigger, and until it is gone
-the port is a net loss.** `glWorldPass` is 8.93ms of which 8.5 is getting the
-answer back to the CPU; the shader itself is 0.05ms of submission and about 2ms
-on the card. That is why `GPUW` is off: one readback costs more than all three
-passes it replaces.
-
-It is also why the next move is worth making anyway. Every pass that moves
-shares a readback already paid for, so each one is nearly free — and the moment
-the LAST CPU reader of these buffers moves, the readback deletes itself and
-takes eight milliseconds with it. The port does not pay incrementally. It pays
-all at once, at the end, and `GPUW` should not be defaulted on again before
-then.
-
-If that end looks too far off, the honest alternative is to stop here and keep
-the CPU passes: the work so far is not wasted either way, because it is what
-established the cost of a readback on this stack and it is all behind a switch.
-
-So the order is forced and it is the doc's original order:
-
-**Stage 3 — sprites.** `drawModel` is a voxel ray-marcher, which is natively a
-fragment shader. Volumes come from `voxelize` and are cached per
-`(art, depthScale, round)`, so they can go up as 3D textures once. Each model
-becomes a quad over its screen box; the depth the world pass already computes
-handles occlusion. This is the biggest single pass left.
 
 **Stage 4 — signs, reflections, the lamp volume, rain.** All screen-space passes
-over data that is by then already on the card. `reflectPass` is pure
-screen-space and reads only `gBuf/bBuf/srcBuf/refBuf` — the cheapest of them to
-move, and the one that would let you delete a buffer from the readback.
+over data that is by now already on the card and does not need to come back for
+them. `reflectPass` is pure screen-space and reads only
+`gBuf/bBuf/srcBuf/refBuf`. `lampVolume` is the biggest of them.
 
-**Then `wallMirror` and `harvestEmitters`** are the last two CPU readers. Kill
-those and `glWorldPass` loses its readback entirely.
+**Then `wallMirror` and `harvestEmitters` are the last two CPU readers.** Kill
+those and `glWorldRead` loses its reason to exist, and the six milliseconds go
+with it. `wallMirror` is a scatter of the same shape the sprite mirror was, and
+stage 3 is the worked example of how to turn one round: it is the wall mirrored
+about the street, gathered per cell below the horizon, into its own target,
+applied afterwards under the same wetness gate.
 
 **Then reconsider `_cpuLitFrame`** and delete the CPU light path, which makes
 compose unconditional.
+
+**Do not default `GPUW` or `GPUS` on before the readback is gone**, and not
+before somebody has run the port on a page that is actually being composited.
+Turning them on is safe now — the grid is held while they are on, and the
+sprite atlas no longer takes the session's unpack alignment with it (§6) — but
+safe is not the same as fast, and on a composited page the readback is still
+ten times what it measures here.
+
+**Both of those were found by a player turning the switch on, not by the
+harness**, and both were outside what the pose set can see: one is auto-res,
+which the rig pins, and the other only shows at a grid whose column count is
+not a multiple of four, which the rig's pinned 480 is. **Sweep every entry in
+`CFG.CELLW` after any change to a texture upload**, with the camera moving
+between renders, and check `gl.getError()` at each one.
 
 ---
 
 ## 6. Measurement traps that have already cost time
 
+- **A dead property in the harness is worth thirty times the thing you are
+  measuring.** §3.3. Twice now. Print the field back off the object.
 - **Compositing contends with readback, ten to one, and the quiet side is the
-  wrong side.** §3. If a performance number is not reproducible, check this
-  first — and then make sure the number you report comes from the page being
-  visible, not from the condition that was easy to measure.
+  wrong side** — and `document.hidden` will not tell you which side you are on.
+  §3.4.
 - **A fixed per-frame cost fights auto-res, and auto-res loses.** Auto-res
   assumes frame time falls when the grid gets coarser. Anything whose cost is
   per *call* rather than per cell breaks that assumption, and the grid walks to
-  the floor doing a full `initRender` every ninety frames on the way. The rig
-  hides this because it pins `manualRes`. §1, §3.
+  the floor doing a full `initRender` every ninety frames on the way — which on
+  screen reads as the world freezing, flickering black and coming back smaller
+  until there is nothing of it left. **This is what a player reported the first
+  time `GPU SOLIDS` was turned on, and it was reproducible in twenty seconds:
+  212×106 down to 61×29 in twelve, and 114×55 still took 19.6ms.** The rig
+  hides it because it pins `manualRes`.
+
+  The defence used to be a latch — `GPUW`'s menu handler set `CFG.manualRes` on
+  the way past. That was wrong twice over: the sprite switch did not have one,
+  and the latch never let go, so turning the switch off left auto-res dead for
+  the rest of the session. **The auto-res step in `frame()` now checks
+  `GPUW.on && GL.worldOK` itself** and holds the grid for exactly as long as
+  the card owns the world.
 - **`readPixels` into a typed array is a synchronous round trip.** Five
   milliseconds a call on this driver, and it does not care what you ask for — a
   single pixel measured 5.4ms against 5.8ms for the whole frame. Through a
   **pixel pack buffer** the same read is 0.004ms to issue and 0.87ms to collect.
-  Issue all of them before collecting any, so the card has that long to finish.
-  This was the difference between the port being 20% slower and 16% faster and
-  nothing else about it changed.
+  Issue all of them before collecting any: the sprite mirror's `readPixels` goes
+  out inside `glSpritePass` and is collected at the tail of `glWorldRead`, so
+  every read in the frame is issued before any is waited on.
 - **An R8 attachment is worse still**: 6.6ms *each* to read back. Four one-byte
   buffers ride in one RGBA8 read instead, and the unpack is a shift and a store.
 - **Profile inside the real frame loop, not with `worldPasses()` in a `for`
   loop.** Freezing the world stops pedestrians walking into frame. The same spot
-  measured 12.9ms frozen and 24.6ms live; `lampVolume` read 0.29ms frozen
-  against 3.49ms live.
+  measured 12.9ms frozen and 24.6ms live.
+- **The profiler double-counts nested passes.** `wallPass` calls `wallMirror` at
+  its own tail, so a profile with the world pass off shows both and their sum is
+  not the total.
 - **Frame-by-frame interleaving is the wrong instrument for a readback.** A
   frame that reads the card back waits for whatever is still queued from the
   frame before it, while a frame that does not read lets the CPU run a frame
-  ahead — so alternating hands the whole previous frame's GPU time to whichever
-  side holds the readback. Measured that way the port looked 23% slower. Use
-  `GPUT.blockAB`, which times whole frames in alternating blocks.
+  ahead. Measured that way the port looked 23% slower. Use `GPUT.blockAB`.
 - **Absolute times drift by more than 2×**, and it may be the user playing in
-  another window. The same commit measured `off` at 24.5ms and 34.5ms an hour
-  apart. Compare ratios from adjacent runs, never numbers from different ones.
+  another window. The same vantage measured `worldPasses` at 24.5ms and 33.5ms
+  an hour apart *in this session*. Compare ratios from adjacent runs, never
+  numbers from different ones.
 - **An instrument that copies a buffer is what you are timing.** A probe doing
   `before.set(gBuf)` (122KB) around each of 503 `drawModel` calls reported hidden
   solids as 18.5% of the pass. They were ~2%.
 - **A stub changes control flow, not just cost.** Replacing `floorSample` with a
-  no-op leaves `_wd` stale and non-zero, so every cell took all four buffer
-  writes instead of the usual early `continue` — inventing a 4.8ms "bare loop"
-  cost that sent a session after a cache theory measuring exactly zero.
+  no-op left `_wd` stale and non-zero, inventing a 4.8ms "bare loop" cost.
 - **A fresh page load is not a populated world.** 387 of 430 pedestrians start
-  `off`. Sweep for a busy vantage (`statSprites`) and run several frames to warm
-  the voxel cache before timing anything.
+  `off`. Sweep for a busy vantage (`statSprites`) and run several seconds of
+  frames before timing or counting anything — the same accounting probe read
+  4,938 CPU mirror cells on a warm world and 3,092 on a cold one.
+- **PUTTING A PIECE OF GL STATE BACK IS NOT POLITENESS, IT IS A GUESS.**
+  `UNPACK_ALIGNMENT` is set to **1** once in `glInit` and must stay there:
+  every one-byte-per-texel upload in this renderer depends on it, because an
+  R8 image of width `cols` has rows of exactly `cols` bytes and an alignment
+  of 4 makes the driver expect them padded, read past the end of the array and
+  **reject the upload outright**. `spriteSlot` set it to 1 for its own
+  `texSubImage3D` and then put it back to 4. That broke `glComposeWorld` at
+  every grid whose column count is not a multiple of four — 205, 130, 110, 90,
+  75 — for the **rest of the session, including after the switch was turned
+  off again**. The world stopped updating, then vanished when the next
+  `initRender` handed compose a fresh empty texture.
+
+  It cost extra time because the failure does not look like one: a rejected
+  `texSubImage2D` leaves the *previous* texture in place, so a probe that
+  renders twice from a still camera sees an identical picture and reports
+  nothing wrong. It only shows when the camera moves. **Move the camera
+  between the two halves of any A/B that could be comparing a stale upload
+  against itself**, and check `gl.getError()` per grid, not once.
+- **A texture bound to a unit and attached to the bound framebuffer is a
+  feedback loop**, and WebGL refuses the draw outright if the sampler is
+  *active in the program at all* — not only if that branch runs. The sprite
+  shader samples the depth attachment in its mirror branch, so the direct draw
+  binds something else to that unit and the mirror draw, which targets its own
+  framebuffer, swaps it in.
 - **Use `gl.finish()` around anything GPU-side**, or you are timing command
   submission.
-- **Top-level `let`/`const` are not `window` properties.** §4. `function`
-  declarations are, so `window.floorPass = wrapper` works for instrumenting.
 - **A backtick inside a comment inside a GLSL template literal** closes the
-  literal and takes the whole 24k-line file out with one `SyntaxError`. Run
-  `node tools/syntax-check.mjs` after every edit; it is two seconds.
+  literal and takes the whole 26k-line file out with one `SyntaxError`. It fired
+  again this session. Run `node tools/syntax-check.mjs` after every edit; it is
+  two seconds.
 
 ---
 
 ## 7. Dead ends — measured, rejected, do not retry without new information
 
-- **Packing the world pass into two attachments instead of three** (level,
-  wetness, source kind and the did-write flag into one spare byte; the emitter
-  kind derived from `srcBuf === 2`, which holds exactly within these three
-  passes; depth bit-cast to four bytes and read straight into `dBuf`'s own
-  buffer). Byte-identical, strictly less work — one fewer readback and a third
-  less traffic through the unpack — and it measured **27.74ms against 27.83ms on
-  the same baseline**, which is inside the block-to-block noise. The readback
-  cost is a per-frame sync, not per call and not per byte.
+- **Packing the world pass into two attachments instead of three.**
+  Byte-identical, strictly less work, and it measured **27.74ms against 27.83ms
+  on the same baseline** — inside the block-to-block noise. The readback cost is
+  a per-frame sync, not per call and not per byte. (The stage-3 repack of the
+  fourth byte was for *correctness*, not speed, and it is not this.)
 - **Hierarchical empty-space skipping in the voxel marcher** (4×4×4 occupancy so
   rays stride over air). Byte-identical and 6.3% slower. Models are ~16 voxels
-  across and the sampler steps at 0.7 of a voxel, so a 4-voxel block is worth ~3
-  samples and the block-exit arithmetic costs more than 3 samples do.
+  across and the sampler steps at 0.7 of a voxel.
 - **A coarse water-proximity bitmap** to avoid the per-cell `tType` read.
   Correct superset, skipped 97.4% of the reads, bought 0.05ms.
 - **Reordering `wallPass` before `floorPass`** to avoid floor overdraw. Erases
   the facade reflections painted onto the wet road.
 - **Sprite draw order** — `drawList` is sorted far-to-near, but measured overdraw
   is only 1.24× and just 9.2% of writes are wasted.
+- **Narrowing the mirror's source-row search below ±8.** ±2 is twelve times the
+  error for 0.12ms of frame time, which is inside the noise. §4.
 
 ---
 
@@ -446,7 +640,8 @@ node serve.mjs 8123
 ```
 
 Then `preview_start` at `http://localhost:8123/index.html`, **open a second tab
-and front it**, and drive the game tab by `tabId`.
+and front it**, and drive the game tab by `tabId`. Take a screenshot before you
+believe anything about which condition you are in (§3.4).
 
 Force the finest grid and the rig:
 
@@ -458,11 +653,9 @@ Busy vantages (heading 0.7, eye 1.7): `550,520` · `340,520` (open park,
 floor-heavy) · `580,640` · `460,370`.
 
 `tools/` also holds `syntax-check.mjs` and `splice-gw.mjs` — the latter rebuilds
-the world-pass block in `index.html` from scratchpad sources, which is how the
-shader was edited as readable files rather than as a template literal wedged
-inside a 24k-line page. The sources are not in the repo; if you want that
-workflow again, split the block back out.
+the world-pass block in `index.html` from scratchpad sources. Those sources are
+not in the repo; `FS_SPRITE` was written in place and does not need them.
 
-State: branch `fog-and-hd`, pushed. `main` is at `a9ad8c4` and deploys to
-GitHub Pages at https://nukacolafamine-star.github.io/ascii-city/ — this branch
-is **not** merged there yet.
+State: branch `fog-and-hd`. `main` deploys to GitHub Pages at
+https://nukacolafamine-star.github.io/ascii-city/ — this branch is **not**
+merged there.

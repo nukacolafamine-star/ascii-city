@@ -655,6 +655,40 @@ back on close: it is HUD, not geometry, so it has no business being drawn at the
 grid the world is tuned for. On the default rung that is 182 cells across
 against 426.
 
+### The HUD on the HD grids
+
+The three finest rungs put a character in a box of five pixels or fewer. The
+world wants exactly that — it is the whole reason they exist — and the interface
+does not, so on those rungs the HUD is drawn on a **second lattice**, out of
+glyphs baked at that size rather than magnified from the small ones:
+
+| grid | cell | HUD scale | a character |
+|---|---|---|---|
+| 7px (default) | 7 × 12 | 1 | 7 × 12 |
+| 6px | 6 × 11 | 1 | 6 × 11 |
+| 5px | 5 × 9 | **2** | 10 × 18 |
+| 4px | 4 × 7 | **3** | 12 × 21 |
+| 3px | 3 × 5 | **4** | 12 × 20 |
+
+All three scaled rungs land within a couple of pixels of each other and getting
+on for twice the default grid's character: a menu you can use, not a menu you
+can find.
+
+It is a *mode* rather than a per-call choice, because a card is a hundred draw
+calls that all agree about a coordinate system, and converting them one at a
+time is how you get a border in one lattice and its rows in another. Turn it on
+and `hudStr`, `hudCell` and `hudPanel` take big cells; every card then works
+exactly as written on a lattice a quarter the size. On every ordinary grid the
+mode refuses to turn on and none of it is reachable.
+
+What is drawn that way: the pause menu and every other list card (inventory,
+shops, settings, saves), conversations, the toast, the interaction prompt, the
+corner map, the full-screen chart's labels and chrome — and the **HP strip**,
+which is the one thing you have to be able to read while something is hitting
+you. The chart's *terrain* stays on the fine lattice, because a map wants every
+sample it can get and a word wants to be legible, and those are two different
+things.
+
 ## Performance
 
 Every geometry pass fills the same character buffers it always did. What
