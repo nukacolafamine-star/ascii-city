@@ -474,7 +474,12 @@ rates applied.
 
 **The kickdeck** (`V`) rides at more than double
 walking pace: `SPACE` ollies, and a flip input mid-air lands named tricks
-onto a running style counter.
+onto a running style counter. Style is a score, not a wage — stepping off the
+board pays nothing. What pays is being recognised: dress like somebody, put
+your handwriting on the walls of a neighbourhood, finish work for the people
+who live in it, and land a clean run without a scrape, and once in a while
+somebody on that street will cross the pavement after a trick and press a few
+credits on you.
 
 ## Inventory, stats and saves
 

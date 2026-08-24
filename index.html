@@ -1388,6 +1388,10 @@ function buildCity(seed){
   // whether the building is the hideout - so a stale id from the city before
   // this one gets its door blanked as well. Forget it before anything reads it.
   HIDEOUT = null;
+  // the towers the main line points at are picked once and cached; a stale
+  // pair from the city before this one would send act two to a door that is
+  // now somebody's kitchen
+  mqDgnBlds = null; mqCorpoBld = null;
   riverBed.fill(0);
   blockUsed.fill(0);
   tH.fill(0); tB.fill(-1);
@@ -4969,6 +4973,31 @@ function updatePed(p, i, dt){
     p.dx = px / l; p.dy = py / l; p.moving = 0;
     return;
   }
+  /* Somebody who liked what they just watched, crossing the pavement to say
+     so. They walk it - the note only changes hands if they actually arrive,
+     and they give up if you skate off or a wall gets in the way. */
+  if (p.fan && p.flee > worldTime) p.fan = null;  // a running street pays nobody
+  if (p.fan){
+    const fx = cam.x - p.x, fy = cam.y - p.y, fd = Math.hypot(fx, fy) || 1;
+    p.fan.t -= dt;
+    if (fd < 1.5 || p.fan.t <= 0 || inside || fd > 26){
+      if (fd < 2.2 && !inside){
+        player.credits += p.fan.pay;
+        toast(FAN_LINE[(Math.random() * FAN_LINE.length) | 0] + '  +' + p.fan.pay + ' cr');
+        sfx('ui_select', { vol: 0.6, rate: 1.35 });
+        p.talkT = 3;
+      }
+      p.fan = null;
+    } else {
+      p.dx = fx / fd; p.dy = fy / fd;
+      const step = p.spd * 1.45 * dt;
+      const nx = p.x + p.dx * step, ny = p.y + p.dy * step;
+      if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]){
+        p.x = nx; p.y = ny; p.phase += step * 3.4; p.moving = 1;
+      } else p.fan.t -= dt * 5;                 // no way through: give up sooner
+      return;
+    }
+  }
   const x0 = p.x, y0 = p.y;
   p.cool -= dt;
   if (p.flee > worldTime){                        // running, and running smart
@@ -6111,7 +6140,18 @@ function buildInterior(bld, door, floor, S){
   // one in seven with nobody in it could not be traded with at all - which is
   // a dead room on its own account, and a dead end when an errand has sent
   // you to that trade to buy something.
-  if (kind !== 'dungeon' && kind !== 'empty' && kind !== 'hideout' &&
+  /* ...and a keeper needs something to say. Three rooms carry an empty `lines`
+     list on purpose - your own home, the fixer's back office, the hideout -
+     and two of them were standing a keeper up anyway, because the guard named
+     the kinds it knew about rather than asking the flavor. The result was an
+     actor called NOBODY holding a page with nothing on it: [] is truthy, so
+     the probe offered "[E] TALK - NOBODY", openDialog opened a card with no
+     pages, and a card pauses the world and hands the pointer back for a
+     conversation that does not exist. The rowhouse ROOK gives you at the end
+     of SOMEWHERE TO LOSE is a myhome, so that was the first thing the story
+     walked you into. Ask the room whether it has a voice. */
+  const roomSpeaks = !!trade || !!(F.lines && F.lines.length);
+  if (kind !== 'dungeon' && roomSpeaks &&
       (kind === 'shop' || rnd() < (kind === 'storage' ? 0.35 : 0.85))){
     const kx = kind === 'apts' ? IOX + 1.4 : doorX + 0.5;
     const a = spawnClear('vendor', kx, IOY + 1.4,
@@ -6123,12 +6163,34 @@ function buildInterior(bld, door, floor, S){
        the city, and the only keeper who has no business being one. */
     if (trade === 'armory'){ a.armed = 1; a.atk = 11; a.hp = 55; a.maxHp = 55; }
   }
-  // the top of THE WORKS always keeps its terminal - the switch lives there
-  if (typeof WORKS !== 'undefined' && WORKS && bld.id === WORKS.bld){
+  /* Two rooms in the city are guaranteed a terminal, because a job asks you to
+     stand in front of one: the top of THE WORKS, where the switch lives, and
+     the top of the second condemned tower, where SCHEMATICS leaves the plans.
+     A dungeon floor has no desks of its own, so without this the job would
+     have been "arrive" all over again. */
+  /* A live tower watches its own stairwells. INSIDE THE TOWER is the one job
+     built around not being seen, and the corpo tower it now names is an
+     ordinary downtown block - which had no eyes in it at all, so the whole
+     stealth beat was a walk up an empty staircase. Two lenses a floor, cut
+     the same way street cameras are and remembered the same way. */
+  if (floor > 1 && HIDEOUT){
+    const cp = mqCorpo();
+    if (cp && cp.bld === bld.id){
+      const gone = worldDelta.cutIn && worldDelta.cutIn['b' + bld.id + 'f' + floor] ? 1 : 0;
+      ip.push({ x: IOX + rw - 1.6, y: IOY + 0.7, k: PK_CAM, s: rnd(), r: 0.16, dead: gone });
+      ip.push({ x: IOX + 1.6, y: IOY + rh - 1.2, k: PK_CAM, s: rnd(), r: 0.16, dead: gone });
+    }
+  }
+  {
+    const isWorks = typeof WORKS !== 'undefined' && WORKS && bld.id === WORKS.bld;
+    const plans = HIDEOUT && mqDgnList().length > 1 && mqDungeon(1).bld === bld.id;
     const flsW = bldFloors(bld);
-    if (floor === flsW[flsW.length - 1] &&
+    if ((isWorks || plans) && floor === flsW[flsW.length - 1] &&
         !ip.some(q => q.k === PK_FURN && q.fid === 'terminal'))
-      ip.push({ x: IOX + (rw >> 1) + 0.5, y: IOY + 1.6, k: PK_FURN,
+      // the works keeps its switch centre-stage; the tower's terminal goes to
+      // the side, because the middle of that room is the warden's altar
+      ip.push({ x: isWorks ? IOX + (rw >> 1) + 0.5 : IOX + 1.8,
+                y: isWorks ? IOY + 1.6 : IOY + 2.2, k: PK_FURN,
                 fid: 'terminal', s: 0, r: 0.5, yaw: Math.PI });
   }
   // stairs, when the building has anywhere else to go
@@ -6334,7 +6396,7 @@ function exitInterior(){
 let lookTarget = null, _prSc = 0;
 /* Things you go somewhere to use outrank things you can walk over. */
 const PROBE_WEIGHT = {
-  shift: 1.6, theswitch: 1.6, door: 1.35, stash: 1.3, sleep: 1.3,
+  shift: 1.6, theswitch: 1.6, plans: 1.7, door: 1.35, stash: 1.3, sleep: 1.3,
   buyhome: 1.25, metro: 1.2, actor: 1.15, drop: 1.4,
   item: 1.0, ped: 0.9, cut: 0.85, bin: 0.7, bench: 0.7
 };
@@ -6360,7 +6422,8 @@ function probeInteract(){
   if (sitting || cam.riding) return;         // nothing to reach from a bench or the air
   for (let i = 0; i < actors.length; i++){
     const a = actors[i];
-    if ((!a.dialog && !a.tree) || !actorHere(a)) continue;
+    // an empty page list is not a conversation, and [] is truthy
+    if ((!a.tree && !(a.dialog && a.dialog.length)) || !actorHere(a)) continue;
     probeConsider(a.x, a.y, { kind: 'actor', a, prompt: '[E]  TALK - ' + a.name });
   }
   // the courier drop: a place you have to actually put your hands on
@@ -6414,7 +6477,9 @@ function probeInteract(){
         probeConsider(p.x, p.y, { kind: 'stash', prompt: '[E]  THE STASH' });
     }
     else if (p.k === PK_FURN && inside && p.fid === 'terminal'){
-      if (mqLive('mq29') && WORKS && inside.bld === WORKS.bld &&
+      if (mqLive('mq18') && !player.qvar.mq18plans && mqPlansTerminal())
+        probeConsider(p.x, p.y, { kind: 'plans', prompt: '[E]  PULL THE GRID SCHEMATICS' });
+      else if (mqLive('mq29') && WORKS && inside.bld === WORKS.bld &&
           !player.qvar.betrayed && !player.qvar.ended &&
           !actors.some(a => a.interior && actorHere(a) && a.brain === 'hostile' && a.hp > 0))
         probeConsider(p.x, p.y, { kind: 'theswitch', prompt: '[E]  THE SWITCH' });
@@ -6480,6 +6545,11 @@ function tryInteract(){
     sfx('door', { vol: 0.6, rate: 1.3 });
     toast('the package is gone, and a reply is in your pocket. back to ROOK');
     checkQuests();
+  } else if (t.kind === 'plans'){
+    player.qvar.mq18plans = 1;
+    toast('the terminal coughs up forty years of grid drawings. you take all of it');
+    sfx('ui_select', { vol: 0.7, rate: 0.75 });
+    sfx('ui_move', { vol: 0.5, rate: 0.5 });
   } else if (t.kind === 'theswitch'){
     openTheChoice();
   } else if (t.kind === 'shift'){
@@ -7212,15 +7282,83 @@ function rampUnder(){
 function resetSkate(){
   skV = 0; airT = 0; skTrick = null; skChain = []; grind = null;
   skCombo = 1; comboT = 0; styleN = 0; stumbleT = 0; wobbleT = 0; crouchT = 0;
+  deckClean = 0;
 }
 function cashOutDeck(){
-  if (styleN >= 10){
-    const pay = Math.floor(styleN / 10);
-    player.credits += pay;
-    toast('street cred +' + pay + ' cr');
-  }
+  // Style is a score now, not a wage - see deckFan below for who pays.
+  if (styleN >= 10) toast('style ' + styleN + ' - the street keeps its own tally');
   styleN = 0; skCombo = 1; comboT = 0; skTrick = null; skChain = []; grind = null;
+  deckClean = 0;
 }
+/*--------------------------- what the street pays --------------------------
+  Stepping off the board used to hand over a flat tenth of the style score,
+  and the score itself climbed five a second for standing on a rail. Skating
+  was the best-paid work in the city and it asked for nothing but patience:
+  find a bench, grind it for two minutes, step off eight credits richer, get
+  back on. A quarter of an hour of that outearned the whole main line.
+
+  Nobody pays you for a trick. People pay you because they know who you are,
+  and that is a LOCAL fact - four of them. What you are wearing, whose
+  handwriting is on these particular walls, what you have finished for people
+  around here, and whether the last few landings were clean. Get all four up
+  and somebody occasionally peels off the pavement, walks over, and puts a
+  note in your hand. It is small, it is rare, it has a cooldown, and it can
+  only happen with a person there to do it - which is the whole difference
+  between being watched and being paid by the scoreboard.
+============================================================================*/
+let deckClean = 0;                  // clean landings since the last scrape
+let fanCd = 0;                      // and the street's patience with you
+/* Your handwriting, in this part of town. `tags` is sparse and three days
+   deep so the walk is short, but it is asked on every landing - cache it. */
+let _markReg = -2, _markN = 0, _markT = -1e9;
+function marksHere(){
+  const reg = regionAt(cam.x, cam.y);
+  if (reg === _markReg && worldTime - _markT < 2) return _markN;
+  let n = 0;
+  for (const k in tags){
+    const i = +k;
+    if (regionAt(i % MAP, (i / MAP) | 0) === reg) n++;
+  }
+  _markReg = reg; _markT = worldTime; _markN = n;
+  return n;
+}
+/* Work finished around here, counted where it was finished. */
+function repHere(){
+  const rep = player.qvar.rep;
+  return rep ? (rep[regionAt(cam.x, cam.y)] || 0) : 0;
+}
+/* Four things, and not one of them is the trick. Zero means nobody on this
+   street has any reason to look up. */
+function deckClout(){
+  return Math.min(3, (dripScore() / 250) | 0) +   // dressed like somebody
+         Math.min(3, marksHere() >> 1) +          // your handwriting, here
+         Math.min(3, repHere()) +                 // your work, here
+         clamp(deckClean - 1, 0, 4);              // and a clean run of it
+}
+/* Not a payout - a person, who has to cross the pavement to give it to you. */
+function deckFan(pts){
+  if (fanCd > 0 || inside || deckClean < 3) return;
+  const clout = deckClout();
+  if (clout < 4) return;                          // nobody is watching yet
+  if (Math.random() > 0.015 + clout * 0.015) return;
+  let best = null, bd = 16;
+  for (const p of gridQuery(pedGrid, cam.x, cam.y, 16, _q2)){
+    if (p.off || p.sit || p.fan || p.talkT > 0 || p.flee > worldTime) continue;
+    const d = Math.hypot(p.x - cam.x, p.y - cam.y);
+    if (d > 2.5 && d < bd){ bd = d; best = p; }
+  }
+  if (!best) return;
+  fanCd = 45 + Math.random() * 45;
+  best.fan = { pay: clamp(2 + (clout >> 1) + ((pts / 60) | 0), 3, 16), t: 10 };
+  best.path = null; best.pi = 0; best.cool = 1;
+}
+const FAN_LINE = [
+  'somebody watched the whole thing: "here - buy a wheel"',
+  'a kid hands you a folded note and says nothing at all',
+  '"that was you on the mile last week." a note changes hands',
+  'somebody presses credits on you and walks off before you can argue',
+  '"do it again by the light and I will pay you twice"'
+];
 /* Six flicks, and a language for stringing them together. This is a
    digital city - the board does things a real one cannot, and the names
    escalate to say so. */
@@ -7563,6 +7701,7 @@ function jump(){
    speed, and the pavement seams are the speedometer */
 const SK_MAX = 14.3;              // twice a sprint, flat out
 function skateFrame(dt){
+  if (fanCd > 0) fanCd -= dt;
   if (comboT > 0){ comboT -= dt; if (comboT <= 0) skCombo = 1; }
   if (pushArtT > 0) pushArtT -= dt;
   for (let i = skParts.length - 1; i >= 0; i--)
@@ -7735,9 +7874,11 @@ function resolveTrick(intoGrind){
     skV = Math.min(SK_MAX, skV + 0.3);
     toast((nm + '  +' + pts + (skCombo > 1 ? '  x' + skCombo : '')).slice(0, 64));
     sfx('ui_select', { vol: 0.5, rate: Math.min(2.2, 1 + n * 0.12) });
+    deckClean++; deckFan(pts);                 // somebody might have been watching
   } else if (sketchy){
     styleN += chainPoints() >> 1;
     skV *= 0.7; wobbleT = 0.4;
+    deckClean = 0;                             // a scrape is not a run
     sfx('ui_back', { rate: 0.4, vol: 0.5 });
     toast(('sketchy ' + nm).slice(0, 64));
   } else skBail(nm);
@@ -7749,6 +7890,7 @@ function resolveTrick(intoGrind){
 function skBail(why){
   skV = 0; stumbleT = 0.6; skCombo = 1; comboT = 0;
   skTrick = null; skChain = []; grind = null;
+  deckClean = 0;                               // and the run is over
   styleN = Math.max(0, styleN - 10);
   sfx('hit', { rate: 0.55, vol: 0.8 });
   toast('bailed - ' + why);
@@ -7761,7 +7903,8 @@ function endGrind(clean){
     toast('grind out  x' + skCombo);
     airDur = airT = 0.35; arcH = 0.5;
     sfx('footstep', { rate: 1.9, vol: 0.8 });
-  } else landT = 0.18;
+    deckClean++; deckFan(10 * skCombo);
+  } else { landT = 0.18; deckClean = 0; }
 }
 
 /*========================== 13b. MODES + MENUS =============================
@@ -7829,6 +7972,16 @@ function closeMenus(){
 function worldFrozen(){
   const m = topMode();
   return paused || !!(m && m.pausesWorld);
+}
+/* A scripted beat is running and you are reading it, not playing. The whole
+   stack is searched rather than just the top, because a cutscene is the one
+   mode nothing is allowed to be layered over quietly. */
+function inCutscene(){
+  for (let i = modeStack.length - 1; i >= 0; i--){
+    const n = modeStack[i].name;
+    if (n === 'scene' || n === 'theend') return true;
+  }
+  return false;
 }
 
 /* A menu is data. Items are { label, hint?, act()?, value()?, adj(dir)? }:
@@ -7906,6 +8059,11 @@ function makeListMenu(def){
 /* Dialog: a stack of pages typed out at 60 chars/s. SPACE reveals the rest
    of a page, then turns it, then closes; ESC leaves mid-sentence. */
 function openDialog(title, pages){
+  /* A card with nothing on it still takes the screen, still stops the world
+     and still lets go of the pointer - it just does it silently, which reads
+     as the game dropping you rather than as a conversation. Nobody with
+     nothing to say opens a card. */
+  if (!pages || !pages.length) return;
   pushMode({
     name: 'dialog', pausesWorld: true, title, pages, idx: 0, t0: performance.now(),
     pageDone(){ const p = this.pages[this.idx];
@@ -8039,7 +8197,7 @@ function openTree(title, tree){
 }
 function openTalk(a){
   if (a.tree) openTree(a.name, a.tree);
-  else if (a.dialog) openDialog(a.name, a.dialog);
+  else if (a.dialog && a.dialog.length) openDialog(a.name, a.dialog);
 }
 
 function stepRes(d){
@@ -8559,15 +8717,16 @@ function openScene(title, beats, after){
   pushMode({
     name: 'scene', pausesWorld: true, idx: 0, t0: performance.now(), title,
     pageDone(){ return this.t0 < 0 || (performance.now() - this.t0) * 0.045 >= beats[this.idx].length; },
+    // The callback closes quests and kills characters. Once, whichever way
+    // out of the scene the player took.
+    resolve(){ if (this.said) return; this.said = 1; popMode(); if (after) after(); },
     onKey(code){
       if (code === 'Space' || code === 'Enter'){
         if (!this.pageDone()) this.t0 = -1;
         else if (this.idx < beats.length - 1){ this.idx++; this.t0 = performance.now(); }
-        else { popMode(); if (after) after(); }
+        else this.resolve();
       }
-      if (code === 'Escape' && performance.now() - this.openedT > 250){
-        popMode(); if (after) after();
-      }
+      if (code === 'Escape' && performance.now() - this.openedT > 250) this.resolve();
     },
     draw(){
       const cols = R.cols, rows = R.rows;
@@ -10014,17 +10173,21 @@ function rookTree(){
       opts: [{ t: 'One room runs everything?', do(){ mqStart('mq17'); }, next: 'plan' }] },
     plan: { text: 'One room. VESPER has the schematics half-read and she does not like what she is finding. Ignore that for now - we have work.',
       opts: [{ t: 'What work', do(){ mqDone('mq17'); }, next: 'give18' }] },
-    give18: { text: 'The full schematics are in another condemned tower - the corps hide their worst secrets where nobody will look twice. Bring them to me.',
+    give18: { text: 'Not that tower - another one, further out, and worse. The corps file their worst secrets where nobody will look twice, and this lot left theirs on a working terminal at the top of a building they condemned twenty years ago. Get up there and pull them off it.',
       opts: [{ t: 'On it', do(){ mqStart('mq18'); }, next: 'wait18' }] },
-    wait18: { text: 'The tower is marked. The schematics are at the top, same as always.' },
+    wait18: { text: () => player.qvar.mq18atTop
+      ? 'You are in the room. The terminal is the only thing up there still drawing power - use it.'
+      : 'The second tower is marked, out past the first one. Top floor, and there is a terminal in the room.' },
     turn18: { text: 'These are... more than a wiring diagram. VESPER is right to be nervous. Set it aside.',
       opts: [{ t: 'Here', do(){ mqDone('mq18'); }, next: 'give19' }] },
-    give19: { text: 'Whatever guards that room will not go down to a lead pipe. The city has serious weapons hidden in its bones, if you know where the plant of the world sits. Find one and bring it here.',
+    give19: { text: 'Whatever guards that room will not go down to a lead pipe. The city has serious weapons hidden in its bones, if you know where the plant of the world sits. Find one and bring it here. I have marked the nearest one I know of - and if somebody has already been through it, the wardens up the condemned towers each keep one they are very attached to.',
       opts: [{ t: 'I’ll find one', do(){ mqStart('mq19'); } }] },
     wait19: { text: () => mqHasSpecial() ? 'You found something with teeth. Good. Bring it to me.'
-                                         : 'The specials are LEFT places - behind the turbines, under the blossoms, wherever nobody looks. Find one.',
+                                         : 'The specials are LEFT places - behind the turbines, under the blossoms, wherever nobody looks. One of them is marked.',
+      // the second leg is the walk in; taking it face to face closes both
       opts: [{ t: 'Delivered', if: () => mqHasSpecial() && atHideout(6),
-               do(){ mqDone('mq19'); }, next: 'give20' }] },
+               do(){ if (player.quests.mq19 === 0) advanceQuest('mq19');
+                     mqDone('mq19'); }, next: 'give20' }] },
     give20: { text: 'VESPER will not let the schematics go. Fine - go WITH her. There is a substation in the belt she wants to see with her own eyes. Humour her.',
       opts: [{ t: 'I’ll take her', do(){ mqStart('mq20'); } }] },
     wait20: { text: 'The substation is marked in the belt. Go with VESPER. Listen to her, even.' },
@@ -10431,11 +10594,14 @@ function openQuestLine(L){
     any = true;
     const Q = QUESTS[id];
     if (q === 'done'){
+      // undefined is "done and closed"; 0 is "done, and they are still
+      // waiting to hear it" - which is a different line on the page
       const due = (player.qvar.owed || {})[id];
-      items.push({ info: (due ? '$ ' : '* ') + Q.name +
-                         (due ? '  -  ' + due + ' cr waiting with ' +
-                                ((player.qvar.giver || {})[id] || 'somebody')
-                              : '  -  done') });
+      const from = (player.qvar.giver || {})[id] || 'somebody';
+      items.push({ info: (due === undefined ? '* ' : due ? '$ ' : '> ') + Q.name +
+                         (due === undefined ? '  -  done'
+                          : due ? '  -  ' + due + ' cr waiting with ' + from
+                                : '  -  go and tell ' + from) });
     } else {
       items.push({ label: (player.track === id ? '> ' : '  ') + Q.name,
                    value: () => player.track === id ? 'TRACKING' : 'track',
@@ -12538,7 +12704,7 @@ const MQ2 = {
       auto(){ return player.qvar.mq11jam && atSpot(mqSpot(691, D_DOWN), 12); } }] },
   mq12: { name: 'THE KEYCARD', act: 2,
     stages: [{ log: 'a keycard is locked in a CONDEMNED tower - climb it and take the prize',
-      target(){ return mqDungeon(); },
+      target(){ return mqDungeon(0); },
       auto(){ return player.qvar.mq12card; } },
       { log: 'bring the keycard back to ROOK', target: toHideout }] },
   mq13: { name: 'BY THE WINDOW', act: 2,
@@ -12553,28 +12719,38 @@ const MQ2 = {
       auto(){ return (player.qvar.camCut || 0) - (player.qvar.mq15Base || 0) >= 4; },
       tool: 'saw' }] },
   mq16: { name: 'INSIDE THE TOWER', act: 2,
-    stages: [{ log: 'infiltrate the corpo tower - reach the top floor. cameras raise the alarm',
-      target(){ return mqDungeon(); },
+    stages: [{ log: 'infiltrate the CORPO TOWER downtown - reach the top floor. their cameras are LIVE',
+      target(){ return mqCorpo(); },
       auto(){ return player.qvar.mq16top; } }] },
   mq17: { name: 'THE PLAN', act: 3,
     stages: [{ log: 'ROOK will finally tell you the whole plan - meet at THE HIDEOUT',
       target: toHideout }] },
   mq18: { name: 'SCHEMATICS', act: 3,
-    stages: [{ log: 'steal the grid schematics from a CONDEMNED tower',
-      target(){ return mqDungeon(); },
+    stages: [{ log: () => player.qvar.mq18atTop
+                 ? 'the plans are on a TERMINAL in the room at the top - pull them off it'
+                 : 'the grid schematics sit in a second CONDEMNED tower, further out - climb it',
+      target(){ return mqDungeon(1); },
       auto(){ return player.qvar.mq18plans; } },
       { log: 'take the schematics to ROOK', target: toHideout }] },
   mq19: { name: 'SOMETHING WITH TEETH', act: 3,
     stages: [{ log: 'the power room will be guarded - find one of the city\u2019s hidden SPECIAL weapons',
+      target(){ return mqSpecialSpot(); },
+      auto(){ return mqHasSpecial(); } },
+      { log: 'show ROOK what you found - THE HIDEOUT',
       target: toHideout,
       auto(){ return mqHasSpecial() && atHideout(6); } }] },
   mq20: { name: 'WHAT IT FEEDS', act: 3,
     stages: [{ log: 'VESPER found something in the schematics - go with her to the substation',
       target(){ return mqSpot(701, D_IND); },
       auto(){
-        if (atSpot(mqSpot(701, D_IND), 8) && !player.qvar.mq20scene &&
-            !(topMode() && topMode().name === 'scene')){
-          player.qvar.mq20scene = 1;
+        /* The flag used to be set on the way IN, which made the trigger a
+           one-shot: anything that took the scene down before it finished -
+           and being killed mid-beat did exactly that - left the flag standing
+           with the job still open, and walking back to the fence did nothing
+           for the rest of the game. It is set on the way OUT now, the way the
+           roof scene has always done it, so an interrupted beat simply plays
+           again when you come back. */
+        if (atSpot(mqSpot(701, D_IND), 8) && !player.qvar.mq20scene && !inCutscene()){
           openScene('THE SUBSTATION', [
             'VESPER walks the fence line with the schematics open across both arms.',
             '"See the feed lines? They don\u2019t come FROM anywhere. They just... start."',
@@ -12584,7 +12760,8 @@ const MQ2 = {
             '"ROOK says cut it and the towers die. But if nothing feeds it, then it isn\u2019t',
             'a generator. It\u2019s a heart. And I want to know whose."',
             'She does not talk on the walk back.'
-          ], () => { if (mqLive('mq20')) mqDone('mq20', undefined, 20); });
+          ], () => { player.qvar.mq20scene = 1;
+                     if (mqLive('mq20')) mqDone('mq20', undefined, 20); });
         }
         return false;
       } }] },
@@ -12604,8 +12781,7 @@ const MQ2 = {
     stages: [{ log: 'VESPER asked to meet ALONE, away from the cell - go to the marked roof',
       target(){ return mqSpot(731, D_STRIP); },
       auto(){
-        if (atSpot(mqSpot(731, D_STRIP), 6) && !player.qvar.mq24met &&
-            !(topMode() && topMode().name === 'scene'))
+        if (atSpot(mqSpot(731, D_STRIP), 6) && !player.qvar.mq24met && !inCutscene())
           vesperRoofScene();                     // the scene advances the stage
         return false;
       } },
@@ -12737,32 +12913,99 @@ function spirePapers(){
   sfx('ui_select', { vol: 0.6, rate: 1.1 });
 }
 /* a condemned tower to send the player into, remembered once chosen */
-let mqDgnBld = null;
-function mqDungeon(){
-  if (mqDgnBld === null){
-    let best = null, bd = 1e9;
+/* One tower used to answer for all of them. mqDungeon cached the single
+   condemned block nearest the hideout and handed the same door to THE KEYCARD,
+   INSIDE THE TOWER and SCHEMATICS - so three jobs across two acts sent you up
+   the same staircase, past the same warden, to the same room, and mqDungeonTop
+   ticked off whichever of them happened to be open when you got there. The
+   middle of the story was one building with three names.
+
+   They get a tower each now, ordered by distance from the hideout, so the line
+   works its way outward as the jobs get heavier. */
+let mqDgnBlds = null;
+function mqDgnList(){
+  if (mqDgnBlds) return mqDgnBlds;
+  const out = [];
+  for (const d of doors){
+    const b = buildings.find(bb => bb.id === d.b);
+    if (!b || d.sealed || !isDungeon(b)) continue;
+    out.push({ x: d.x, y: d.y, bld: b.id,
+               d: Math.hypot(d.x - HIDEOUT.x, d.y - HIDEOUT.y) });
+  }
+  out.sort((a, b) => a.d - b.d);
+  return (mqDgnBlds = out);
+}
+function mqDungeon(n){
+  const L = mqDgnList();
+  if (!L.length) return HIDEOUT && { x: HIDEOUT.x, y: HIDEOUT.y, bld: HIDEOUT.bld,
+                                     name: 'THE CONDEMNED TOWER' };
+  const t = L[Math.min(n || 0, L.length - 1)];
+  return { x: t.x, y: t.y, bld: t.bld, name: 'THE CONDEMNED TOWER' };
+}
+/* INSIDE THE TOWER says "a corpo tower, top floor" in ROOK's own mouth, and
+   then pointed at a derelict with a warden in it. A live tower is a different
+   building in a different district with a different rule - their cameras are
+   on, and being seen costs you - so it gets its own pick: the tallest thing
+   downtown that is not condemned, not THE WORKS and not somewhere you live. */
+let mqCorpoBld = null;
+function mqCorpo(){
+  if (mqCorpoBld === null){
+    const skipW = WORKS ? WORKS.bld : -1;
+    const skipH = HOMES && HOMES.penthouse ? HOMES.penthouse.bld : -1;
+    let best = null, bh = -1;
     for (const d of doors){
       const b = buildings.find(bb => bb.id === d.b);
-      if (!b || d.sealed || !isDungeon(b)) continue;
-      const dd = Math.hypot(d.x - HIDEOUT.x, d.y - HIDEOUT.y);
-      if (dd < bd){ bd = dd; mqDgnBld = { x: d.x, y: d.y }; }
+      if (!b || d.sealed || b.dist !== D_DOWN) continue;
+      if (isDungeon(b) || b.id === skipW || b.id === skipH) continue;
+      if (bldFloors(b).length < 3) continue;
+      if (b.h > bh){ bh = b.h; best = { x: d.x, y: d.y, bld: b.id }; }
     }
-    if (mqDgnBld === null) mqDgnBld = HIDEOUT;
+    mqCorpoBld = best || mqDungeon(0);
+    if (!mqCorpoBld) return null;               // a city with no doors yet
   }
-  return { x: mqDgnBld.x, y: mqDgnBld.y, name: 'THE CONDEMNED TOWER' };
+  return { x: mqCorpoBld.x, y: mqCorpoBld.y, bld: mqCorpoBld.bld,
+           name: 'THE CORPO TOWER' };
 }
 function mqHasSpecial(){
   return ['railgun', 'arcgun', 'nailer', 'katana', 'maul'].some(w => invCount(w) > 0);
 }
-/* the top of a dungeon reached during mq12/mq16/mq18 sets that job's flag */
+/* SOMETHING WITH TEETH told you the specials were "LEFT places" and then put
+   the marker on ROOK's own front door, which is the one place in the city that
+   has never had one. Point at a cache that is actually still lying there; if
+   somebody has been through all six, the wardens up the condemned towers each
+   keep one, so send them there instead. */
+function mqSpecialSpot(){
+  let best = null, bd = 1e9;
+  for (const q of props){
+    if (q.k !== PK_ITEM || !q.key || q.key.slice(0, 6) !== 'cache_') continue;
+    if (!CONTRABAND[q.item]) continue;           // the holdout is not a special
+    const d = Math.hypot(q.x - cam.x, q.y - cam.y);
+    if (d < bd){ bd = d; best = { x: q.x, y: q.y, name: 'SOMETHING LEFT HERE' }; }
+  }
+  if (best) return best;
+  const t = mqDungeon(2);
+  return t && { x: t.x, y: t.y, name: 'A WARDEN KEEPS ONE' };
+}
+/* Reaching the top of a tower only closes the job that named THAT tower. */
 function mqDungeonTop(){
-  if (mqLive('mq12')) player.qvar.mq12card = 1;
-  if (mqLive('mq16')) player.qvar.mq16top = 1;
-  if (mqLive('mq18')) player.qvar.mq18plans = 1;
+  if (!inside) return;
+  const b = inside.bld;
+  const k = mqDungeon(0), s = mqDungeon(1), c = mqCorpo();
+  if (mqLive('mq12') && k && b === k.bld) player.qvar.mq12card = 1;
+  if (mqLive('mq16') && c && b === c.bld) player.qvar.mq16top = 1;
+  if (mqLive('mq18') && s && b === s.bld) player.qvar.mq18atTop = 1;
+}
+/* ...and SCHEMATICS is not finished by arriving. The plans are on a terminal
+   in the room at the top; you have to find it and pull them off it. */
+function mqPlansTerminal(){
+  const s = mqDungeon(1);
+  return !!(inside && s && inside.bld === s.bld && player.qvar.mq18atTop);
 }
 /* a camera catching you during mq16 spawns a wave */
 function mqTowerSeen(){
   if (!mqLive('mq16') || !inside) return;
+  const c = mqCorpo();                          // their tower, not any tower
+  if (!c || inside.bld !== c.bld) return;
   if (player.qvar.mq16waveT && worldTime - player.qvar.mq16waveT < 20) return;
   player.qvar.mq16waveT = worldTime;
   for (let i = 0; i < 2; i++){
@@ -13019,18 +13262,35 @@ const QUEST_PAY = {
    the books until you are standing in front of them again - unless you were
    already standing there when the job closed, which is most of the errands
    that end in "report back". */
+/* The books are also the ONLY thing that says "somebody is waiting to hear
+   it", and they used to open on a fee. A job worth nothing therefore closed
+   into silence: SOMEWHERE TO LOSE walks you out to a rowhouse in the suburbs,
+   ticks itself off the moment you can see the door, and left no marker, no
+   red line and no reason to believe ROOK - who is holding the next piece of
+   work - wanted you back. Every free beat in the line had the same hole. A
+   zero goes on the books now, and reads as an errand rather than a debt. */
 function payQuest(id){
-  const n = QUEST_PAY[id];
-  if (!n) return;
+  const n = QUEST_PAY[id] || 0;
   const who = (player.qvar.giver || {})[id];
-  if (!who || who === speakingTo()){          // face to face already
+  const face = speakingTo();
+  if (!who || who === face){                  // face to face already
+    if (!n) return;
     player.credits += n;
     toast('paid: ' + n + ' cr');
     sfx('ui_select', { vol: 0.6, rate: 1.35 });
     return;
   }
+  /* Two jobs never leave a walk home. One closed inside somebody ELSE'S
+     conversation - THE HIDEOUT ends the moment ROOK says hello, and sending
+     you back across the city to tell the watcher about it is nobody's idea of
+     the next beat. The other belongs to a man who has just put a price on
+     your head: once the switch is thrown the cell has stopped being an
+     employer. A fee still goes on the books in both cases, because money owed
+     is money owed however the job ended. */
+  if (!n && (face || player.qvar.betrayed || player.qvar.ended)) return;
   (player.qvar.owed = player.qvar.owed || {})[id] = n;
-  toast('job done - ' + who + ' owes you ' + n + ' cr');
+  toast(n ? 'job done - ' + who + ' owes you ' + n + ' cr'
+          : 'job done - ' + who + ' is waiting to hear it');
   sfx('ui_select', { vol: 0.5, rate: 0.9 });
 }
 /* settling up, the moment their card opens */
@@ -13041,14 +13301,25 @@ function payOwed(who){
   let sum = 0, jobs = 0;
   for (const id in owed)
     if (giver[id] === who){ sum += owed[id]; jobs++; delete owed[id]; }
-  if (!sum) return;
-  player.credits += sum;
-  toast(who + ' settles up: ' + sum + ' cr for ' + jobs + (jobs > 1 ? ' jobs' : ' job'));
-  sfx('ui_select', { vol: 0.7, rate: 1.35 });
-  // paid, and the walk back is over: pick up whatever job is still open so
-  // the line has somewhere to go next instead of going out
-  if (!player.track)
-    player.track = Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
+  // `jobs`, not `sum`: a job worth nothing is still a walk back that ENDS
+  // here, and keying the clean-up on the money left the free ones clearing
+  // their entry without ever handing the marker on.
+  if (!jobs) return;
+  if (sum){
+    player.credits += sum;
+    toast(who + ' settles up: ' + sum + ' cr for ' + jobs + (jobs > 1 ? ' jobs' : ' job'));
+    sfx('ui_select', { vol: 0.7, rate: 1.35 });
+  }
+  // reported, and the walk back is over: pick up whatever job is still open
+  // so the line has somewhere to go next instead of going out - and if the
+  // walk home took the marker off something you had chosen yourself, give
+  // that back rather than whatever comes first in key order
+  if (!player.track){
+    const was = player.qvar.trackWas;
+    player.track = (was && typeof player.quests[was] === 'number') ? was
+      : Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
+  }
+  delete player.qvar.trackWas;
 }
 function owedTo(who){
   const owed = player.qvar.owed, giver = player.qvar.giver || {};
@@ -13076,7 +13347,31 @@ function advanceQuest(id){
     player.quests[id] = 'done';
     sfx('ui_select', { vol: 0.7, rate: 0.7 });
     toast('completed: ' + q.name);
+    /* Where the work was done, because the street's opinion of you is a local
+       one - see deckClout. Indoors the camera is standing in a scratch room on
+       the far side of the map, so ask the street you walked in from. */
+    const at = (inside && EXT && typeof EXT.camX === 'number' && isFinite(EXT.camX))
+             ? [EXT.camX, EXT.camY] : [cam.x, cam.y];
+    const rep = player.qvar.rep = player.qvar.rep || {};
+    const reg = regionAt(at[0], at[1]);
+    rep[reg] = (rep[reg] || 0) + 1;
     payQuest(id);
+    /* The job is finished, but if it finished away from whoever handed it out
+       then the next step is the walk back - not some other job picked out of
+       the list by key order, and not the errand you happened to have selected
+       either. That last one is what made a finished job vanish: pick up the
+       watcher's scrap on your way out and MAKING A MARK could tick off in the
+       street with ROOK holding thirty credits and the next beat, and the
+       marker never left the depot. Drop the track so the owed pointer wins,
+       remember what it displaced, and let payOwed hand it back.
+       This runs BEFORE mq30's block below, because that beat ends the line
+       and gets the last word on where you are pointed. */
+    const home = player.qvar.owed && player.qvar.owed[id] !== undefined;
+    if (home){
+      if (player.track && player.track !== id) player.qvar.trackWas = player.track;
+      player.track = null;
+    } else if (player.track === id)
+      player.track = Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
     if (id === 'mq30'){                        // the line closes on a betrayal
       player.qvar.act = 4;
       const rk = actors.find(a => a.name === 'ROOK');
@@ -13087,13 +13382,6 @@ function advanceQuest(id){
       startQuest('sp1'); player.track = 'sp1';
       setTimeout(() => toast('an unknown number: "MERIDIAN. Downtown. Ask for the manager."'), 4000);
     }
-    // The job is finished, but if it finished away from whoever handed it
-    // out then the next step is the walk back to be paid - not some other
-    // job picked out of the list by key order. Drop the track so the owed
-    // pointer wins; payOwed puts you back on a live job afterwards.
-    if (player.track === id)
-      player.track = (player.qvar.owed && player.qvar.owed[id]) ? null
-        : Object.keys(player.quests).find(k => typeof player.quests[k] === 'number') || null;
   } else {
     player.quests[id] = s;
     sfx('ui_select', { vol: 0.5 });
@@ -13168,11 +13456,11 @@ const QUEST_STORY = {
   mq13: 'VESPER again, quieter this time. She wanted you to understand what the plan costs before you helped pay it.',
   mq14: 'A safe house out in the rows. Somewhere to be when this stops being deniable.',
   mq15: 'Four more cameras off a downtown block. The gap in the flock is a shape now, and the shape is a route.',
-  mq16: 'You let a camera see you on purpose, and security came down the way the plan said it would.',
+  mq16: 'A live corpo tower downtown, climbed floor by floor with their own cameras looking for you.',
   // ---- act three ----
   mq17: 'ROOK laid the whole thing out at last. Not a protest. A grid.',
-  mq18: 'Schematics, out of a building that keeps them because nobody has ever needed them.',
-  mq19: 'The substation manager has a routine, and now you have it too.',
+  mq18: 'Schematics, pulled off a terminal still drawing power at the top of a building the city wrote off twenty years ago.',
+  mq19: 'You went and dug something serious out of the city’s bones, and carried it back to a man who wanted to see it.',
   mq20: 'You walked the substation with VESPER, who wanted to see it with her own eyes before she signed anything.',
   mq21: 'A code out of the MERIDIAN building, taken from a man who thought he was being helpful.',
   mq22: 'One substation, killed as a test. Three blocks went quiet and the city did not even file it.',
@@ -13252,7 +13540,8 @@ function questTarget(){
       // a killed actor is spliced out of the list, so being in it is enough -
       // and the people who hand out jobs stand at hp 0 by design
       const a = who && actors.find(x => x.name === who);
-      const q = (QUESTS[oid] ? QUESTS[oid].name : oid) + ' - unpaid';
+      const q = (QUESTS[oid] ? QUESTS[oid].name : oid) +
+                (owed[oid] ? ' - unpaid' : ' - report back');
       if (a) return { x: a.x, y: a.y, name: who, q };
       // out of sight, behind a door: point at where they said it
       const at = (player.qvar.giverAt || {})[oid];
@@ -14862,8 +15151,17 @@ function actorTargetable(a){
   if (a.brain === 'hostile') return true;
   return !VITAL.has(a.name);
 }
+/* A cutscene is not a fight. Your own pause menu deliberately does NOT stop
+   the city when there are other people in it, and a blow reported over the
+   wire never waited on the mode stack at all - so a razor could put you down
+   halfway through a scripted beat you cannot move or defend yourself during.
+   That is not just an unfair death: playerDown stacks the FLATLINED card over
+   the scene, respawn clears the stack wholesale, and the scene's callback -
+   the thing that finishes the job - goes with it. Standing at the substation
+   fence in WHAT IT FEEDS, that left the quest permanently unfinishable.
+   The story gets to finish its sentence. */
 function damagePlayer(d){
-  if (player.hp <= 0 || godMode) return;
+  if (player.hp <= 0 || godMode || inCutscene()) return;
   d *= drugFx('resist', 1);
   player.hp = Math.max(0, player.hp - d);
   if (!(drug && drug.fx.numb && drug.env > 0.5)) hurtT = 1;   // numb, once it holds
@@ -18935,6 +19233,103 @@ function facade(b, gu, z, side, hh, hitX, hitY){
   _wd = dens; _wb = base;
 }
 
+/*------------------------------- rooftops ----------------------------------
+  The city had no lids. floorPass inverse-projects the rows below the horizon
+  onto z = 0 and wallPass draws vertical faces; between them there was never a
+  pass that drew a HORIZONTAL surface at building height. On foot that costs
+  nothing - you are under every roof in the city - but the moment you take a
+  runner up over the blocks the whole skyline turns into a street plan seen
+  through the buildings, because the only thing answering those screen rows is
+  the ground behind the tower.
+
+  A roof is not a new kind of geometry: it is the top face of a heightfield
+  tile, and the wall DDA already crosses that tile and already computes the
+  two distances that bound it. So the lid is drawn where the ray is, between
+  the near top edge and the far one - the exact span the occlusion clamp below
+  has always deliberately left open for it.
+
+  What is on it: tar and gravel, a parapet where the footprint ends, plant and
+  vents in a rough grid, and the building's own crown colour on the lip when it
+  has one, so a tower reads from above the way it reads from the street.
+----------------------------------------------------------------------------*/
+function roofSurface(b, wx, wy, ix, iy, h){
+  const fx = wx - ix, fy = wy - iy;
+  // where the roof stops being roof - a neighbour that is not this building,
+  // or one that steps down more than a storey, is an EDGE
+  const near = (dx, dy) => {
+    const nx = ix + dx, ny = iy + dy;
+    if (!inMap(nx, ny)) return true;
+    const nid = ny * MAP + nx;
+    return tB[nid] !== b.id || tH[nid] < h - 0.6;
+  };
+  const lip = 0.16;
+  const onEdge = (fx < lip && near(-1, 0)) || (fx > 1 - lip && near(1, 0)) ||
+                 (fy < lip && near(0, -1)) || (fy > 1 - lip && near(0, 1));
+  if (onEdge){
+    // the parapet, and the crown light running along the top of it
+    if (b.crown >= 0 && b.h - h < 0.8){ _wb = b.crown; _wd = 0.9; return; }
+    _wb = C.curb;
+    _wd = 0.62 + hash3(ix, iy, 41) * 0.10;
+    return;
+  }
+  const s = hash3(ix, iy, 53);
+  // plant: housings, tanks and stair heads, on their own coarse grid so they
+  // sit in clumps the way rooftop machinery does instead of freckling the deck
+  const gx = (ix * 0.5) | 0, gy = (iy * 0.5) | 0;
+  const pk = hash3(gx, gy, 67);
+  if (pk < 0.20 && fx > 0.16 && fx < 0.84 && fy > 0.16 && fy < 0.84){
+    _wb = pk < 0.07 ? C.metal : C.dataDk;
+    _wd = 0.76 - hash3(ix, iy, 13) * 0.12;
+    // a red obstruction light on top of the tallest housings
+    if (pk < 0.02 && fx > 0.42 && fx < 0.58 && fy > 0.42 && fy < 0.58){
+      _wb = C.camRed; _wd = 0.95;
+    }
+    return;
+  }
+  /* Ducting runs in STRAIGHT lines, one way or the other, because a roof is
+     plumbed rather than woven. An (ix+iy) checker put it on the diagonal and
+     the whole deck read as herringbone from the air. */
+  const along = hash3(b.id, 3, 19) < 0.5;
+  if (((along ? iy : ix) & 3) === 1 && hash3(b.id, 7, 23) > 0.45){
+    _wb = C.metal; _wd = 0.50 + ((along ? fy : fx) < 0.35 ? 0.08 : 0);
+    return;
+  }
+  // tar, gravel, and the seams between the sheets it is laid in
+  _wb = s > 0.62 ? C.asphalt : C.tire;
+  _wd = 0.28 + s * 0.14 + hash3(ix * 4 + ((fx * 4) | 0), iy * 4 + ((fy * 4) | 0), 5) * 0.10;
+  if (fx < 0.06 || fy < 0.06) _wd += 0.07;
+}
+/* The lid of ONE heightfield tile, in the screen rows between where the ray
+   crosses z = h on its way in and where it crosses it again on the way out.
+   dNear/dFar bound the tile along the ray; ceilLimit is whatever nearer
+   geometry has already claimed. */
+function roofSpan(x, b, h, dNear, dFar, ceilLimit, cols, rdx, rdy, px, py){
+  const dz = cam.z - h;
+  const rFarF = horizon + dz * projRows / dFar;
+  const rNearF = horizon + dz * projRows / dNear;
+  let t0 = Math.ceil(rFarF - 0.5), t1 = Math.floor(rNearF - 0.5);
+  if (t0 < 0) t0 = 0;
+  if (t1 > ceilLimit) t1 = ceilLimit;
+  if (t1 > R.rows - 1) t1 = R.rows - 1;
+  for (let r = t0; r <= t1; r++){
+    const idx = r * cols + x;
+    const dr = dz * projRows / (r + 0.5 - horizon);
+    if (!(dr > 0) || dr > viewD) continue;
+    if (dBuf[idx] < dr - 0.02) continue;         // something nearer already won
+    const wx2 = px + rdx * dr, wy2 = py + rdy * dr;
+    const ix2 = wx2 | 0, iy2 = wy2 | 0;
+    if (wx2 < 0 || wy2 < 0 || ix2 >= MAP || iy2 >= MAP) continue;
+    const tr = dr / viewD;
+    roofSurface(b, wx2, wy2, ix2, iy2, h);
+    const g = Math.round(clamp(_wd * densMul(tr), 0, 1) * RMAX);
+    dBuf[idx] = dr; refBuf[idx] = 0;
+    if (!g) continue;
+    gBuf[idx] = g; bBuf[idx] = _wb; lBuf[idx] = levelOf(tr);
+    if (EMISSIVE[_wb]){ srcBuf[idx] = 2; emitKind[idx] = 1; }
+    else srcBuf[idx] = 0;
+    statCells++;
+  }
+}
 /*--------------------- wall pass: one DDA ray per column -------------------*/
 function wallPass(){
   const cols = R.cols, rows = R.rows, px = cam.x, py = cam.y;
@@ -18948,6 +19343,18 @@ function wallPass(){
     if (rdx < 0){ stepX = -1; sdx = (px - mapX) * ddx; } else { stepX = 1; sdx = (mapX + 1 - px) * ddx; }
     if (rdy < 0){ stepY = -1; sdy = (py - mapY) * ddy; } else { stepY = 1; sdy = (mapY + 1 - py) * ddy; }
     let ceilLimit = rows - 1, side = 0, guard = 0;
+    /* The DDA steps before it looks, so the tile the camera is standing ON is
+       never examined. On the pavement that is right - you are not standing on
+       a roof - but fly a runner over a block and the lid directly beneath you
+       is the one tile with no top face, which reads as a hole punched through
+       the roof you are hovering over. Draw that one first, from zero out to
+       the first crossing. */
+    if (!inside){
+      const h0 = tH[Math.floor(py) * MAP + Math.floor(px)];
+      const b0 = buildings[tB[Math.floor(py) * MAP + Math.floor(px)]];
+      if (b0 && h0 > 0.6 && cam.z - h0 > 0.35)
+        roofSpan(x, b0, h0, 0.02, Math.min(sdx, sdy), rows - 1, cols, rdx, rdy, px, py);
+    }
     statRays++;
     while (ceilLimit >= 0 && guard++ < 1700){
       if (sdx < sdy){ sdx += ddx; mapX += stepX; side = 0; }
@@ -19062,10 +19469,13 @@ function wallPass(){
         if (r0 - 1 < ceilLimit) ceilLimit = r0 - 1;
       } else {
         // A wall below eye level occludes only above its FAR top edge - the
-        // rows between its near and far edge are its own visible top surface
-        // (the worktop the floor pass draws), not cover for what is behind.
+        // rows between its near and far edge are its own visible top surface,
+        // not cover for what is behind. Indoors that surface is the worktop
+        // the floor pass draws; outdoors it is the roof, and it is drawn here.
         const dExit = Math.min(sdx, sdy);
         const rFar = Math.ceil(horizon + (cam.z - h) * projRows / dExit - 0.5) - 1;
+        if (!inside && b && h > 0.6 && cam.z - h > 0.35)
+          roofSpan(x, b, h, d, dExit, ceilLimit, cols, rdx, rdy, px, py);
         if (rFar < ceilLimit) ceilLimit = rFar;
       }
     }
