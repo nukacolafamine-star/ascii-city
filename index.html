@@ -1228,7 +1228,15 @@ function stampMetro(){
   metroStops = [];
   for (let i = 0; i < spots.length; i++){
     const tx = MAP * spots[i][0], ty = MAP * spots[i][1];
-    let best = null, bd = 1e9;
+    /* A station entrance is a kiosk nearly three metres square and it is
+       PINNED - the placer is not allowed to walk it anywhere - so wherever
+       this drops it is where it stands for the life of the city. Accepting
+       roadway alongside pavement put five of the eight out in the traffic
+       lanes on the seed this was measured on, a solid box across the
+       carriageway with cars driving into it. The pavement is not a
+       preference here, it is the requirement; only if a whole quarter of
+       the map offers none does it fall back to tarmac. */
+    let best = null, bd = 1e9, fall = null, fd = 1e9;
     for (let t = 0; t < 1400; t++){
       const x = clamp((tx + rr(-P * 2, P * 2)) | 0, 2, MAP - 3), y = clamp((ty + rr(-P * 2, P * 2)) | 0, 2, MAP - 3);
       const tt = tType[y * MAP + x];
@@ -1239,8 +1247,10 @@ function stampMetro(){
           if (walkG[clamp(y + oy, 0, MAP - 1) * MAP + clamp(x + ox, 0, MAP - 1)]) open++;
       if (open < 20) continue;
       const d = Math.hypot(x - tx, y - ty);
-      if (d < bd){ bd = d; best = [x, y]; }
+      if (tt === T_WALK){ if (d < bd){ bd = d; best = [x, y]; } }
+      else if (d < fd){ fd = d; fall = [x, y]; }
     }
+    if (!best) best = fall;
     if (!best) continue;
     props.push({ x: best[0] + 0.5, y: best[1] + 0.5, k: PK_METRO, s: 0, r: 0.34 });
     metroStops.push({ x: best[0] + 0.5, y: best[1] + 0.5, name: names[i] });
@@ -2037,8 +2047,15 @@ function stockStalls(){
       const id = pool[(((st.s * 7) | 0) + i) % pool.length];
       const key = 'stall_' + (st.x | 0) + '_' + (st.y | 0) + '_' + i;
       if (worldDelta.taken[key]) continue;        // already bought or lifted
-      props.push({ x: st.x + ax * ACROSS[i] + bay.fx * 0.12,
-                   y: st.y + ay * ACROSS[i] + bay.fy * 0.12,
+      const wx = st.x + ax * ACROSS[i] + bay.fx * 0.12;
+      const wy = st.y + ay * ACROSS[i] + bay.fy * 0.12;
+      // The counter runs a metre either side of the cart's middle, and where
+      // a pitch sits against a jog in the facade that end of it is inside the
+      // building - so the tin of whatever was on display in a wall, at table
+      // height, unreachable. The cart keeps its spot; the wares it cannot lay
+      // out simply are not laid out.
+      if (!centreOK(wx | 0, wy | 0)) continue;
+      props.push({ x: wx, y: wy,
                    z: STALL_TOP, k: PK_ITEM, s: 0, r: 0,
                    item: id, key, qty: 1, price: ITEMS[id].price });
     }
@@ -2059,8 +2076,14 @@ function placeWeaponCaches(){
       for (let a = 0; a < 8; a++){
         const th = a * Math.PI / 4;
         const x = c.x + Math.cos(th) * ring * 0.8, y = c.y + Math.sin(th) * ring * 0.8;
+        // A cache is a thing you have to be able to WALK UP TO, so the test
+        // is the walk grid rather than the tile type. At this point in the
+        // build it is still terrain-only, which is exactly the question
+        // being asked: the wall this already checked for, and the river it
+        // did not - a railgun tucked behind a rock on the bank went into the
+        // water and floated there at street level.
         if (!inMap(x | 0, y | 0)) continue;
-        if (tType[(y | 0) * MAP + (x | 0)] === T_BLD) continue;
+        if (!walkG[(y | 0) * MAP + (x | 0)]) continue;
         props.push({ x, y, k: PK_ITEM, s: 0, r: 0, item: id, qty: 1,
                      key: 'cache_' + id });
         return;
@@ -2183,6 +2206,49 @@ const PIN_KIND = [];
 function onCarriageway(t){ return t === T_ROAD || t === T_CROSS || t === T_BRIDGE; }
 const ROAD_OK = [];
 (function(){ for (const k of [PK_RAIL, PK_TLIGHT, PK_CAM]) ROAD_OK[k] = 1; })();
+/*------------------------ ground a prop may stand on ------------------------
+  The placer knew about doorways, about the carriageway and about every other
+  prop, and about nothing else. It did not know where the buildings were and
+  it did not know where the river was, because the search that walks a prop
+  to a free tile only ever accepted tiles matching the one it STARTED on - so
+  a bench scattered out of a park onto a tower footprint looked for another
+  tower footprint, found one, and stayed in the wall. Counted over three
+  cities: 157 props with their centre inside a building and 149 standing on
+  the water - at street level, three metres above the surface, a streetlight
+  among them. In one of those three, the buried benches averaged 90% of their
+  footprint inside the wall and the lamp was at 100%.
+
+  Two rules, and they are different rules on purpose:
+
+  - a prop's CENTRE never sits in a wall or on the water. No exceptions: that
+    is the difference between furniture and scenery.
+  - its FOOTPRINT may bleed into one, up to a quarter of its area. A street
+    tree brushing a facade is what a street tree does, and the canopy reaching
+    out over the bank is worth having. Three quarters of a bench inside a
+    shopfront is not, and neither is the worst cart measured, 71% into the
+    frontage it is supposed to be backed against - both of which this cap is
+    what finally caught.
+============================================================================*/
+const BLEED_MAX = 0.25;                       // of the footprint, into solid or wet
+function badGround(t){ return t === T_BLD || t === T_WATER; }
+function centreOK(tx, ty){
+  return inMap(tx, ty) && !badGround(tType[ty * MAP + tx]);
+}
+/* what fraction of a w x d box centred here lies in a wall or in the river */
+function surfaceBleed(cx, cy, w, d){
+  const x0 = cx - w * 0.5, x1 = cx + w * 0.5;
+  const y0 = cy - d * 0.5, y1 = cy + d * 0.5;
+  let bad = 0;
+  for (let y = Math.floor(y0); y <= Math.floor(y1 - 1e-6); y++)
+    for (let x = Math.floor(x0); x <= Math.floor(x1 - 1e-6); x++){
+      // off the map counts as wall, so nothing hangs over the edge either
+      if (inMap(x, y) && !badGround(tType[y * MAP + x])) continue;
+      const ox = Math.min(x1, x + 1) - Math.max(x0, x);
+      const oy = Math.min(y1, y + 1) - Math.max(y0, y);
+      if (ox > 0 && oy > 0) bad += ox * oy;
+    }
+  return bad / (w * d);
+}
 function isKerb(tx, ty){
   if (tileAt(tx, ty) !== T_WALK) return false;
   for (let d = 0; d < 4; d++){
@@ -2324,15 +2390,23 @@ function placeProps(){
        and the signals belong on a road and are left alone, as is anything
        pinned. */
     const cand = [];
-    const exiled = !pin && !ROAD_OK[q.k] && onCarriageway(homeT);
-    const maxRing = pin ? 0 : (exiled ? 5 : 2);
+    /* Standing in a wall or in the river is the same kind of wrong as
+       standing in the road, and it is answered the same way: widen the
+       search and take the first legal ground. It also has to override the
+       stay-on-its-surface rule, which is what pinned a bench to the tower
+       footprint it landed on - a T_BLD home only ever matched more T_BLD. */
+    const stranded = !centreOK(hx, hy);
+    const exiled = stranded || (!pin && !ROAD_OK[q.k] && onCarriageway(homeT));
+    const maxRing = stranded ? 5 : pin ? 0 : (exiled ? 5 : 2);
     for (let dy = -maxRing; dy <= maxRing; dy++)
       for (let dx = -maxRing; dx <= maxRing; dx++){
         const ring = Math.max(Math.abs(dx), Math.abs(dy));
         const tx = hx + dx, ty = hy + dy;
-        if (!inMap(tx, ty)) continue;
+        if (!centreOK(tx, ty)) continue;                         // never in the wet or the wall
         const tt = tType[ty * MAP + tx];
-        if (exiled){ if (onCarriageway(tt)) continue; }          // anywhere but there
+        if (exiled){
+          if (!pin && !ROAD_OK[q.k] && onCarriageway(tt)) continue;   // anywhere but there
+        }
         else if (ring && tt !== homeT) continue;                 // stay on its surface
         cand.push([(wantKerb && !isKerb(tx, ty) ? 8 : 0) + ring, tx, ty]);
       }
@@ -2371,12 +2445,15 @@ function placeProps(){
         const fb = footBox(q.k, yaw);
         fw = fb[0]; fd = fb[1]; kw = fw; kd = fd;
       }
+      // cheapest test first: occupancy is an array read per tile, the bleed
+      // test is an area sum, and most candidates die on occupancy anyway
       if (!cellsFree(kx, ky, kw, kd)) continue;
       if (twinTooClose(q.k, cx, cy)) continue;
+      if (surfaceBleed(cx, cy, fw, fd) > BLEED_MAX) continue;
       got = { cx, cy, yaw, kx, ky, kw, kd };
       break;
     }
-    if (!got && pin){                          // these hold their ground regardless
+    if (!got && pin && centreOK(hx, hy)){      // these hold their ground regardless
       const cx = hx + 0.5, cy = hy + 0.5;
       _p.k = q.k; _p.x = cx; _p.y = cy; _p.fix = q.fix;
       const yaw = propFacing(_p), fb = footBox(q.k, yaw);
@@ -5557,15 +5634,28 @@ function buildInterior(bld, door, floor, S){
     const turned = Math.abs(Math.round((yaw || 0) / (Math.PI / 2))) % 2;
     return turned ? [F.w * F.dep, F.w] : [F.w, F.w * F.dep];
   };
-  const boxFree = (x, y, fid, yaw) => {
-    const a = fBox(fid, yaw);
+  /* Same test for something that is not a FURN_DEF piece - a market cart in
+     a shop is three and a half metres across and carries its own dimensions.
+     It went in at a fixed offset from the corner and nothing measured it, so
+     in every general-goods room tall enough for three gondolas it stood in
+     the last one. */
+  const spanFree = (x, y, w, d) => {
     for (const q of ip){
-      if (q.k !== PK_FURN) continue;
-      const b = fBox(q.fid, q.yaw);
-      if (Math.abs(x - q.x) < (a[0] + b[0]) * 0.5 + 0.15 &&
-          Math.abs(y - q.y) < (a[1] + b[1]) * 0.5 + 0.15) return false;
+      // A cart is furniture as far as everything else in the room is
+      // concerned, even though it is not a FURN_DEF piece, so it has to be
+      // in here - otherwise the gondolas have no way to slide around it.
+      const b = q.k === PK_FURN ? fBox(q.fid, q.yaw)
+              : q.k === PK_STALL ? footBox(PK_STALL, q.yaw || 0)
+              : null;
+      if (!b) continue;
+      if (Math.abs(x - q.x) < (w + b[0]) * 0.5 + 0.15 &&
+          Math.abs(y - q.y) < (d + b[1]) * 0.5 + 0.15) return false;
     }
     return true;
+  };
+  const boxFree = (x, y, fid, yaw) => {
+    const a = fBox(fid, yaw);
+    return spanFree(x, y, a[0], a[1]);
   };
   const wallAt = (side, t, fid) => {
     const F = FURN_DEF[fid];
@@ -5752,12 +5842,24 @@ function buildInterior(bld, door, floor, S){
       if (rw > 8) wall('e', 0.80, 'growtank');
       if (rnd() < 0.6) wall('e', 0.42, 'shelfunit');
     } else {                                        // general: the gondola aisle
-      for (let t = 0.36; t < 0.95; t += 0.24){  // general: the gondola aisle
+      /* The cart goes down BEFORE the aisle, not after it. Placed last it
+         landed at a fixed offset from the back corner with nothing measuring
+         it, which put it inside the last gondola of the east run in every
+         room tall enough to carry three - and measuring it last only turned
+         that into no cart at all, because by then the run had taken the whole
+         wall. It is the fixed thing in this room; the shelving already knows
+         how to slide along a wall to find a gap. */
+      if (rw > 8){                              // counter to the room
+        // yaw 0 faces -y, so the frontage runs across x and the depth in y
+        const sx = IOX + rw - 1.6, sy = IOY + rh - 2.5;
+        if (floorAt(sx, sy))
+          ip.push({ x: sx, y: sy, k: PK_STALL, s: rnd(),
+                    r: 0.5, dist: bld.dist, yaw: 0 });
+      }
+      for (let t = 0.36; t < 0.95; t += 0.24){
         wall('w', t, 'shelfunit');
         if (rw > 8) wall('e', t, 'shelfunit');
       }
-      if (rw > 8) ip.push({ x: IOX + rw - 1.6, y: IOY + rh - 2.5, k: PK_STALL, s: rnd(),
-                            r: 0.5, dist: bld.dist, yaw: 0 });   // counter to the room
     }
   } else if (kind === 'myhome'){
     const tier = myHome.def.tier;
@@ -5880,10 +5982,24 @@ function buildInterior(bld, door, floor, S){
   } else if (kind === 'parlor'){
     const theme = PARLOR_THEMES[(hash3(bld.id, 66, 13) * PARLOR_THEMES.length) | 0];
     // soft light, low furniture: sofas up front, the rooms implied at the back
-    furn(IOX + 1.4, IOY + rh - 1.7, 'floorlamp');
-    furn(IOX + rw - 1.4, IOY + rh - 1.7, 'floorlamp');
+    /* Sofas first, then the lamps that flank them - and the lamps look
+       before they land. Set at a fixed offset from each wall, in the way the
+       hideout used to be, the right-hand one clipped the arm of the sofa by
+       five centimetres in every parlor of this width. It slides toward its
+       own corner until it is clear, which is what the wall pieces have
+       always done. */
     furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.2, 'sofa', 0);
     if (rw > 8) furn(IOX + 2.0, IOY + Math.min(5, rh - 3) + 0.5, 'sofa', Math.PI / 2);
+    const lamp = (x, y, dir) => {
+      const b = fBox('floorlamp', Math.PI);
+      for (let k = 0; k < 6; k++){
+        const px = x + dir * k * 0.2;
+        if (px < IOX + 0.7 || px > IOX + rw - 0.7) return;
+        if (spanFree(px, y, b[0], b[1])){ furn(px, y, 'floorlamp'); return; }
+      }
+    };
+    lamp(IOX + 1.4, IOY + rh - 1.7, -1);
+    lamp(IOX + rw - 1.4, IOY + rh - 1.7, 1);
     furn(IOX + rw - 1.7, IOY + 2.0, 'kitchenette', -Math.PI / 2);   // the bar
     for (let bx2 = IOX + 2; bx2 < IOX + rw - 2; bx2 += 3)
       if (hash3(bld.id, bx2, 67) < 0.6) lowWall(bx2, IOY + 2);      // the booths
@@ -5952,7 +6068,11 @@ function buildInterior(bld, door, floor, S){
     a.interior = 1;
     if (rnd() < 0.5) furn(IOX + 1.6, IOY + rh - 2.0, 'cratepile');
   } else if (kind === 'lobby'){
-    for (const bx of [IOX + 2, IOX + rw - 3])
+    /* Two rows, one down each side - but only if there are two sides. A
+       six-wide lobby put them at IOX+2 and IOX+3, which is a tile apart with
+       two metres of bench on each, so every pair in the room intersected. */
+    const rows = rw >= 9 ? [IOX + 2, IOX + rw - 3] : [IOX + (rw >> 1) - 1];
+    for (const bx of rows)
       for (let y = IOY + 3; y < IOY + rh - 3; y += 3)
         ip.push({ x: bx + 0.5, y: y + 0.5, k: PK_BENCH, s: 0, r: 0.35 });
     furn(IOX + (rw >> 1) + 0.5, IOY + 1.6, 'holoboard');    // what to admire
@@ -8662,6 +8782,7 @@ let myCar = null, DEALER = null;
    can be assumed to fit: 13 by 13 finds nowhere at all in the red mile on
    this seed, and pinning one size means the whole line silently falls back to
    a bare tile on any map where it does not happen to land. */
+const BAY_PITCH = 5;             // tiles per parking bay; a car is 4.8 long
 const YARD_SIZES = [[15,15],[15,13],[13,13],[15,11],[13,11],[13,9],[11,9]];
 const LOT_SIZES  = [[13,13],[13,11],[11,11],[13,9],[11,9],[9,9]];
 function forecourtBest(dist, salt, sizes){
@@ -8721,6 +8842,17 @@ function paveForecourt(r){
       if (tType[id] === T_ROAD || tType[id] === T_CROSS) continue;   // leave the road
       tType[id] = T_LOT; tH[id] = 0; tB[id] = -1;
     }
+  /* And clear what was standing on it. This runs long after the placer, so
+     whatever the scatter left inside the rectangle - a tree, a bench, a bin -
+     is still there when the ranks go down on top of it, and a car parked
+     through a tree is what you get. A forecourt is a swept surface; the
+     pickups and the flat markers stay, because they are not in the way. */
+  props = props.filter(q => {
+    if (q.k === PK_ITEM || q.k === PK_CROP || q.k === PK_STAIR ||
+        q.k === PK_RAMP || q.k === PK_BODY) return true;
+    return !(q.x >= r.x0 && q.x <= r.x1 + 1 && q.y >= r.y0 && q.y <= r.y1 + 1);
+  });
+  stalls = props.filter(q => q.k === PK_STALL);
 }
 /* A car standing on its wheels. It reuses the flying stock's own artwork and
    its own colour, so a forecourt reads as the same traffic, parked. */
@@ -8754,18 +8886,45 @@ function fillForecourt(r, salt, skip, ranks){
      with the dealer standing in it. Two rows at the top, everything from the
      third row down left open. What has to be REACHED lives in the open half.
 
-     Lengthways along the row: 4.8 metres of car wants five tiles of pitch. */
+     Lengthways along the row: 4.8 metres of car wants five tiles of pitch,
+     and for a long time it was given four - so every neighbouring pair in
+     every rank overlapped by eight tenths of a metre, boot through bonnet,
+     which accounted for every PARKED+PARKED intersection counted in a city,
+     five of them. The pitch is the length of the thing parked, plus a gap. */
   const bays = [];
   if (ranks){
     for (const rank of ranks)
-      for (let gx = r.x0 + 3; gx <= r.x1 - 2; gx += 4) bays.push([gx, rank.y, rank.yaw]);
+      for (let gx = r.x0 + 3; gx <= r.x1 - 2; gx += BAY_PITCH) bays.push([gx, rank.y, rank.yaw]);
   } else {
-    for (let gx = r.x0 + 3; gx <= r.x1 - 2; gx += 4){    // ranked tight, as a lot is
+    for (let gx = r.x0 + 3; gx <= r.x1 - 2; gx += BAY_PITCH){    // ranked tight, as a lot is
       bays.push([gx, r.y0 + 2, 0]);
       if (r.h >= 11) bays.push([gx, r.y0 + 5, 0]);
       if (r.h >= 15) bays.push([gx, r.y0 + 8, 0]);
     }
   }
+  /* Whatever is standing just OUTSIDE the rectangle still reaches into it.
+     paveForecourt sweeps the lot itself, but a street tree on the far side of
+     the boundary carries four and a half metres of canopy, and the first rank
+     sits two tiles in - so the near end of that rank was parked inside the
+     branches. Anything solid within reach of a bay takes the bay. */
+  const near = [];
+  for (const q of props){
+    if (q.k === PK_ITEM || q.k === PK_CROP || q.k === PK_STAIR ||
+        q.k === PK_RAMP || q.k === PK_BODY) continue;
+    if (q.x < r.x0 - 4 || q.x > r.x1 + 5 || q.y < r.y0 - 4 || q.y > r.y1 + 5) continue;
+    const yaw = q.yaw === undefined ? propFacing(q) : q.yaw;
+    const fb = footBox(q.k, yaw);
+    near.push([q.x - fb[0] * 0.5, q.x + fb[0] * 0.5, q.y - fb[1] * 0.5, q.y + fb[1] * 0.5]);
+  }
+  const bayClear = (cx, cy, yaw) => {
+    const fb = footBox(PK_PARKED, yaw);
+    const x0 = cx - fb[0] * 0.5, x1 = cx + fb[0] * 0.5;
+    const y0 = cy - fb[1] * 0.5, y1 = cy + fb[1] * 0.5;
+    for (const b of near)
+      if (Math.min(x1, b[1]) - Math.max(x0, b[0]) > 1e-6 &&
+          Math.min(y1, b[3]) - Math.max(y0, b[2]) > 1e-6) return false;
+    return true;
+  };
   let n = 0;
   for (const bay of bays){
     const gx = bay[0], gy = bay[1], id = gy * MAP + gx;
@@ -8773,8 +8932,12 @@ function fillForecourt(r, salt, skip, ranks){
     if (!inMap(gx, gy) || tType[id] === T_ROAD || tType[id] === T_CROSS) continue;
     if (skip && skip(gx, gy)) continue;                      // a bay held open
     if (hash3(worldSeed, salt, n) < 0.08) continue;          // a gap or two reads as a lot
+    if (!bayClear(gx + 0.5, gy + 0.5, bay[2])) continue;
     out.push(parkCar(gx + 0.5, gy + 0.5, bay[2],
                      (hash3(worldSeed, salt + 13, n) * 64) | 0));
+    const fb = footBox(PK_PARKED, bay[2]);       // and the rank checks itself
+    near.push([gx + 0.5 - fb[0] * 0.5, gx + 0.5 + fb[0] * 0.5,
+               gy + 0.5 - fb[1] * 0.5, gy + 0.5 + fb[1] * 0.5]);
   }
   return out;
 }
