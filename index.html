@@ -10693,6 +10693,18 @@ function openSettingsMenu(){
           let m = !GPUW.on ? 0 : Math.max(0, seq.indexOf(GPUW.stages & 7));
           m = (m + (d < 0 ? -1 : 1) + seq.length) % seq.length;
           GPUW.on = m > 0; GPUW.stages = seq[m];
+          /* Pin the grid while it is on. Auto-res drops a step whenever a frame
+             stays over 14ms, on the assumption that a coarser grid is cheaper -
+             and this pass costs the same at 1,518 cells as at 106,600, because
+             the readback is per call and not per cell. Left to itself auto-res
+             walks the resolution to the floor, a full initRender every ninety
+             frames, and the world visibly rebuilds itself coarser on the way
+             down. Until the readback is gone this switch has to hold the grid
+             still or it cannot be compared against anything. */
+          if (GPUW.on && !CFG.manualRes){
+            CFG.manualRes = true;
+            toast('gpu world: grid pinned at ' + R.cols + 'x' + R.rows);
+          }
         } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
         hint: 'traced shadows and bounced colour. costs about half the frame; ' +
@@ -22875,6 +22887,23 @@ function glWorldPass(){
     gl.bindTexture(gl.TEXTURE_2D, GL.wLamps);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, lamps.length, 1, gl.RGBA, gl.FLOAT, LB);
   }
+  /* The dome's sign, one frame every four seconds, uploaded when it turns over
+     rather than when it is looked at. It belongs HERE with the other uploads
+     and not down among the uniforms: bindTexture lands on whichever unit is
+     active, and by then unit 0 is the per-column ray data the whole pass reads
+     its geometry from. Every upload in this function happens before a single
+     sampler is bound, and the bind block below then sets all of them. */
+  const di = ((worldTime / 4.0) | 0) % DOME_FRAMES.length;
+  if (GW.domeIdx !== di && GL.wDomeF){
+    GW.domeIdx = di;
+    const dframe = DOME_FRAMES[di];
+    const DM = new Uint8Array(dframe.w * dframe.h);
+    for (let y = 0; y < dframe.h; y++)
+      for (let xx = 0; xx < dframe.w; xx++)
+        DM[y * dframe.w + xx] = dframe.rows[y].charAt(xx) === '#' ? 255 : 0;
+    gl.bindTexture(gl.TEXTURE_2D, GL.wDomeF);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dframe.w, dframe.h, gl.RED, gl.UNSIGNED_BYTE, DM);
+  }
 
   _T.upload += performance.now() - _t0; _t0 = performance.now();
   gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
@@ -22963,19 +22992,15 @@ function glWorldPass(){
   }
   gl.uniform2ui(U.uEmis, GW.emis[0], GW.emis[1]);
   gl.uniform1fv(U.uLvT, GW.lvT);
-  /* The dome wears an animated sign, one frame every four seconds. Upload the
-     frame when it turns over, not when it is looked at. */
-  const di = ((worldTime / 4.0) | 0) % DOME_FRAMES.length;
-  const dfr = DOME_FRAMES[di];
-  if (GW.domeIdx !== di && GL.wDomeF){
-    GW.domeIdx = di;
-    const DM = new Uint8Array(dfr.w * dfr.h);
-    for (let y = 0; y < dfr.h; y++)
-      for (let xx = 0; xx < dfr.w; xx++)
-        DM[y * dfr.w + xx] = dfr.rows[y].charAt(xx) === '#' ? 255 : 0;
-    gl.bindTexture(gl.TEXTURE_2D, GL.wDomeF);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dfr.w, dfr.h, gl.RED, gl.UNSIGNED_BYTE, DM);
-  }
+  /* The dome wears an animated sign; its frame is uploaded up with the other
+     per-frame textures, above, because binding a texture to upload it lands on
+     whichever unit happens to be ACTIVE - and down here that is unit 0, holding
+     the per-column ray data. Uploading the sign here pointed uCol at a 32x16
+     dome mask for one draw, the rays came out as nonsense, and most of the
+     ground failed its bounds test and vanished: a full-screen flicker every
+     four seconds, on the one frame in a hundred and fifty where the sign turns
+     over. Only the uniforms belong here. */
+  const dfr = DOME_FRAMES[GW.domeIdx >= 0 ? GW.domeIdx : 0];
   gl.uniform4f(U.uDome, dfr.w, dfr.h, dfr.scroll ? 1 : 0, (worldTime * 4) | 0);
   gl.uniform2f(U.uDomeC, dfr.c1, dfr.c2);
   if (!GW.mat){
