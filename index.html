@@ -142,11 +142,51 @@ mat('path',    118,110, 96);   mat('screen',   30, 34, 52);
 mat('dataDk',   30, 34, 40);   mat('camRed',  255, 70, 60);   mat('bank',     44, 46, 58);
 mat('signBack', 10, 11, 18);   mat('signCase', 62, 66, 84);
 mat('uphols',  122, 58, 46);   mat('upholD',   82, 40, 32);   // worn red-brown
-const NBASE  = BASE.length;
 const BLDC   = [C.bldA, C.bldB, C.bldC, C.bldD, C.bldE, C.bldF, C.bldG,
                 C.bldH, C.bldI, C.bldJ, C.bldK, C.bldL, C.bldM, C.bldN];
 const NEONC  = [C.nCyan, C.nMag, C.nAmber, C.nGreen, C.nBlue, C.nPink, C.nWhite, C.nViolet];
 const LAMPC  = [C.nCyan, C.nMag, C.nAmber, C.nBlue, C.nViolet, C.nPink];
+/*----------------------- what lamplight looks like -------------------------
+  A pool of light needs a CONTINUOUS fall from bright to nothing, and a cell
+  carries one palette index - so the first attempt dithered the lamp's colour
+  in against the falloff, and a dither is exactly what light is not. It came
+  out as patchy speckle on the tarmac.
+
+  A ramp fixes it without the renderer knowing anything about it: one row of
+  palette entries per lamp colour, from a whisper over tarmac to a good
+  strong cast, and the floor pass picks the rung that matches its distance
+  from the lens. No dithering at all - the steps carry the colour, the glyph
+  density carries the intensity on top, and the two together read as light
+  falling rather than as ground being painted.
+
+  Deliberately NOT emissive: this is a lit surface, not a source, and the
+  wet-road mirror has no business reflecting it as one.
+============================================================================*/
+const LAMP_STEPS = 7;
+const LAMPPOOL = [];                          // [lamp colour][rung]
+(function(){
+  // tarmac, and how much of the lamp is mixed into it at each rung
+  const GR = [30, 32, 42];
+  for (let i = 0; i < LAMPC.length; i++){
+    const n = BASE[LAMPC[i]], row = [];
+    for (let k = 0; k < LAMP_STEPS; k++){
+      // eased so the bright end of the ramp is not all crowded together
+      const m = 0.06 + 0.60 * Math.pow((k + 1) / LAMP_STEPS, 1.35);
+      const key = 'pool' + i + '_' + k;
+      mat(key, Math.min(255, Math.round(GR[0] + n[0] * m)),
+               Math.min(255, Math.round(GR[1] + n[1] * m)),
+               Math.min(255, Math.round(GR[2] + n[2] * m)));
+      row.push(C[key]);
+    }
+    LAMPPOOL.push(row);
+  }
+})();
+/* AFTER the ramps, and everything else that calls mat(). This is the size the
+   glyph atlas is baked to and the GL palette texture is filled from, so a
+   colour registered past it is a colour the renderer cannot draw: the first
+   cut of the ramps landed above NBASE and every pool on every street came out
+   black. If you add a material, add it above this line. */
+const NBASE  = BASE.length;
 const CARC   = [C.carA, C.carB, C.carC, C.carD, C.carE, C.carF, C.carA, C.carC];
 // Which materials actually emit light - only these are reflected in wet tarmac.
 const EMISSIVE = new Uint8Array(64);
@@ -1057,7 +1097,12 @@ function stampRedLight(){
     n++;
   }
   for (let y = y0; y <= y1; y += 3){
-    for (const dx of [-RW * 0.5 - SW, RW * 0.5 + SW]){
+    /* At the KERB, not at the shopfronts. These used to stand on the outer
+       pavement tile, a full two tiles back from the roadway - which was
+       invisible while a lamp was a symmetrical post, and is not now that it
+       is a post with an arm: the arm reaches about a tile and a quarter, so
+       from back there it overhung the footpath and never made the road. */
+    for (const dx of [-RW * 0.5 - 0.5, RW * 0.5 + 0.5]){
       const px = sx + dx, py = y + 0.5;
       if (!inMap(px | 0, py | 0)) continue;
       if (tType[(py | 0) * MAP + (px | 0)] !== T_WALK) continue;
@@ -1441,6 +1486,235 @@ function buildCity(seed){
   // anything the inits put down gets the same treatment
   bakeSolidProps();
   openSealedDoors();
+  /* The wares go out LAST. Stocking them next to placeProps left ninety-odd
+     of them floating at counter height over nothing, because a stall that
+     seals a doorstep is taken away afterwards and its table went with it.
+     Nothing removes a stall after this point, so this is where the tables
+     are the tables that will still be standing. */
+  stockStalls();
+  indexLamps();
+  indexProps(); indexSpriteProps();
+}
+/*------------------------ light on the pavement -----------------------------
+  Until now a streetlight lit itself and nothing else: the lens glowed, the
+  bloom caught it, and the ground under it was the same tarmac as the ground
+  between them. A lamp that does not land anywhere reads as a decoration.
+
+  The lamps never move, so the expensive half of this is answered once. Every
+  tile within reach of a lamp records WHICH lamp, and the floor pass - which
+  already inverse-projects a world position for every character cell below the
+  horizon - measures the real distance from there. That keeps the pool smooth
+  and round rather than square to the tile grid, and costs one array read per
+  cell. A lamp that is shot out is checked at sample time, so the street goes
+  dark under it without anything being rebuilt.
+
+  The pool is cast under the LENS, not the post, which is the whole point of
+  giving the thing an arm: the light lands out on the roadway.
+============================================================================*/
+let lamps = [], lampGrid = null;
+const LAMP_REACH = 4.6;                       // how far a pool carries, in tiles
+const LAMP_LENS_U = 0.367;                    // the luminaire, across the artwork
+const LAMP_LENS_Z = 5.4 * (1 - 3.5 / 55);     // and how high off the pavement
+/*----------------------- the beam's own dial board --------------------------
+  The first cut of the volume pass had one knob - how thick the air is - and
+  it was set low, for a good reason badly applied: a wide cone at any visible
+  density washes the screen. So it was turned down until nothing washed, and
+  what was left was measured on a downtown street at 22:00:
+
+    an air shaft in     0.33% of cells      <- the thing the pass is FOR
+    a density lift on  74.9% of cells
+    average cell inside 6.9 cones, worst 16
+    ground contrast    0.728 with the pass, 0.841 without it
+
+  So it was not drawing beams. It was fogging the frame - lifting the black
+  floor 11% and costing 13% of the contrast that makes neon read - and paying
+  a ray-cone solve per cell for the privilege.
+
+  Three things were wrong, and none of them was the haze value.
+
+  The CONE was a floodlight: reach over lens height is a slope of 0.85, a 40
+  degree half-angle, on 1797 lamps. Overlap was not a risk, it was a promise.
+  A luminaire has a bright core inside a wider spill, so the core narrows to a
+  fraction of the pool and the pool keeps its old radius.
+
+  The OVERLAP stacked. Each lamp added its lift to the same cell in its own
+  turn of the loop, so seven cones meant seven lifts, and whichever lamp came
+  last in array order won the colour. Now the pass accumulates first and draws
+  once: the strongest cone owns the cell - the same rule the ground pool
+  already uses - and the others are mixed in at a fraction. Which lamp wins is
+  the brightest one rather than the last one, so it no longer changes as the
+  camera turns.
+
+  And nothing FELL OFF along the beam. Optical depth was chord length alone,
+  so a lamp thirty tiles away lit the air as hard as the one overhead. The
+  chord is now weighted by how far from the lens it was measured, which is
+  what gives a shaft a bright root and a fading top.
+
+  With the cone narrowed and the overlap combined there is room in the budget
+  to make the beam actually visible, which is what `shaft` spends.
+============================================================================*/
+const LAMPV = {
+  cone:  0.34,   // the bright core, as a fraction of the pool's radius
+  haze:  3.20,   // optical density of the air inside that core
+  fall:  2.00,   // how fast the beam dies with distance from the lens
+  mix:   0.30,   // what a second cone over the same cell adds to the first
+  cut:   0.10,   // the thin skirt of the cone is thrown away, not drawn faintly
+  gamma: 1.20,   // and what is left is curved so the core keeps the weight
+  shaft: 0.90,   // glyph weight where the beam is the only thing in the cell
+  lift:  1.30,   // and where it is landing on something that has a colour
+  swap:  0.10,   // how thick before it tints that surface as well
+  nearIn:  1.10, // inside this, a lamp's own beam is not drawn at all
+  nearOut: 4.20  // and by this far out it is drawn in full
+};
+/* `cut` and `gamma` are the two that decide whether this reads as a beam or as
+   weather. Turning `haze` and `lift` up without them was measured going the
+   wrong way - ground contrast 0.822 with the pass off, 0.696 at lift 0.40,
+   0.494 at 0.70 - because a cone's optical depth falls off smoothly, so a
+   brighter beam is mostly a wider, fainter skirt, and a wide faint skirt over
+   the whole street IS a wash. Throw the skirt away and curve what is left and
+   the same energy goes into the core, where a beam actually lives.
+
+   Which is also why `cone` is narrow and `haze` is high rather than the other
+   way about. Widening it was tried and measured, on one downtown street:
+
+     cone 0.34, fall 2.0   1.3% of cells,  24 columns,  average lift 4.6
+     cone 0.50, fall 1.2  12.8% of cells, 164 columns,  average lift 1.5
+     cone 0.60, fall 0.9  37.1% of cells, 201 columns,  average lift 1.4
+
+   Past about 0.5 the beam stops being a beam and becomes the screen, because
+   a wide cone on any of 1797 lamps meets a wide cone on the next one. A lamp
+   gets a bright narrow core and the wider soft spill stays where it belongs -
+   on the pavement, in the pool, which is a surface and can afford the area.
+
+   `nearIn` and `nearOut` are the pair that let any of the above be turned up
+   at all. Isolating one bad frame - a suburban street at 22:00 where the pass
+   covered 82.4% of the screen - by killing every lamp and reviving them one at
+   a time gave this:
+
+     the lamp one tile away        82.0% of the screen, on its own
+     the next one, six tiles       9.7%
+     everything else               under 2.4% each
+
+   One standard, overhead, was the entire wash. Stand under a lamp and every
+   ray out of the eye runs up the inside of its cone, so the cone stops being a
+   shaft and becomes a tint over everything - which the first cut of this pass
+   already knew, and answered by turning the haze down until nothing washed
+   anywhere. That is why the beam was invisible on the other 99% of the map: a
+   near-field problem was being paid for with a global setting.
+
+   So it is answered where it happens. A beam is something seen from OUTSIDE -
+   look along the axis and there is no silhouette to see - so a lamp's beam
+   fades out as the eye comes inside it, and is simply not drawn once the eye
+   is under the lens. The pool still lights the ground at your feet, which is
+   what standing under a streetlight actually looks like. */
+/* The ramp already carries most of the brightness, so the glyph gain on top
+   of it is gentle - enough to firm up the middle of the pool without turning
+   the tarmac into a solid block of character. */
+const LAMP_GAIN = 0.26;                       // how much denser the ground reads
+let _lampNight = 1;                           // 1 after dark, 0 at noon
+let _lampAir = 1;                             // and how thick the air is tonight
+/*--------------------- a street is lit by ONE luminaire ---------------------
+  Every standard used to roll its own colour off its own seed. Counted on the
+  north-south run at x=497: fourteen lamps, nine changes of colour - pink,
+  magenta, cyan, blue, blue, blue, pink, violet, magenta, pink, amber. No city
+  looks like that, because no city buys its lamps one at a time.
+
+  So the roll moves up two levels. The DISTRICT owns a short palette - cold
+  blues downtown where the money is, sodium amber over the houses, pink along
+  the red mile - and the STREET picks one entry from it and keeps it for its
+  whole length. Streets still differ from their neighbours; a street no longer
+  differs from itself, which is the half that was reading as noise.
+============================================================================*/
+const LAMP_PAL = [];
+LAMP_PAL[D_DOWN]  = [C.nCyan, C.nBlue];              // corporate cold
+LAMP_PAL[D_STRIP] = [C.nAmber, C.nMag, C.nViolet];   // the strip may shout
+LAMP_PAL[D_RES]   = [C.nAmber];                      // municipal sodium, only
+LAMP_PAL[D_IND]   = [C.nCyan];                       // cold work-light, the yards
+LAMP_PAL[D_SUB]   = [C.nAmber];                      // the same sodium, further out
+LAMP_PAL[D_RURAL] = [C.nAmber];                      // and the last of it
+LAMP_PAL[D_RED]   = [C.nPink, C.nMag];               // the red mile
+/* The arm says which way the roadway lies, and so whether this standard lines
+   a north-south street - identified by its x - or an east-west one, by y. Two
+   lamps facing each other across the same carriageway land on the same id and
+   therefore the same colour, which is the point.
+
+   Which ENTRY of the palette is the street's, and the street's alone: one hash
+   of the street id, so the colour holds for the length of it. Which PALETTE is
+   the district's, read under the lamp's own feet - so a street crossing out of
+   the red mile into downtown changes colour once, where the city changes, and
+   a lamp never disagrees with the district it is standing in.
+
+   Reading the district at the centre of a three-block run instead was tried,
+   to smooth what looked like one violet standard in a mile of sodium. It was
+   not: that lamp lined the CROSS street and was carrying its own street's
+   colour correctly. The snap bought nothing and cost the seams - a red-mile
+   standard thirty tiles from downtown came out corporate blue. */
+function lampColourIndex(o){
+  const ns  = Math.abs(Math.cos(o.yaw)) > Math.abs(Math.sin(o.yaw));
+  const sid = Math.round((ns ? o.x : o.y) / P);
+  const pal = LAMP_PAL[districtAt(o.x | 0, o.y | 0)] || LAMP_PAL[D_RES];
+  const pick = pal[(hash3(sid, ns ? 1 : 2, 7717) * pal.length) | 0];
+  const ci = LAMPC.indexOf(pick);
+  return ci < 0 ? 0 : ci;
+}
+function indexLamps(){
+  lamps = props.filter(q => q.k === PK_LAMP);
+  if (!lampGrid || lampGrid.length !== MAP * MAP) lampGrid = new Int32Array(MAP * MAP);
+  lampGrid.fill(-1);
+  const def = PROPDEF[PK_LAMP];
+  // the lens sits this far along the arm from the post
+  const reach = (def.anchor - (LAMP_LENS_U - 0.5)) * def.w;
+  const R = Math.ceil(LAMP_REACH);
+  for (let i = 0; i < lamps.length; i++){
+    const o = lamps[i];
+    if (o.yaw === undefined) o.yaw = propFacing(o);
+    /* A standard belongs at the KERB. Most are put there already, but the
+       corners where the footway broadens and the landmark forecourts set
+       theirs down two tiles back - which was invisible while a lamp was a
+       symmetrical post, and is not now that it is a post with an arm: from
+       back there an arm reaching one and a third of a tile never makes the
+       road, and hangs over the footpath instead. Walk it forward along its
+       own arm while the ground ahead is still footway and the roadway lies
+       beyond it. Moving the prop and not just the drawing keeps the post you
+       bump into and the post you can see in the same place. */
+    const ax = -Math.cos(o.yaw), ay = -Math.sin(o.yaw);
+    for (let step = 0; step < 2; step++){
+      const nx = o.x + ax, ny = o.y + ay;
+      if (!inMap(nx | 0, ny | 0)) break;
+      if (tileAt(nx | 0, ny | 0) !== T_WALK) break;    // already at the kerb
+      if (!walkG[(ny | 0) * MAP + (nx | 0)]) break;    // something is standing there
+      const bt = tileAt((o.x + ax * 2) | 0, (o.y + ay * 2) | 0);
+      if (bt !== T_ROAD && bt !== T_CROSS && bt !== T_WALK) break;
+      o.x = nx; o.y = ny;
+    }
+    o.lx = o.x - Math.cos(o.yaw) * reach;
+    o.ly = o.y - Math.sin(o.yaw) * reach;
+    const ci = lampColourIndex(o);
+    o.ci = ci;                                // which ramp row, for the beam
+    o.lampC = LAMPC[ci];                      // its own colour, alive or shot out
+    o.col = o.dead ? C.tire : o.lampC;
+    o.pool = LAMPPOOL[ci];                    // the cast it lays on the ground
+    const cx = o.lx | 0, cy = o.ly | 0;
+    for (let y = cy - R; y <= cy + R; y++){
+      if (y < 0 || y >= MAP) continue;
+      for (let x = cx - R; x <= cx + R; x++){
+        if (x < 0 || x >= MAP) continue;
+        const dx = x + 0.5 - o.lx, dy = y + 0.5 - o.ly;
+        if (dx * dx + dy * dy > LAMP_REACH * LAMP_REACH) continue;
+        /* Pools overlap. Rather than sum them - which needs a list per tile
+           and a loop per cell - each tile keeps the nearest lamp, so the
+           brightest source wins its own ground and the seam between two of
+           them falls where they were equal anyway. */
+        const cur = lampGrid[y * MAP + x];
+        if (cur >= 0){
+          const p = lamps[cur];
+          const ex = x + 0.5 - p.lx, ey = y + 0.5 - p.ly;
+          if (ex * ex + ey * ey <= dx * dx + dy * dy) continue;
+        }
+        lampGrid[y * MAP + x] = i;
+      }
+    }
+  }
 }
 /*======================= nothing may seal off a door =======================
   A door is chosen for its walkability, and THEN the props go down. Most of
@@ -1587,6 +1861,103 @@ function stampFlotsam(){
   }
 }
 
+/*--------------------------- what a stall sells -----------------------------
+  Two kinds of stall stand on these pavements.
+
+  Most of them are STREET FOOD, and they are their own business: a noodle
+  cart is a noodle cart wherever it stands. These are the carts the vendors
+  used to work - the cook, the greengrocer, the night cart - kept as the
+  stock they always sold, now laid out on the table instead of read off a
+  dialogue tree.
+
+  The rest are SHOP OVERFLOW: a shop's street frontage folded out onto the
+  pavement, carrying the part of the nearest counter's stock that the counter
+  has no room for. The shop shows its first two lines inside; the stall
+  carries the rest.
+
+  Overflow alone was the first cut of this, and it quietly rebuilt the
+  economy: a third of every stall in the city ended up outside a jeweller, an
+  armoury or a dispensary, so the street sold watches and shotguns and hot
+  food became hard to find. STALL_FOOD_SHARE is the dial. Turn it down and
+  the market goes back to being a bazaar of whatever the shops could not fit.
+
+  Nothing minds the table either way. The wares are ordinary priced pickups,
+  so the existing prompt already offers to sell you one or let you pocket it,
+  and the flock already decides whether pocketing it cost you anything.
+============================================================================*/
+const STALL_FOOD_SHARE = 0.68;         // how much of the market eats, not sells
+/* The old cart vendors, minus the vendors. `look` is which of the three
+   stall dressings it wears, so a cart lights itself the way it smells:
+   burners breathe amber, produce sits under a cold white tube. */
+const STALL_FOOD = [
+  { look: 0, stock: ['ramen', 'noodles', 'gyoza', 'bao'] },        // the cook
+  { look: 1, stock: ['apple', 'onigiri', 'taiyaki', 'boba'] },     // greengrocer
+  /* Batteries and bangers, which is all this one ever sold. A medkit went in
+     here on the first pass and it should not have: a hundred of them lying
+     out at grab height on open tables is free healing for anyone willing to
+     pocket it, and the cart was never a chemist. */
+  { look: 2, stock: ['battery', 'firecracker', 'soda'] },          // fixpoint
+  { look: 0, stock: ['sake', 'cigarette', 'kebab', 'taiyaki'] },   // night cart
+  { look: 0, stock: ['coffee', 'kebab', 'noodles', 'soda'] },      // belt canteen
+  { look: 1, stock: ['tee', 'boba', 'soda'] }                      // hype table
+];
+/* Away from the red light, the belt and the strip, carts came out of a flat
+   rotation of three and the fixpoint took a full third of them. Weight it:
+   an ordinary street corner is far likelier to have somebody selling dinner
+   on it than somebody selling batteries. */
+const STALL_PLAIN = [0, 1, 0, 1, 2];
+// an overflow stall wears the dressing its trade suggests
+const TRADE_LOOK = { grocery: 1, bodega: 1, general: 1, clothier: 0,
+                     jeweler: 0, tools: 2, armory: 2, dispensary: 2 };
+function stockStalls(){
+  const shops = [];
+  for (const b of buildings){
+    const u = buildingUse(b);
+    if (!u || !USES[u] || USES[u].kind !== 'shop' || !USES[u].trade) continue;
+    shops.push({ trade: USES[u].trade,
+                 x: (b.x0 + b.x1 + 1) * 0.5, y: (b.y0 + b.y1 + 1) * 0.5 });
+  }
+  // three across the frontage, sitting just clear of the table top
+  const ACROSS = [-1.02, 0, 1.02];
+  for (const st of stalls){
+    const dn = districtAt(st.x | 0, st.y | 0);
+    let pool = null;
+    if (!shops.length || hash3(st.x | 0, st.y | 0, 44) < STALL_FOOD_SHARE){
+      // which cart, the way the vendors used to be handed out
+      const F = dn === D_RED   ? STALL_FOOD[((st.s * 2) | 0) ? 3 : 0]
+              : dn === D_IND   ? STALL_FOOD[4]
+              : dn === D_STRIP ? STALL_FOOD[(((st.s * 5) | 0) % 2) ? 5 : 0]
+              :                  STALL_FOOD[STALL_PLAIN[((st.s * 5) | 0) % 5]];
+      pool = F.stock.filter(id => ITEMS[id]);
+      st.look = F.look;
+    } else {
+      let near = null, bd = 1e30;
+      for (const s of shops){
+        const dx = s.x - st.x, dy = s.y - st.y;
+        const d = dx * dx + dy * dy;
+        if (d < bd){ bd = d; near = s; }
+      }
+      const stk = SHOP_TYPES[near.trade].stock.filter(id => ITEMS[id]);
+      // the inside counter already displays the first two lines of the trade
+      pool = stk.length > 2 ? stk.slice(2) : stk;
+      st.look = TRADE_LOOK[near.trade];
+    }
+    if (!pool || !pool.length) continue;
+    const bay = stallBay(st);                     // resolves the stall's yaw
+    const ax = Math.cos(st.yaw), ay = Math.sin(st.yaw);
+    for (let i = 0; i < ACROSS.length; i++){
+      // a stall carries two or three lines, never the same three next door
+      if (i === 2 && hash3(st.x | 0, st.y | 0, 71) < 0.42) break;
+      const id = pool[(((st.s * 7) | 0) + i) % pool.length];
+      const key = 'stall_' + (st.x | 0) + '_' + (st.y | 0) + '_' + i;
+      if (worldDelta.taken[key]) continue;        // already bought or lifted
+      props.push({ x: st.x + ax * ACROSS[i] + bay.fx * 0.12,
+                   y: st.y + ay * ACROSS[i] + bay.fy * 0.12,
+                   z: STALL_TOP, k: PK_ITEM, s: 0, r: 0,
+                   item: id, key, qty: 1, price: ITEMS[id].price });
+    }
+  }
+}
 /* The special weapons are not for sale. They are LEFT places - tucked behind
    the plant of the city where only somebody poking around would look - and
    each cache spawns once per city, remembered through worldDelta like any
@@ -1640,9 +2011,14 @@ function bakeSolidProps(){
 
 // cart dimensions: the model, its collision box and its footprint all read
 // these, so they sit up here where every one of them can see them
-const STALL_H = 3.4, STALL_W = 3.0;    // tall enough to stand a cook up in
-const STALL_DEPTH = 0.85;              // depth as a fraction of the frontage
+/* The stand is a model now (ART.stall), 37 x 32 x 29 voxels, and nobody
+   stands inside it any more - so it takes the model's own proportions rather
+   than the headroom a cook used to need. These three keep its voxels cubic:
+   the frontage is the long side, and the awning reaches over most of it. */
+const STALL_H = 2.95, STALL_W = 3.41;  // 37/32 across to up, undistorted
+const STALL_DEPTH = 29 / 37;           // depth as a fraction of the frontage
 const STALL_D = STALL_W * STALL_DEPTH; // ... and in world units, for collision
+const STALL_TOP = STALL_H * (1 - 24 / 32);  // the table top: where wares sit
 /*--------------------------- placing the furniture --------------------------
   The city is meant to read as laid out, not sprinkled: every prop on a tile
   centre, nothing overlapping anything, nothing standing in a doorway, and
@@ -1734,7 +2110,47 @@ function propFacing(p){
   if (p.fix !== undefined) return p.fix;      // set down deliberately, and aimed
   if (p.k === PK_STALL) return stallYaw(p);
   if (p.k === PK_BENCH) return benchYaw(p);
+  if (p.k === PK_LAMP) return lampYaw(p);
   return propYaw(p) + (MODEL_TURN[p.k] || 0);
+}
+/*--------------------------- aiming a standard ------------------------------
+  propYaw squares a prop to the nearer roadway, but it answers with an AXIS -
+  it cannot tell the kerb from the shopfront behind you, because for a bin or
+  a post the difference never mattered. A streetlight is all difference: it is
+  a post with an arm, and an arm hung over the pavement instead of the road is
+  the one thing a streetlight must never be.
+
+  So read the ground rather than the arithmetic. Step out along each of the
+  four axes and see how far the roadway runs; the longest run is the
+  carriageway, and the arm goes over it. The artwork reaches toward -u, so the
+  yaw is the road direction turned around.
+============================================================================*/
+function lampYaw(o){
+  const ix = o.x | 0, iy = o.y | 0;
+  let best = -1, bestRoad = 0, bestOpen = -1;
+  for (let d = 0; d < 4; d++){
+    const dx = DIRV[d][0], dy = DIRV[d][1];
+    let road = 0, open = 0;
+    for (let s = 1; s <= 12; s++){
+      const q = tileAt(ix + dx * s, iy + dy * s);
+      if (q === T_BLD) break;                 // a wall ends the argument
+      open++;
+      // a crossing is still roadway, but only the through lanes count as
+      // "the street" - a lamp on a corner should reach over the long one.
+      // Nearer roadway is worth more, so a lamp beside one street does not
+      // reach across the pavement toward the next one over.
+      if (q === T_ROAD) road += 24 - s;
+      else if (q === T_CROSS) road += 12 - s;
+    }
+    /* Roadway decides it wherever there is any. Failing that - the plaza
+       lamps, the ones on landmark ground - reach over whatever is most open,
+       which is at least never into a wall or back over a shopfront. */
+    if (road > bestRoad || (bestRoad === 0 && road === 0 && open > bestOpen)){
+      if (road >= bestRoad){ bestRoad = road; best = d; bestOpen = open; }
+    }
+  }
+  if (best < 0) return propYaw(o);            // nothing to lean over at all
+  return Math.atan2(-DIRV[best][1], -DIRV[best][0]);
 }
 function footBox(k, yaw){
   const m = MODEL_FOOT[k];
@@ -2434,6 +2850,55 @@ function parseArt(rows){
     for (let x = 0; x < rows[y].length; x++) data[y * w + x] = ROLE[rows[y][x]] || 0;
   return { w, h, data };
 }
+/*------------------------- imported voxel models ---------------------------
+  Some things are easier modelled than drawn. A model made outside the game
+  arrives as an occupancy grid baked by tools/voxel-import.mjs, already in
+  the frame the sprite pass wants - row 0 at the top of the artwork, depth
+  running from the front edge back - so nothing has to be turned round here.
+  Each run is a role letter and a base-36 length: '.' is air, and the rest
+  are the same letters the flat art uses, so one model can carry a frame, a
+  canopy and a light strip and the colour slots sort them out. Role letters
+  are upper case and base-36 digits are not, which is why the runs need no
+  separator between them.
+  It hands back the same shape parseArt does, plus the vol() that makes the
+  ray march read the grid instead of inflating an elevation into a barrel.
+============================================================================*/
+function voxArt(aw, vd, ah, rle){
+  const grid = new Uint8Array(aw * vd * ah);
+  let at = 0;
+  for (const m of rle.matchAll(/([.A-Z])([0-9a-z]+)/g)){
+    const role = ROLE[m[1]] || 0, n = parseInt(m[2], 36);
+    if (role) grid.fill(role, at, at + n);
+    at += n;
+  }
+  // a front elevation as well, so anything that draws this one flat - a
+  // distant fallback, an inventory icon - still gets its silhouette
+  const data = new Uint8Array(aw * ah);
+  for (let z = 0; z < ah; z++)
+    for (let x = 0; x < aw; x++)
+      for (let y = 0; y < vd; y++){
+        const r = grid[(z * vd + y) * aw + x];
+        if (r){ data[z * aw + x] = r; break; }
+      }
+  /* Asked for the grid it was baked at - which is what a matching depth
+     scale gives - it hands over the original. Any other shape is nearest
+     neighbour, so a model still draws if its prop's depth is retuned. */
+  const vol = function(w, d, h){
+    if (w === aw && d === vd && h === ah) return grid;
+    const out = new Uint8Array(w * d * h);
+    for (let z = 0; z < h; z++){
+      const sz = Math.min(ah - 1, (z * ah / h) | 0);
+      for (let y = 0; y < d; y++){
+        const sy = Math.min(vd - 1, (y * vd / d) | 0);
+        for (let x = 0; x < w; x++)
+          out[(z * d + y) * w + x] =
+            grid[(sz * vd + sy) * aw + Math.min(aw - 1, (x * aw / w) | 0)];
+      }
+    }
+    return out;
+  };
+  return { w: aw, h: ah, data, vol };
+}
 const ART = {
   ped: [
     parseArt(['..HH..', '..HH..', '.SSSS.', 'SSSSSS', 'SSSSSS', '.SSSS.', '.PPPP.', '.PP.PP', '.P...P', '.T...T']),
@@ -2464,7 +2929,19 @@ const ART = {
   carRear: parseArt([
     '..BBBBBB..', '.BWWWWWWB.', 'BBBBBBBBBB',
     'RRBBBBBBRR', 'BBBBBBBBBB', '.T......T.', '.T......T.']),
-  lamp: parseArt(['XXX', 'MXM', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.', '.M.']),
+  /* A real standard: a post at the kerb and an arm reaching out over the
+     roadway, with the lens on the underside of the head. The six warm
+     texels in the atlas are that lens, split out as X so the palette can
+     light it - see tools/voxel-import.mjs --tex. */
+  lamp: voxArt(15, 4, 55,
+    '.gM4.bM4.qM4.bM7.8M7.8M4.bX5.9X8.1X2.4Xb.5X5.pX3.7M1.4X3.7M1.19M1.eM1.tM2.dM2.dM2.dM' +
+    '2.tM1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18' +
+    'M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.' +
+    'eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1' +
+    '.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.18M1.eM1.17M3.cM3.sM' +
+    '1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM' +
+    '3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM' +
+    '3.dM1.eM1.dM3.cM3.dM1.1'),
   // the street tree is hand-drawn literal art - from "tree ascii.txt"
   tree: parseArtLit([
     '         # #### ####',
@@ -2519,7 +2996,57 @@ const ART = {
                   'M.......M',
                   'KKKKKKKKK',
                   'KKKKKKKKK']),
-  hydr: parseArt(['.B.', 'BBB', '.B.', '.B.']),
+  /* The hydrant is a model, not a drawing - see tools/voxel-import.mjs.
+     Two side caps and a pumper nozzle on the front face, which is why it
+     takes a quarter turn off propYaw to put that nozzle at the road. */
+  /* The market stand is a model too - a table under a gabled awning, with
+     the awning's own underside promoted to a light strip so each stall
+     type can light itself. See tools/voxel-import.mjs. */
+  stall: voxArt(37, 29, 32,
+    '.cdM1SxM1.2X1SxX1.24M1SxM1.npM1SxM1.2M1XxM1.2M1XxM1.13M1XxM1.2M1XxM1.2M1SxM1.jlM1SxM' +
+    '1.2M1SxM1.2M1SxM1.2M1S2X2S2X2S2X2S2X2S2X1S2X2S2X2S2X2S2M1.24M1SxM1.24M1S2X2S2X2S2X2S' +
+    '2X2S2X1S2X2S2X2S2X2S2M1.2M1SxM1.2M1SxM1.2M1SxM1.ceX1SxX1.2M1SxM1.2M1SxM1.13M1XxM1.57' +
+    'M1SxM1.57M1XxM1.13M1SxM1.2M1SxM1.2X1SxX1.68M1XxM1.2M1XxM1.2M1XxM1.2M1XxM1.2M1XxM1.2M' +
+    '1SxM1.68M1SxM1.68M1SxM1.2M1XxM1.2M1XxM1.2M1XxM1.2M1XxM1.2M1XxM1.35M1.xM1.2M1.xM1.2M1' +
+    '.xM1.35M1.xM1.68M1.xM1.68M1.xM1.35M1.xM1.2M1.xM1.2M1.xM1.14Sx.7aM1.xM1.57M1.xM1.57M1' +
+    '.xM1.8bX1S1X3S1X3S1X3S1X2S1X3S1X2S1X3S1X3S1X1.69M1S2X2S2X2S2X2S2X2S2X1S2X2S2X2S2X2S2' +
+    'M1.13M1XxM1.2M1S2X2S2X2S3X1S2X2S2X1S2X2S2X2S2X2S2M1.35M1S2X2S2X2S3X1S2X2S2X1S2X2S2X2' +
+    'S2X2S2M1.35M1S2X2S2X2S3X1S2X2S2X1S2X2S2X2S2X2S2M1.2M1XxM1.13M1S2X2S2X2S2X2S2X2S2X1S2' +
+    'X2S2X2S2X2S2M1.69X1S1X3S1X3S1X3S1X2S1X3S1X2S1X3S1X3S1X1.5X1.3X1.3X1.3X1.2X1.3X1.2X1.' +
+    '3X1.3X1.6aM1X2.2X2.2X2.2X2.2X2.1X2.2X2.2X2.2X2M1.24M1X2.2X2.2X3.1X2.2X2.1X2.2X2.2X2.' +
+    '2X2M1.2M1X2.2X2.2X2.2X2.2X2.1X2.2X2.2X2.2X2M1.24M1X2.2X2.2X3.1X2.2X2.1X2.2X2.2X2.2X2' +
+    'M1.24M1X2.2X2.2X2.2X2.2X2.1X2.2X2.2X2.2X2M1.2M1X2.2X2.2X3.1X2.2X2.1X2.2X2.2X2.2X2M1.' +
+    '24M1X2.2X2.2X2.2X2.2X2.1X2.2X2.2X2.2X2M1.6aX1.3X1.3X1.3X1.2X1.3X1.2X1.3X1.3X1.7bM1.x' +
+    'M1.35M1.xM1.2M1.xM1.13M1.xM1.13M1.xM1.2M1.xM1.35M1.xM1.egM1.xM1.35M1.xM1.2M1.xM1.13M' +
+    '1.xM1.13M1.xM1.2M1.xM1.35M1.xM1.egM1.xM1.35M1.xM1.2M1.xM1.13M1.xM1.13M1.xM1.2M1.xM1.' +
+    '35M1.xM1.2M1.xM1.dfM1.xM1.35M1.xM1.2M1.xM1.13M1.xM1.13M1.xM1.2M1.xM1.35M1.xM1.2M1.xM' +
+    '1.dfM1.xM1.35M1.xM1.2M1.xM1.13M1.xM1.13M1.xM1.2M1.xM1.35M1.xM1.2M1.xM1.dfM1.xM1.35M1' +
+    '.xM1.2M1.xM1.13M1.xM1.13M1.xM1.2M1.xM1.35M1.xM1.2M1.xM1.dfM1.xM1.35M1.xM1.2M1.xM1.13' +
+    'M1.xM1.13M1.xM1.2M1.xM1.35M1.xM1.2M1.xM1.dfM1.xM1.35M1.xM1.2M1.xM1.13M1.xM1.13M1.xM1' +
+    '.2M1.xM1.35M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.' +
+    'xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.df' +
+    'M1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM' +
+    '1.68M1.xM1.2M1.xM1.dfM1.xM1.1M22.1M1.5M5.nM1.1M33.1Mz.1M33.1M1.nM3.7M1.1M22.1M1.xM1.' +
+    '2M1.xM1.dfM1.xM1.69Mx.69M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.6' +
+    '8M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.xM1.2M1.xM1.dfM1.xM1.68M1.xM1.68M1.x' +
+    'M1.2M1.xM1.dfM1.xM1.67M2.xM2.67M1.xM1.2M1.xM1.79M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.2M1.x' +
+    'M1.2M1.xM1.13M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.1M10M1.1M1.xM1.2M1.xM1.2' +
+    'M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.24M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.2M1.xM1.12'),
+  hydr: voxArt(19, 14, 28,
+    '.3yB1.6aB3.fB5.eB5.eB5.fB3.4nB5.dB7.cB7.bB8.cB7.cB7.dB5.3lB3.eB7.bB8.bB9.aB9.aB9.aB8' +
+    '.cB7.eB3.32B5.cB8.bB9.aB9.9Ba.aB9.aB9.aB8.dB5.30B6.cB9.aB9.9Ba.9Ba.9Ba.aB9.aB9.bB7.e' +
+    'B1.21B7.bB9.9Bb.8Bb.7Bc.7Bc.7Bc.8Bb.8Bb.9B9.bB7.1xB6.cB9.9Bb.8Bb.7Bc.7Bc.7Bc.8Bb.8Bb' +
+    '.9B9.bB6.2jB3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.3' +
+    '3B3.eB7.bB8.8Bf.3Bh.3Bf.7B8.cB7.eB3.20B5.eB5.eB5.dB7.8Bf.3Bh.2Bh.2Bh.3Bf.8B7.dB5.eB5' +
+    '.eB5.fB3.fB5.dB6.dB6.rBg.3Bh.1Bj.1Bh.2Bg.rB6.dB6.dB6.eB4.eB7.cB7.cB7.rBf.3Bh.1Bi.2Bh' +
+    '.3Bf.rB7.cB7.cB7.dB4.eB7.cB7.cB7.vB7.8Bf.4Bf.4Bf.8B7.vB7.cB7.cB7.eB1.1B1.fB5.dB7.cB7' +
+    '.uB8.bB9.aB9.aB9.aB8.vB7.cB7.cB7.wB5.eB5.eB5.dB7.bB8.bB9.aB9.aB9.aB8.cB7.dB5.eB5.eB5' +
+    '.1iB1.hB3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.hB1.iB1.22B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.e' +
+    'B3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB' +
+    '7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.32B5.dB7.bB9.aB9.aB9.aB9.aB9.bB7.dB5.32B3.eB7.bB8.bB9.' +
+    'aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB8.cB7.eB3.33B3.eB7.bB8.bB9.aB9.aB9.aB' +
+    '8.cB7.eB3.2jB5.dB7.bB9.9Ba.9Bb.8Bb.8Bb.8Ba.aB9.bB7.dB5.1hB3.dB8.aBa.9Bb.7Bc.7Bd.6Bd.' +
+    '6Bd.6Bc.8Bb.8Ba.aB8.eB3.8'),
   /* Face down, arm out. Read left to right: head, coat, legs, one boot. */
   body: parseArt(['..HH...SSSSS...PP..',
                   '.HHHH.SSSSSSS.PPPPT',
@@ -2836,88 +3363,29 @@ function benchArt(){
   return { w: 16, h: 12, data: new Uint8Array(16 * 12), vol };
 }
 /*---------------------------- market stalls --------------------------------
-  Everything else in the world is a flat elevation inflated into a solid,
-  which is honest work for a bin or a post but makes a market cart a brick -
-  and a brick has nowhere to put the person who works in it. Stalls are
-  authored as real volumes instead: a canopy on four posts, a counter across
-  the customer side, and behind it an open bay with a body's worth of
-  headroom. The counter is the divide - you stand at it, the cook stands
-  behind it, and the gap over the counter is where you see each other.
+  A stall used to be authored procedurally - a canopy on four posts with a
+  counter across the customer side and an open bay behind it for the cook to
+  stand in. There is no cook any more, and the geometry is a model: a table
+  under a gabled awning, open on every side, which is a market stand rather
+  than a kiosk. It is the same solid three times over; what separates the
+  flavours is what the trade is called, what it is made of, and how it lights
+  itself after dark.
 
-  Local frame: u runs across the frontage, v from the counter (0) back to
-  the shelving (1), z up from the pavement. Roles are the same letters the
-  flat art uses, so the colour slots and the neon `dyn` channel carry over.
+  Local frame: u runs across the frontage, v from the front edge (0) back,
+  z up from the pavement. Roles are the letters the model was imported with -
+  M the frame and table, S the awning fabric, X the strip under the awning,
+  which is wired to the neon `dyn` channel so each flavour glows its own way.
 ============================================================================*/
-function stallVolume(sp){
-  const roof = ROLE[sp.roof], trim = ROLE[sp.trim], sign = ROLE[sp.sign],
-        ctr = ROLE[sp.counter], front = ROLE[sp.front], back = ROLE[sp.back],
-        frame = ROLE.M, H = STALL_H;
-  const goods = sp.goods.map(ch => ROLE[ch]);
-  // wares, with gaps - a shelf packed edge to edge reads as a solid slab
-  const ware = (u, tier) => {
-    const n = ((u * 6.5) | 0) + tier * 2;
-    return (n % 3 === 2) ? 0 : goods[n % goods.length];
-  };
-  return function(aw, vd, ah){
-    const vox = new Uint8Array(aw * vd * ah);
-    for (let z = 0; z < ah; z++){
-      const zw = (1 - (z + 0.5) / ah) * H;      // world height of this layer
-      for (let y = 0; y < vd; y++){
-        const v = (y + 0.5) / vd;
-        for (let x = 0; x < aw; x++){
-          const u = (x + 0.5) / aw;
-          const side = u < 0.07 || u > 0.93;
-          const post = (u < 0.10 || u > 0.90) && (v < 0.13 || v > 0.87);
-          let role = 0;
-          if (zw >= H - 0.26)                   // canopy, with a lit front lip
-            role = v < 0.12 ? trim : roof;
-          else if (v < 0.30){                   /* ---- the customer side ---- */
-            if (zw > H - 0.92) role = sign;                 // board under the eave
-            else if (zw > H - 1.10) role = trim;            // strip light on it
-            else if (zw > 1.32) role = post ? frame : 0;    // open: see the cook
-            else if (zw > 1.12) role = ware(u, 0);          // what is for sale
-            else if (zw > 0.94) role = ctr;                 // the counter itself
-            else role = side ? frame : front;               // and its face
-          } else if (v > 0.82){                 /* ---- the back unit -------- */
-            if (v > 0.94) role = zw < 2.34 ? back : 0;      // back skin
-            else if (zw > 2.10 && zw < 2.26) role = back;   // upper shelf
-            else if (zw > 1.88 && zw < 2.10) role = ware(u, 1);
-            else if (zw > 1.48 && zw < 1.64) role = back;   // lower shelf
-            else if (zw > 1.26 && zw < 1.48) role = ware(u, 2);
-            else if (zw < 0.90) role = back;                // cabinet beneath
-            else role = side && zw < 2.34 ? frame : 0;
-          } else                                /* ---- the bay: hollow ------ */
-            role = side && zw < 2.34 ? frame : 0;
-          if (role) vox[(z * vd + y) * aw + x] = role;
-        }
-      }
-    }
-    return vox;
-  };
-}
-// the flat `data` is never read for these - the volume builder replaces it
-function stallArt(sp){
-  return { w: 16, h: 18, data: new Uint8Array(16 * 18), vol: stallVolume(sp) };
-}
-// Stalls come in flavours - ramen cart, produce stand, tech bench - picked
-// per stall from its hash, weighted by the district it stands in.
 const STALL_VARIANTS = [
-  { art: stallArt({ roof: 'M', trim: 'X', sign: 'S', counter: 'B', front: 'M',
-                    back: 'K', goods: ['W', 'H', 'B'] }),
-    w: STALL_W, h: STALL_H,
-    sl: slots({ X: [-1, 1.0], S: [C.nAmber, 0.9], W: [C.nWhite, 0.5],
-                M: [C.metal, 0.62], B: [C.trunk, 0.75], H: [C.nPink, 0.95],
-                K: [C.dataDk, 0.7] }) },
-  { art: stallArt({ roof: 'M', trim: 'X', sign: 'S', counter: 'K', front: 'M',
-                    back: 'K', goods: ['V', 'V', 'B'] }),
-    w: STALL_W, h: STALL_H,
-    sl: slots({ X: [-1, 0.9], S: [C.nGreen, 0.8], V: [C.leaf, 0.8],
-                K: [C.trunk, 0.8], B: [C.camRed, 0.8], M: [C.metal, 0.6] }) },
-  { art: stallArt({ roof: 'M', trim: 'X', sign: 'G', counter: 'K', front: 'M',
-                    back: 'K', goods: ['G', 'W', 'M'] }),
-    w: STALL_W, h: STALL_H,
-    sl: slots({ X: [-1, 1.0], G: [C.nCyan, 0.85], W: [C.nWhite, 0.95],
-                K: [C.dataDk, 0.8], M: [C.metal, 0.62] }) }
+  // hot food: brass and canvas over a burner, warm and breathing
+  { art: ART.stall, w: STALL_W, h: STALL_H, dep: STALL_DEPTH, lightMode: 0,
+    sl: slots({ M: [C.metal, 0.62], S: [C.camRed, 0.80], X: [-1, 1.0] }) },
+  // produce: painted wood under a green shade, a flat cold strip
+  { art: ART.stall, w: STALL_W, h: STALL_H, dep: STALL_DEPTH, lightMode: 1,
+    sl: slots({ M: [C.trunk, 0.78], S: [C.leaf, 0.78], X: [-1, 0.95] }) },
+  // tech and oddments: scaffold and tarp, and the tube is on its way out
+  { art: ART.stall, w: STALL_W, h: STALL_H, dep: STALL_DEPTH, lightMode: 2,
+    sl: slots({ M: [C.rail, 0.60], S: [C.dataDk, 0.72], X: [-1, 1.0] }) }
 ];
 function slots(pairs){                       // {'B':[base,density], ...}
   const base = new Int16Array(NROLE).fill(-1);
@@ -2926,9 +3394,16 @@ function slots(pairs){                       // {'B':[base,density], ...}
   return { base, dens };
 }
 const PROPDEF = [
-  { art: ART.lamp,   w: 0.58, h: 5.4, sl: slots({ M: [C.metal, 0.58], X: [-1, 1.0] }) },
+  /* 15 x 55 x 4 voxels, kept cubic at 5.4 tall. `anchor` is the post: the
+     model is nine tenths of the way across its own artwork, so without it the
+     BOUNDING BOX would sit on the pavement and the post would stand out in
+     the traffic. X is the lens, and it takes the lamp palette through `dyn`. */
+  { art: ART.lamp,   w: 5.4 * 15 / 55, h: 5.4, dep: 4 / 15, anchor: 0.4,
+    sl: slots({ M: [C.metal, 0.58], X: [-1, 1.0] }) },
   { art: ART.tree,   w: 5.4,  h: 4.6, sl: slots({ V: [C.leaf, 0.72], K: [C.trunk, 0.8] }) },
-  { art: ART.hydr,   w: 0.5,  h: 0.9, sl: slots({ B: [C.hydr, 0.85] }) },
+  /* 19 x 28 x 14 voxels, so 0.61 wide and 0.90 tall keeps them cubic and
+     stands the thing at the height of a real one. */
+  { art: ART.hydr,   w: 0.61, h: 0.90, dep: 14 / 19, sl: slots({ B: [C.hydr, 0.85] }) },
   { art: ART.tlight, w: 0.62, h: 4.6, sl: slots({ M: [C.metal, 0.66], X: [-1, 1.0] }) },
   { art: ART.bin,    w: 0.6,  h: 1.1, sl: slots({ M: [C.metal, 0.7], T: [C.tire, 0.8] }) },
   { art: ART.rail,   w: 1.05, h: 1.2, sl: slots({ M: [C.rail, 0.62] }) },
@@ -6002,8 +6477,12 @@ function spawnActors(){
   }
   if (st && bd < 120){
     {
-      const bay = stallBay(st);                 // the cook works his own cart
-      const ck = spawnActor('vendor', bay.x, bay.y, {
+      /* He no longer works a cart - the stalls are unmanned. He stands at
+         the front of one instead, which keeps THE SPHERE's second stage
+         findable without putting anybody back behind a counter. */
+      const bay = stallBay(st);
+      const ck = spawnActor('vendor', st.x + bay.fx * (STALL_D * 0.5 + 0.3),
+                                      st.y + bay.fy * (STALL_D * 0.5 + 0.3), {
         name: 'STALL COOK', brain: 'still', shirt: C.shirtA,
         tree: {
           entry: () => questStage('sphere') === undefined ? 'start'
@@ -6041,27 +6520,6 @@ function spawnActors(){
                { name: 'RAZOR', brain: 'hostile', hp: 26, shirt: C.camRed, skin: C.skinB });
     packed++;
   }
-  // stall vendors: somebody minds a third of the carts, and their prices
-  // never check your record - street food does not scan corpo flags
-  const vopt = id => ({
-    t: 'Buy ' + ITEMS[id].name.toLowerCase() + ' - ' + ITEMS[id].price + ' cr',
-    if: () => player.credits >= ITEMS[id].price && invCount(id) < ITEMS[id].stack,
-    do(){ player.credits -= ITEMS[id].price; invAdd(id, 1); toast('+ ' + ITEMS[id].name); },
-    next: 'start' });
-  const VEND = [
-    { name: 'CART COOK', greet: 'Broth has been going since dawn. You look like you need the big bowl.',
-      a: 'ramen', b: 'noodles' },
-    { name: 'GREENGROCER', greet: 'Picked this morning, more or less. The wax is complimentary.',
-      a: 'apple', b: 'onigiri' },
-    { name: 'FIXPOINT VENDOR', greet: 'Batteries, bangers, whatever fell off the truck this week.',
-      a: 'battery', b: 'firecracker' },
-    { name: 'NIGHT CART', greet: 'The mile never eats at home. Warm sake, smoke after.',
-      a: 'sake', b: 'cigarette' },
-    { name: 'BELT CANTEEN', greet: 'Shift food. It works or you do not.',
-      a: 'coffee', b: 'kebab' },
-    { name: 'HYPE TABLE', greet: 'Limited drop. Everything here is one of nine hundred.',
-      a: 'tee', b: 'boba' }
-  ];
   {
     const isp = mqSpot(711, D_DOWN);
     spawnActor('citizen', isp.x, isp.y, {
@@ -6125,26 +6583,11 @@ function spawnActors(){
                  { t: 'I will find the credits' }] },
         stamped: { text: 'Congratulations. You now legally exist. Condolences.' } } });
   }
-  let stallN = 0;
-  const vstalls = props.filter(p => p.k === PK_STALL &&
-                                    districtAt(p.x | 0, p.y | 0) !== D_RURAL &&
-                                    hash3(p.x | 0, p.y | 0, 44) <= 0.6)
-                       .sort((a, b) => hash3(a.x | 0, a.y | 0, 45) - hash3(b.x | 0, b.y | 0, 45));
-  for (const p of vstalls){
-    if (stallN >= 150) continue;
-    const dn2 = districtAt(p.x | 0, p.y | 0);
-    const V = dn2 === D_RED ? VEND[((p.s * 2) | 0) ? 3 : 0]
-            : dn2 === D_IND ? VEND[4]
-            : dn2 === D_STRIP ? VEND[(((p.s * 5) | 0) % 2) ? 5 : 0]
-            : VEND[(((p.s * 5) | 0) + 1) % 3];
-    const bay = stallBay(p);                  // in the cart, behind the counter
-    const vd2 = spawnActor('vendor', bay.x, bay.y, {
-      name: V.name, brain: 'still',
-      tree: { start: { text: V.greet,
-        opts: [vopt(V.a), vopt(V.b), { t: 'Just looking' }] } } });
-    vd2.dx = bay.fx; vd2.dy = bay.fy; vd2.pinned = 1;
-    stallN++;
-  }
+  /* There used to be a hundred and fifty cart vendors here, one minding
+     every third stall, each selling two things out of a dialogue tree. The
+     stalls sell themselves now - see stockStalls - so the carts stand open
+     and the street is that much less crowded with people who only ever
+     said one thing. */
 }
 
 /*========================= 13. CAMERA, INPUT, COLLISION ====================*/
@@ -17110,6 +17553,250 @@ function waterShade(wx, wy){
   if (gl > 0.984){ _wd += 0.14; }
   _wwet = 2;                                  // water always reflects
 }
+/* The pool a lamp throws, applied over whatever the ground already was.
+   Two things happen, and they are the same thing: the ground gets brighter
+   toward the middle, and it takes the lamp's cast while it does.
+
+   The cast comes off the lamp's own ramp - see LAMPPOOL - and is chosen
+   outright by distance from the lens. Nothing is dithered. An earlier pass
+   stippled the lamp's colour in against the falloff and it read as patchy
+   speckle on the tarmac, which is the one thing light never looks like: the
+   rung carries the colour, the glyph density carries the intensity, and
+   because both fall off together the pool reads as light landing rather than
+   as ground being painted.
+
+   The falloff is smoothstepped so the pool has a bright middle and dies out
+   gently at the rim instead of ending on a circle. Daylight puts it away. */
+function lampPool(wx, wy, ix, iy){
+  if (!lampGrid || _lampNight <= 0.01 || inside) return;
+  const li = lampGrid[iy * MAP + ix];
+  if (li < 0) return;
+  const L = lamps[li];
+  if (!L || L.dead) return;
+  const dx = wx - L.lx, dy = wy - L.ly;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= LAMP_REACH * LAMP_REACH) return;
+  const f = 1 - Math.sqrt(d2) / LAMP_REACH;
+  const e = f * f * (3 - 2 * f) * _lampNight;   // smooth in, smooth out
+  if (e <= 0.02) return;
+  _wd = clamp(_wd + e * LAMP_GAIN, 0, 1);
+  const k = (e * LAMP_STEPS) | 0;
+  _wb = L.pool[k < LAMP_STEPS ? k : LAMP_STEPS - 1];
+}
+/*========================= the beam in the air ==============================
+  The pool says where the light lands. This is the light on its way down.
+
+  A lamp throws a cone: apex at the lens, opening to the pool's radius by the
+  time it reaches the pavement. How much of that cone a given character cell
+  is looking through is a ray-cone intersection, which is a quadratic - so
+  every cell costs one solve rather than a march, and the depth buffer that
+  is already sitting there says where the ray stops. The length of ray inside
+  the cone IS the optical depth: long through the middle, short at the edges,
+  nothing outside, and no dithering anywhere.
+
+  What it does with that depth is lift the cell toward the same ramp the pool
+  uses. On empty air it writes a faint glyph where there was none, which is
+  the visible shaft; on a wall or a passer-by it brightens what is already
+  there, which is that surface being lit. Sources are left alone - a beam does
+  not illuminate a neon sign - and so is anything the ramp already has
+  brighter, so the pool never gets dimmed by the cone standing over it.
+============================================================================*/
+/* Accumulators for the pass below: the strongest cone over each cell, the sum
+   of all of them, the winner's colour, and how far away the winner was. Kept
+   at module scope and refilled, not reallocated - this runs every frame. */
+let vMax = null, vSum = null, vCol = null, vDep = null;
+function lampVolume(){
+  if (!lampGrid || _lampNight <= 0.02 || inside) return;
+  const cols = R.cols, rows = R.rows, N = cols * rows;
+  if (!vMax || vMax.length !== N){
+    vMax = new Float32Array(N); vSum = new Float32Array(N);
+    vCol = new Int32Array(N);   vDep = new Float32Array(N);
+  }
+  /* The core is narrower than the pool, so the rows and columns a cone can
+     reach are narrower too - which is most of what pays for the second pass. */
+  const BR = LAMP_REACH * LAMPV.cone;         // the core's radius at the pavement
+  const K = BR / LAMP_LENS_Z, K2 = K * K;     // and therefore the cone's slope
+  const R2 = LAMP_REACH * LAMP_REACH;
+  let tc0 = cols, tc1 = -1, tr0 = rows, tr1 = -1;   // the rect actually touched
+  for (let li = 0; li < lamps.length; li++){
+    const L = lamps[li];
+    if (L.dead) continue;
+    const ox = cam.x - L.lx, oy = cam.y - L.ly, oz = cam.z - LAMP_LENS_Z;
+    const fwd = -ox * dirX - oy * dirY;
+    if (fwd < -BR || fwd - BR > viewD) continue;
+    /* You cannot see the beam you are standing in - and a lamp overhead that
+       tries to is the whole wash. Fade its shaft in as the eye leaves it. */
+    let vis = (Math.sqrt(ox * ox + oy * oy) - LAMPV.nearIn)
+            / (LAMPV.nearOut - LAMPV.nearIn);
+    if (vis <= 0) continue;
+    if (vis > 1) vis = 1;
+    vis = vis * vis * (3 - 2 * vis);
+    // the columns and rows this cone can possibly touch
+    const f = Math.max(0.35, fwd);
+    const lat = (dirY * -ox - dirX * -oy) / planeLen;
+    const half = cols * 0.5 * (BR / f) + 2;
+    let c0 = Math.floor(cols * 0.5 * (1 - lat / f) - half);
+    let c1 = Math.ceil(cols * 0.5 * (1 - lat / f) + half);
+    if (c1 < 0 || c0 > cols - 1) continue;
+    if (c0 < 0) c0 = 0;
+    if (c1 > cols - 1) c1 = cols - 1;
+    // top of the beam at its nearest, bottom of it at its furthest
+    const fN = Math.max(0.35, fwd - BR), fF = Math.max(0.5, fwd + BR);
+    let r0 = Math.floor(horizon + (cam.z - LAMP_LENS_Z) * projRows / fN);
+    let r1 = Math.ceil(horizon + cam.z * projRows / fN);
+    const rA = Math.floor(horizon + (cam.z - LAMP_LENS_Z) * projRows / fF);
+    const rB = Math.ceil(horizon + cam.z * projRows / fF);
+    if (rA < r0) r0 = rA;
+    if (rB > r1) r1 = rB;
+    if (r0 < 0) r0 = 0;
+    if (r1 > rows - 1) r1 = rows - 1;
+    if (r1 < r0) continue;
+    const ci = L.ci || 0;                     // its ramp row; the rung comes later
+    for (let r = r0; r <= r1; r++){
+      const kk = (r + 0.5 - horizon) / projRows;     // the ray's fall per unit t
+      const dz = -kk;
+      const rowOff = r * cols;
+      for (let c = c0; c <= c1; c++){
+        const idx = rowOff + c;
+        if (srcBuf[idx] === 2) continue;             // never wash out a source
+        const dx = rayX[c], dy = rayY[c];
+        const a = dx * dx + dy * dy - K2 * dz * dz;
+        const b = 2 * (ox * dx + oy * dy - K2 * oz * dz);
+        const cc = ox * ox + oy * oy - K2 * oz * oz;
+        let t0, t1;
+        if (Math.abs(a) < 1e-7){                     // ray along the cone's wall
+          if (Math.abs(b) < 1e-9) continue;
+          const th = -cc / b;
+          if (b > 0){ t0 = 0; t1 = th; } else { t0 = th; t1 = 1e30; }
+        } else {
+          const disc = b * b - 4 * a * cc;
+          if (disc <= 0) continue;
+          const sq = Math.sqrt(disc);
+          let ta = (-b - sq) / (2 * a), tb = (-b + sq) / (2 * a);
+          if (ta > tb){ const sw = ta; ta = tb; tb = sw; }
+          if (a > 0){ t0 = ta; t1 = tb; }            // the ray crosses the cone
+          else { t0 = tb; t1 = 1e30; }               // ...or runs up inside it
+        }
+        // only the half below the lens, and only above the pavement
+        if (Math.abs(dz) > 1e-9){
+          const tApex = -oz / dz;                    // where the ray passes the lens
+          const tFloor = -cam.z / dz;                // and where it reaches the ground
+          if (dz < 0){ if (tApex > t0) t0 = tApex; if (tFloor < t1) t1 = tFloor; }
+          else { if (tFloor > t0) t0 = tFloor; if (tApex < t1) t1 = tApex; }
+        } else if (oz > 0 || cam.z < 0) continue;
+        if (t0 < 0) t0 = 0;
+        const dLim = dBuf[idx];                      // whatever the ray hit
+        if (t1 > dLim) t1 = dLim;
+        if (!(t1 > t0)) continue;
+        /* Chord length is how much cone the ray crossed. Where it crossed it
+           matters just as much: the same half-unit of air read a tile under
+           the lens and thirty tiles down the street are not the same light.
+           Weight by the midpoint's distance from the lens and the shaft gets
+           a bright root and a top that fades - which is the whole shape of a
+           beam, and was the piece that was missing. */
+        const tm = (t0 + t1) * 0.5;
+        const mx = ox + dx * tm, my = oy + dy * tm, mz = oz + dz * tm;
+        const q = (mx * mx + my * my + mz * mz) / R2;
+        let tau = (t1 - t0) * LAMPV.haze * _lampAir * vis / LAMP_LENS_Z
+                * _lampNight / (1 + LAMPV.fall * q);
+        if (tau < 0.02) continue;
+        if (tau > 1) tau = 1;
+        vSum[idx] += tau;
+        if (tau > vMax[idx]){ vMax[idx] = tau; vCol[idx] = ci; vDep[idx] = t1; }
+        if (c < tc0) tc0 = c;
+        if (c > tc1) tc1 = c;
+        if (r < tr0) tr0 = r;
+        if (r > tr1) tr1 = r;
+      }
+    }
+  }
+  if (tr1 < tr0) return;
+  /* Now draw it, once. Empty air is where a beam is actually SEEN, so that is
+     the only place it may put a mark of its own. Everywhere else it is light
+     falling on something that already has a colour and a shape: lift the
+     glyph so the surface reads as lit, and leave the colour alone unless the
+     beam is thick enough to genuinely tint it. Writing the ramp over every
+     surface it crossed was what turned the street into a wash. */
+  for (let r = tr0; r <= tr1; r++){
+    const rowOff = r * cols;
+    for (let c = tc0; c <= tc1; c++){
+      const idx = rowOff + c;
+      const mx = vMax[idx];
+      if (mx <= 0) continue;
+      const sum = vSum[idx];
+      vMax[idx] = 0; vSum[idx] = 0;
+      /* The GATE is on the strongest single cone, never on the total. Summing
+         first and cutting after let a cell with no real beam over it collect
+         one out of six faint skirts, so the pass covered whatever the lamp
+         density happened to be - measured on one clear night at 22:00, same
+         settings, two streets:
+
+           beside a lamp on an open street    1.3% of cells,  24 columns
+           on the downtown / red-mile seam   30.3% of cells, 181 columns
+
+         which is the whole "looks wrong from some angles" complaint in two
+         numbers: the pass was a beam in a thin part of the city and weather in
+         a thick one. Gate on the max and a cell is lit because some ONE lamp
+         is genuinely shining through it. Overlap still adds brightness, which
+         is fair - it just cannot invent a beam out of six nothings. */
+      if (mx <= LAMPV.cut) continue;
+      // the strongest cone owns the cell; the rest are mixed in at a fraction
+      let tau = mx + (sum - mx) * LAMPV.mix;
+      if (tau > 1) tau = 1;
+      // drop the skirt, then curve the rest back toward the core
+      tau = (tau - LAMPV.cut) / (1 - LAMPV.cut);
+      if (tau <= 0) continue;
+      tau = Math.pow(tau, LAMPV.gamma);
+      /* The rung comes off the COMBINED depth, so the shaft carries a gradient
+         across and along itself rather than one flat colour. Floored at two,
+         because rung nought is a whisper over tarmac and a beam seen against
+         the night sky has to be at least visible to be worth solving for.
+
+         `swap` decides where that tint starts, and it wants to be LOW - low
+         enough that the rung, not the threshold, is what varies. Read down a
+         lamp post at 6.5 tiles, one character per screen row, M for its own
+         metal and a digit for the rung it took:
+
+           swap 0.26   MM??????MMMMMMMMMMMMMM33333333443333333333333MMM
+           swap 0.10   MM??????MMMMMMMMMM223333333334433333333333333333
+
+         At 0.26 the post came out BANDED - metal, then colour, then metal
+         again at the foot - because the foot and the crown each have only a
+         short run of cone in front of them, and a hard threshold turns "a
+         little" into "none". That reads as a post that changes material half
+         way down. Dropping it lets the rung carry the fall instead: coverage
+         comes on smoothly, and a thing half in the beam is half in it. The
+         rows still metal below the lens are the post ABOVE the cone - a cone
+         from a point source cannot light its own bracket. */
+      const ramp = LAMPPOOL[vCol[idx]] || LAMPPOOL[0];
+      let k = 2 + ((tau * (LAMP_STEPS - 2)) | 0);
+      if (k > LAMP_STEPS - 1) k = LAMP_STEPS - 1;
+      if (gBuf[idx] === 0){
+        const g = Math.round(Math.pow(tau, 0.75) * LAMPV.shaft * RMAX);
+        gBuf[idx] = g < 1 ? 1 : g > RMAX ? RMAX : g;
+        bBuf[idx] = ramp[k];
+        lBuf[idx] = levelOf(clamp(vDep[idx] / viewD, 0, 1));
+      } else {
+        /* Clamped, not discarded. This read `gBuf + lift <= RMAX` before, which
+           threw the whole lift away rather than capping it - so the brighter
+           the beam the FEWER cells it lit, and thickening the air ran the
+           effect backwards: measured over seven vantages by eight headings,
+           coverage fell 3.70% clear -> 1.08% in fog, when fog is the one night
+           a shaft should be the loudest thing on the street. */
+        const lift = Math.round(tau * LAMPV.lift * RMAX);
+        if (lift > 0){
+          const g = gBuf[idx] + lift;
+          gBuf[idx] = g > RMAX ? RMAX : g;
+        }
+        if (tau >= LAMPV.swap) bBuf[idx] = ramp[k];
+      }
+    }
+  }
+  /* Both accumulators are zeroed as the cell is drawn, so nothing carries
+     into the next frame and neither array is ever reallocated. A cell only
+     ever holds a sum if it also holds a max, so clearing on `mx > 0` clears
+     everything that was written. */
+}
 function floorSample(wx, wy, ix, iy){
   const t = tType[iy * MAP + ix];
   // 1 = under water right now, 2 = always a mirror. Tarmac holds water in
@@ -17276,6 +17963,7 @@ function floorPass(){
         }
       } else {
         floorSample(wx, wy, ix, iy);
+        lampPool(wx, wy, ix, iy);
       }
       const g = Math.round(clamp(_wd * dmm, 0, 1) * RMAX);
       const idx = rowOff + x;
@@ -18091,6 +18779,11 @@ const MODEL_TURN = [];                        // extra quarter turns, per kind
   set(PK_HOOP, 0.45, 0);  set(PK_SWING, 0.16, 0); set(PK_CLIMB, 0.33, 0);
   set(PK_FLOTSAM, 1.0, 0);
   set(PK_RAMP, 0.40, 1);
+  /* propYaw only squares a prop to the nearer roadway, and a hydrant drawn
+     from the model has a face: the pumper nozzle. Without the quarter turn
+     the nozzle points along the kerb and the side caps face the traffic,
+     which is backwards from how one is actually set in the ground. */
+  MODEL_TURN[PK_HYDR] = Math.PI / 2;
   set(PK_FOUNT, 1.0, 0); set(PK_STATUE, 0.85, 0); set(PK_BAND, 1.0, 1);
 })();
 /* How far a kind is worth marching at all. Small debris is sub-cell long
@@ -18184,6 +18877,26 @@ function stallYaw(o){
   return Math.atan2(fx, -fy);
 }
 /* Where the cook stands: in the bay, behind the counter, looking out over it. */
+/*-------------------------- what a stall burns ------------------------------
+  The strip under the awning is the one part of a stall that emits, so it is
+  where a flavour gets to announce itself down a dark street. Each mode is a
+  different fixture rather than a different colour: a gas burner's warmth
+  that breathes, a hard cold tube that just sits there, and a tired one that
+  drops out and strikes again. The stall's own hash offsets the phase, so a
+  row of them along a kerb never pulses in unison.
+============================================================================*/
+function stallLight(mode, s){
+  const t = worldTime + s * 11.3;
+  if (mode === 1) return C.nWhite;              // produce: a flat cold tube
+  if (mode === 2){                              // tech: a tube on its way out
+    const f = (t * 3.1) % 1;
+    if (f < 0.08) return C.dataDk;              // the dropout
+    if (f < 0.14) return C.nWhite;              // and the strike back
+    return C.nCyan;
+  }
+  // hot food: the burner breathes, amber into pink at the top of the breath
+  return ((t * 0.55) % 1) < 0.62 ? C.nAmber : C.nPink;
+}
 function stallBay(o){
   if (o.yaw === undefined) o.yaw = stallYaw(o);
   const fx = Math.sin(o.yaw), fy = -Math.cos(o.yaw);
@@ -18328,14 +19041,22 @@ function spritePass(){
       let def = PROPDEF[o.k];
       let dyn = 0;
       if (o.k === PK_LAMP){
-        dyn = o.dead ? C.tire : LAMPC[(o.s * LAMPC.length) | 0];
+        dyn = o.dead ? C.tire : (o.lampC || LAMPC[lampColourIndex(o)]);
       } else if (o.k === PK_STALL){
-        // flavour by district: the strip leans ramen, homes lean produce,
-        // downtown and the belt lean tech
-        const dn2 = o.dist !== undefined ? o.dist : districtAt(o.x | 0, o.y | 0);
-        const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0 : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
-        def = STALL_VARIANTS[(((o.s * 5) | 0) + bias) % 3];
-        dyn = NEONC[(o.s * NEONC.length) | 0];
+        /* A stall wears what it sells: stockStalls settles that when it lays
+           the table, so a noodle cart really is the one breathing amber and
+           the scaffold with the failing tube really is the one with decks on
+           it. Stalls nothing stocked - the ones inside a room - fall back to
+           the old district guess. */
+        let look = o.look;
+        if (look === undefined){
+          const dn2 = o.dist !== undefined ? o.dist : districtAt(o.x | 0, o.y | 0);
+          const bias = (dn2 === D_STRIP || dn2 === D_RED) ? 0
+                     : (dn2 === D_RES || dn2 === D_SUB || dn2 === D_RURAL) ? 1 : 2;
+          look = (((o.s * 5) | 0) + bias) % 3;
+        }
+        def = STALL_VARIANTS[look];
+        dyn = stallLight(def.lightMode, o.s);
       } else if (o.k === PK_METRO){
         dyn = C.nGreen;
       } else if (o.k === PK_TURBINE){
@@ -18365,9 +19086,21 @@ function spritePass(){
       _noRef = tType[(o.y | 0) * MAP + (o.x | 0)] === T_BRIDGE ? 1 : 0;
       const dep = def.dep !== undefined ? def.dep
                 : MODEL_DEPTH[o.k] !== undefined ? MODEL_DEPTH[o.k] : 0.9;
+      /* Most models stand on the middle of their own artwork, so the prop's
+         tile and the model's centre are the same point. An asymmetric one -
+         a streetlight, which is a post at one edge and an arm reaching off
+         the other - carries an `anchor`: the spot along its width that has to
+         land on the tile. Shift the draw the other way by that much and the
+         post stands where the prop was placed. */
+      let mx = o.x, my = o.y;
+      if (def.anchor){
+        const off = def.anchor * def.w;
+        mx -= Math.cos(o.yaw) * off;
+        my -= Math.sin(o.yaw) * off;
+      }
       /* A prop may carry its own colours - furniture already does, and a
          body has to, because it wears whoever it used to be. */
-      drawModel(o.x, o.y, pz, def.w, def.h, def.art,
+      drawModel(mx, my, pz, def.w, def.h, def.art,
                 o.sb || def.sl.base, o.sd || def.sl.dens,
                 dyn, o.yaw, dep, MODEL_BOXY[o.k] ? 1 : 0);
       _noRef = 0;
@@ -21196,6 +21929,7 @@ function worldPasses(){
   floorPass();
   wallPass();
   spritePass();
+  lampVolume();               // the beam itself, over whatever it falls on
   if (!inside){
     signPass();
     reflectPass();
@@ -21207,6 +21941,16 @@ function render(){
   statRays = 0; statCells = 0;
   // clear days keep the far skyline solid; haze and darkness dissolve it
   densK = (CFG.timeMode === 2 && weather !== 3) ? 0.4 : 0.74;
+  /* Streetlights land on the ground at night and not at noon, and the hour
+     is already blended for the fog - so the same number drives the pools. */
+  _lampNight = clamp((curTime().lit - 0.10) / 0.52, 0, 1);
+  /* A beam is only ever as good as the air it is in, and the game already has
+     four kinds of air. Clear nights keep the shafts faint and let the neon do
+     the talking; rain thickens them; fog is the night the volume pass was
+     written for, and on that night it should be the loudest thing on screen.
+     Wet tarmac counts for a little of it too - spray hangs about. */
+  _lampAir = (weather === 3 ? 2.60 : weather === 2 ? 1.75 : weather === 1 ? 1.40 : 1)
+           * (1 + wetLevel * 0.18);
   const zoom = scopeZoom();
   setView(1);
   worldPasses();
