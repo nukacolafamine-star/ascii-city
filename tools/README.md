@@ -1,7 +1,9 @@
 # voxel model pipeline
 
-Drop an FBX in `voxel models/`, run the importer, paste the one line it
-prints into `index.html`.
+Drop an FBX or an OBJ in `voxel models/`, run the importer, paste the one line
+it prints into `index.html`. Either format is read into the same shell-and-
+lattice routine; all the importer asks is that the triangles are axis-aligned
+cube faces, which is what a voxel asset is whatever it was saved as.
 
 ```
 node tools/voxel-import.mjs "voxel models/Fire Hydrant.fbx" --name hydr --height 28 --roles B
@@ -27,6 +29,7 @@ node tools/voxel-import.mjs "voxel models/Streetlight.fbx" --name lamp --tex "M,
 | `--textol` | how close a voxel's colour must be to claim a `--tex` target (default 90) |
 | `--axis`   | `"<across>,<up>,<depth>"`, each `x`/`y`/`z` with an optional minus |
 | `--lit`    | `"S:X"` — the underside of role S becomes role X, a light strip. `"M:X@0-2"` confines it to those rows, which is how you light the head of a lamp without lighting the foot of its post |
+| `--trunk`  | `"K@0.18"` — every level from the ground up that holds no more than that fraction of the model's fattest level becomes K. For a one-material tree that is exactly the trunk, derived rather than authored, the same way `--lit` derives an underside. Tighten the fraction if a low branch comes out brown |
 | `--mark`   | `"X@0-2,0-1"` — role X over that span of the width and those rows. For the part that is neither a material nor an underside: the flock camera's bright slot turns out to be a highlight down the whole bracket, so its lens is marked by hand at the tip of the housing. Repeatable |
 
 Two models in the set carry their parts as material slots; the other two carry
@@ -69,7 +72,13 @@ and invisible once it is a base-36 string.
 ## What it does
 
 `fbx-read.mjs` reads binary FBX (7100–7700) and the PNG atlas embedded in it.
-`voxel-import.mjs` turns the mesh into an occupancy grid:
+`objToShell` in `voxel-import.mjs` reads Wavefront OBJ plus its MTL, and
+re-encodes the faces into the FBX polygon convention on the way through — so
+there is ONE shell-and-lattice routine rather than a second one that drifts.
+An OBJ carries no embedded atlas, so `--tex` has nothing to work on there and
+the material slots are the whole of the segmentation.
+
+Then `voxel-import.mjs` turns the mesh into an occupancy grid:
 
 1. **Mesh to shell.** Every triangle is half of an axis-aligned cube face, so
    the constant axis plus the winding names the cube behind it outright. This
@@ -156,7 +165,43 @@ streetlight, so `lampYaw` reads the ground instead — it steps out along each
 axis, scores how much roadway it finds and how near, and hangs the arm over
 the winner.
 
-## Four models in, so far
+
+## The trees
+
+Three OBJs, and between them all three ways a part gets named.
+
+| | street tree | apple tree | cherry blossom |
+|---|---|---|---|
+| source | `tree.zip` | `apple tree.zip` | `sakura tree.zip` |
+| lattice | 52 × 54 × 48 | 30 × 55 × 32 | 8 × 11 × 6 |
+| imported | 25 × 23 × 26 | 14 × 15 × 26 | 16 × 12 × 22 |
+| material slots | 2 | 3 | **1** |
+| roles | `V` canopy, `K` trunk | `S` fruit, `V` leaf, `K` trunk | `V` blossom |
+| trunk found by | its own material | its own material | `--trunk K@0.12` |
+| underside | `--lit V:G` | `--lit V:G` | `--lit V:G` |
+
+```
+node tools/voxel-import.mjs "voxel models/tree.obj"   --name tree   --roles V,K   --lit "V:G" --height 26
+node tools/voxel-import.mjs "voxel models/apple.obj"  --name apple  --roles S,V,K --lit "V:G" --height 26
+node tools/voxel-import.mjs "voxel models/sakura.obj" --name sakura --roles V --trunk "K@0.12" --lit "V:G" --height 22
+```
+
+The apple tree's own file already separates its fruit — slot 0 came in at
+rgb(232,13,8) — so the red apples are a role and not a decoration added
+afterwards. The cherry has one material and needed both derivations: `--trunk`
+for the stem and `--lit` for the shaded underside of the canopy.
+
+`--trunk` at the default 0.18 also swallowed a low blossom lobe, because that
+whole level was still under the limit. 0.12 cuts it where the trunk actually
+ends. **Read the elevation**; the number is a starting point, not a rule.
+
+These replaced hand-drawn front elevations that the voxeliser inflated into
+solids of revolution — right for a post, wrong for a canopy, because the same
+silhouette came back from every angle and a park of forty read as one tree
+stamped forty times. Measured standing in the densest tree patch in the city,
+44 of them within 22 tiles: 2.85 ms of an 8.07 ms frame, a 124 fps ceiling.
+
+## Seven models in, so far
 
 | | hydrant | market stand | streetlight | flock camera |
 |---|---|---|---|---|

@@ -859,11 +859,57 @@ const MINIFONT = {
   '\u2318': '#.#|###|.#.|###|#.#',    // knot
   '\u2699': '.#.|###|#.#|###|.#.',    // gear
   '\u2591': '#.#|.#.|#.#|.#.|#.#',    // weave
+  /* A second case, and this one means things. Sixteen abstract marks let a
+     sign be decorated; these let it SAY something without spelling it - a
+     bowl over a noodle bar, a caduceus over a pharmacy, a moon over the
+     places that only open after one. Every codepoint here is in the basic
+     plane on purpose: bakeText walks the string a UTF-16 unit at a time, and
+     a surrogate pair would come through as two halves of nothing. */
+  '\u2615': '##.|###|###|.#.|###',    // cup
+  '\u2668': '#.#|...|###|###|.#.',    // bowl, steaming
+  '\u2600': '.#.|##.|###|###|.#.',    // flame
+  '\u2744': '#.#|.##|###|##.|#.#',    // frost
+  '\u26BF': '###|#.#|###|.#.|.##',    // key
+  '\u2692': '##.|##.|.#.|.#.|.#.',    // tools
+  '\u25CB': '.#.|#.#|#.#|#.#|.#.',    // coin
+  '\u2620': '###|#.#|###|.#.|#.#',    // skull
+  '\u263E': '.##|#..|#..|#..|.##',    // moon
+  '\u25C9': '...|.#.|#.#|.#.|...',    // eye
+  '\u2695': '.#.|###|.#.|###|.#.',    // clinic
+  '\u2248': '...|##.|.##|##.|...',    // wave
+  '\u2593': '#.#|#.#|#.#|###|...',    // bars
+  '\u2317': '#.#|###|#.#|###|#.#',    // grid
+  '\u21D2': '.#.|..#|###|..#|.#.',    // arrow
+  '\u2237': '...|#.#|...|#.#|...',    // dots
   ' ': '...|...|...|...|...'
 };
 const SIGN_SYM = ['\u2605','\u25CF','\u25C6','\u2665','\u25B2','\u25BC','\u25B6',
                   '\u25C0','\u2726','\u26A1','\u271A','\u00A5','\u25A0','\u2318',
-                  '\u2699','\u2591'];
+                  '\u2699','\u2591','\u2615','\u2668','\u2600','\u2744','\u26BF',
+                  '\u2692','\u25CB','\u2620','\u263E','\u25C9','\u2695','\u2248',
+                  '\u2593','\u2317','\u21D2','\u2237'];
+/* Which mark belongs over which trade. A sign that says RAMEN and carries a
+   steaming bowl is doing the job signage does; the same sign carrying a
+   random lozenge is only decorated. Anything not in here still gets a mark,
+   drawn from the whole case - most of the city's copy is a boast, not a
+   noun, and a boast takes any mark you like. */
+const WORD_SYM = {
+  RAMEN: '\u2668', NOODLES: '\u2668', SUSHI: '\u2668', DELI: '\u2668',
+  CAFE: '\u2615', BAR: '\u2615', GRAIN: '\u2615',
+  PHARMACY: '\u2695', CLINIC: '\u2695',
+  HARDWARE: '\u2692', SCRAP: '\u2692', GARAGE: '\u2692', WAREHOUSE: '\u2692',
+  FUEL: '\u2600', FORGE: '\u2600',
+  LAUNDRY: '\u2248', MARKET: '\u2237', GROCER: '\u2237',
+  ARCADE: '\u2593', PACHINKO: '\u2593', CLUB: '\u2593',
+  FINANCE: '\u25CB', HOLDINGS: '\u25CB', ZAIBATSU: '\u25CB',
+  DATACORP: '\u2317', SYNTEK: '\u2317', NEXUS: '\u2317', HELIX: '\u2317',
+  'DOCK 7': '\u21D2', LOADING: '\u21D2', CARGO: '\u21D2',
+  XXX: '\u2665', GIRLS: '\u2665', 'LOVE HOTEL': '\u2665', CABARET: '\u2665',
+  LIVE: '\u25C9', 'PEEP SHOW': '\u25C9', PEEP: '\u25C9', SHOW: '\u25C9',
+  OPEN: '\u263E', ROOMS: '\u263E', PRIVATE: '\u2620',
+  EGGS: '\u25CB', FARM: '\u2600', BARN: '\u2600', FEED: '\u2237',
+  CHURCH: '\u271A', SCHOOL: '\u2605', HOME: '\u2605', CORNER: '\u2605'
+};
 function textFrame(lines, c1, c2){
   const W = 32, H = 16;
   const grid = [];
@@ -2495,12 +2541,19 @@ function placeProps(){
    turns, and when the turn changes so does the colour, the lights and the
    patter - competition, rendered.
 
-   Roles: 1 backing, 2 frame, 3 lettering. */
+   Roles: 1 backing, 2 frame, 3 lettering, 4 marks, 5 what the copy shouts. */
 const SIGN_WIN   = 9;      // glyphs of window a crawling message runs through
 const SIGN_SPEED = 16;     // and how many art columns per second it travels
 // A phrase baked to ink. Height is always the panel's inner height so a strip
 // drops straight into the frame; width is the inner width for a phrase that
 // sits still, or the whole message plus a clear gap for one that crawls.
+/* One phrase, baked to ink - and the ink is not all one thing. A cell holds
+   1 for an ordinary letter, 2 for a mark out of the sign painter's case, and
+   3 for the part of the copy that is doing the shouting: the digits, the
+   currency, the exclamation. Three numbers instead of one flag, and the
+   panel gets to paint them three colours without a second bitmap. */
+const SIGN_SYM_SET = new Set(SIGN_SYM);
+const SIGN_HOT = /[0-9$%&!?]/;
 function bakeText(txt, iw, ih, vert, scroll){
   const gw = vert ? 3 : txt.length * 4 - 1;
   const gh = vert ? txt.length * 6 - 1 : 5;
@@ -2509,43 +2562,92 @@ function bakeText(txt, iw, ih, vert, scroll){
   const ox = scroll ? 0 : Math.max(0, (w - gw) >> 1);
   const oy = Math.max(0, (h - gh) >> 1);
   for (let i = 0; i < txt.length; i++){
-    const g = (MINIFONT[txt[i]] || MINIFONT[' ']).split('|');
+    const ch = txt[i];
+    const g = (MINIFONT[ch] || MINIFONT[' ']).split('|');
+    const ink = SIGN_SYM_SET.has(ch) ? 2 : SIGN_HOT.test(ch) ? 3 : 1;
     const cx = vert ? ox : ox + i * 4, cy = vert ? oy + i * 6 : oy;
     for (let r = 0; r < 5; r++)
       for (let c = 0; c < 3; c++)
         if (g[r][c] === '#' && cy + r < h && cx + c < w)
-          data[(cy + r) * w + (cx + c)] = 1;
+          data[(cy + r) * w + (cx + c)] = ink;
   }
   return { w, h, data };
 }
+/* The frame keeps the tenant's colour for the whole cycle; the lettering is
+   free to change with the phrase, which is what makes a panel handing itself
+   between three shops legible as three shops. Marks and shouted characters
+   get their own entries so a bowl over a noodle bar can be warm while the
+   word under it is cyan. */
 const SIGN_SL = new Map();
-function signSlotsFor(col){
-  let sl = SIGN_SL.get(col);
+function signSlotsFor(frame, ink, sym, hot){
+  const key = frame + ',' + ink + ',' + sym + ',' + hot;
+  let sl = SIGN_SL.get(key);
   if (sl) return sl;
   const sb = new Int16Array(NROLE), sd = new Float32Array(NROLE);
   sb[1] = C.signBack; sd[1] = 0.82;
-  sb[2] = col;        sd[2] = 0.95;
-  sb[3] = col;        sd[3] = 1.0;
-  SIGN_SL.set(col, sl = { sb, sd });
+  sb[2] = frame;      sd[2] = 0.95;
+  sb[3] = ink;        sd[3] = 1.0;
+  sb[4] = sym;        sd[4] = 1.0;
+  sb[5] = hot;        sd[5] = 1.0;
+  SIGN_SL.set(key, sl = { sb, sd });
   return sl;
 }
-/* Lamps set around the border, read off a cell's distance along the ring and
-   shifted a lamp at a time, so the colours appear to travel round the frame.
-   A dark entry in the pattern is what makes the movement legible. */
-function chaseFor(col, D){
-  if (rnd() < 0.38) return null;                  // plenty of frames are plain
+/*------------------------- the frame around the words ----------------------
+  A border was one of two things: a plain rule, or a ring of lamps chasing
+  round it. This is the same mechanism - a short pattern of colours and
+  weights, indexed by how far round the ring a cell sits, shifted a lamp at a
+  time by the clock - carrying twelve families instead of five, and three
+  things the pattern alone could not do:
+
+    - a SECOND RULE inside the first, which turns a frame into a bezel;
+    - a ring that BREATHES, one factor for the whole frame per sign per frame;
+    - a spin that can run either way, or not at all, which is the difference
+      between a marquee and a row of fixed bulbs.
+
+  Every colour in here comes off the district's neon set or the two hot
+  whites, and that is the point rather than a coincidence: those are exactly
+  the materials the renderer marks emissive, so a frame built this way is not
+  a picture of lights - it is a row of sources. The harvest picks each one up,
+  the volumetric pass puts its glow in the air around the shopfront, and the
+  wet road underneath reflects it. A border made of any other colour would
+  draw identically and light nothing.
+--------------------------------------------------------------------------*/
+function borderFor(col, acc, D){
+  if (rnd() < 0.14) return null;                  // some frames are just a rule
   const alt = D.neon[(rnd() * D.neon.length) | 0];
+  const dk = C.signBack, W = C.nWhite;
   const pats = [
-    [[col, 1.0], [C.signBack, 0.26]],                                 // on, off
-    [[col, 1.0], [alt, 1.0], [C.signBack, 0.24]],                     // two, chasing
-    [[C.nWhite, 1.0], [col, 0.95], [C.nWhite, 0.45], [col, 0.30]],    // a soft spin
-    [[col, 1.0], [col, 0.62], [C.signBack, 0.22], [alt, 0.95], [C.signBack, 0.22]],
-    [[col, 1.0], [C.signBack, 0.22], [alt, 1.0], [C.signBack, 0.22]]  // alternating
+    [[col, 1.0], [dk, 0.26]],                                         // on, off
+    [[col, 1.0], [alt, 1.0], [dk, 0.24]],                             // two, chasing
+    [[W, 1.0], [col, 0.95], [W, 0.45], [col, 0.30]],                  // a soft spin
+    [[col, 1.0], [col, 0.62], [dk, 0.22], [alt, 0.95], [dk, 0.22]],
+    [[col, 1.0], [dk, 0.22], [alt, 1.0], [dk, 0.22]],                 // alternating
+    // a bright head dragging a tail: the one that reads as MOVEMENT rather
+    // than as a pattern, because only one cell in eight is ever the head
+    [[W, 1.0], [col, 0.92], [col, 0.74], [col, 0.56], [col, 0.38],
+     [dk, 0.22], [dk, 0.20], [dk, 0.18]],
+    [[col, 1.0], [col, 1.0], [dk, 0.20], [dk, 0.20]],                 // dashes
+    [[col, 1.0], [col, 0.95], [col, 0.88], [dk, 0.20]],               // long dashes
+    [[col, 1.0], [col, 1.0], [acc, 1.0], [acc, 1.0]],                 // barber pole
+    [[col, 0.5], [W, 1.0], [col, 0.5], [col, 0.45], [alt, 1.0], [col, 0.42]],
+    [[W, 1.0], [dk, 0.2], [col, 0.9], [dk, 0.2], [alt, 0.9], [dk, 0.2]],  // beads
+    [[dk, 0.18]]                                                      // no outer rule
   ];
-  const pat = pats[(rnd() * pats.length) | 0];
+  const pi = (rnd() * pats.length) | 0;
+  const pat = pats[pi];
   const cc = new Int16Array(pat.length), cd = new Float32Array(pat.length);
   for (let i = 0; i < pat.length; i++){ cc[i] = pat[i][0]; cd[i] = pat[i][1]; }
-  return { c: cc, d: cd, n: pat.length };
+  const B = { c: cc, d: cd, n: pat.length,
+              // dashes and beads are fixtures, not a marquee: they do not travel
+              dir: pi === 6 || pi === 7 ? 0 : rnd() < 0.28 ? -1 : 1,
+              pulse: rnd() < 0.22 ? 1.1 + rnd() * 2.2 : 0,
+              inner: 0, innerD: 0 };
+  // the bare pattern is only worth having WITH a hairline inside it
+  if (pi === 11 || rnd() < 0.30){
+    B.inner = rnd() < 0.45 ? acc : rnd() < 0.5 ? col : C.nWhite;
+    B.innerD = 0.72 + rnd() * 0.26;
+  }
+  return B;
 }
 // How far the same building keeps this face exposed, in tiles. A sign is
 // centred in that run and never allowed wider than it.
@@ -2583,8 +2685,12 @@ function signPanel(brands, vert, budget){
   }
   const seq = [];
   for (const br of brands){
-    const sl = signSlotsFor(br.col);
     for (const ph of br.ph){
+      /* The FRAME keeps the tenant's colour for the whole cycle and the
+         LETTERING changes with the phrase, which is what makes one panel
+         handing itself between three shops read as three shops rather than
+         as one shop that cannot make up its mind. */
+      const sl = signSlotsFor(br.col, ph.col || br.col, br.sym, br.hot);
       const gw = ph.txt.length * 4 - 1;
       const sw = ph.scroll ? Math.max(iw + 4, gw + iw) : iw;
       seq.push({ txt: ph.txt, scroll: !!ph.scroll, sb: sl.sb, sd: sl.sd,
@@ -2726,15 +2832,30 @@ function specialWordFor(b){
 const BRAND_HEAD = ['NOVA','ORBIT','KOI','ZEN','IRON','LOTUS','ATLAS','VIPER',
   'MOTH','AMBER','ONYX','SABLE','HALO','TIGER','CRANE','EMBER','PEARL','RUST',
   'JADE','COBALT','SIREN','MAGPIE','FOX','WOLF','GHOST','ROOK','SALT','SUGAR',
-  'BRASS','KESTREL','MARROW','TALLOW','QUARTZ','HOLLOW','THISTLE'];
+  'BRASS','KESTREL','MARROW','TALLOW','QUARTZ','HOLLOW','THISTLE',
+  'CINDER','VESPER','HERON','SLATE','PLUM','CIVET','TANSY','GRACKLE','FERRIC',
+  'MIDNIGHT','CANDLE','SPARROW','BITTER','VELVET','COPPER','LANTERN','WREN',
+  'HAZEL','SORREL','GANNET','NICKEL','ASTER','BRINE','FALLOW','CATKIN',
+  'PEWTER','SUMAC','TEASEL','GOSHAWK','MADDER','SILT','OCHRE','VETCH'];
 const BRAND_TAIL = ['CO','WORKS','HOUSE','MART','LTD','GROUP','BROS','LABS',
-  'TRADE','SUPPLY','ROOM','CLUB','& SON'];
+  'TRADE','SUPPLY','ROOM','CLUB','& SON',
+  'HOLDINGS','& CO','DEPOT','YARD','SHOP','LINE','UNION','STORE','HALL',
+  'AGENCY','& DAUGHTER','PARTNERS','IMPORTS','SALVAGE'];
 const SLOGANS = ['OPEN 24 HRS','BEST IN TOWN','NO REFUNDS','WE NEVER CLOSE',
   'HALF OFF','CASH ONLY','ASK INSIDE','NEW STOCK','TWO FOR ONE','SINCE 2049',
   'GET SOME','WHY NOT','LOWEST PRICE','TODAY ONLY','THE REAL THING','DONT WAIT',
   'STEP INSIDE','ALWAYS ON','YES WE HAVE IT','STILL CHEAP','TRY IT WET',
   'NO QUESTIONS','TASTE IT','WARM INSIDE','LATE HOURS','WALK IN','ALL NIGHT',
-  'YOU EARNED IT','FEELS RIGHT','LAST ONE','BUY TWO','FRESH TODAY'];
+  'YOU EARNED IT','FEELS RIGHT','LAST ONE','BUY TWO','FRESH TODAY',
+  // and the second shift's worth
+  'NOW HIRING','PAY LATER','WE BUY GOLD','NO CREDIT','FREE WITH TWO',
+  'UNDER NEW OWNERS','SAME PRICE SINCE','SEE THE BACK ROOM','TRY THE SPECIAL',
+  'HOT AND CHEAP','NOTHING FROZEN','GRADE B','LICENSED-ISH','BULK RATES',
+  'NO ID NEEDED','BRING A BAG','THREE FOR FIVE','WHILE IT LASTS','LAST CALL',
+  'STILL OPEN','DOWNSTAIRS','RING TWICE','SECOND FLOOR','BACK ENTRANCE',
+  'WE DELIVER','CLEAN NEEDLES','GENUINE ENOUGH','ONE PER CUSTOMER',
+  'IT WORKS MOSTLY','SLIGHTLY USED','FELL OFF A TRUCK','NO WARRANTY',
+  'WE TAKE SCRAP','TRADE INS','QUIET HOURS','THE OTHER ONE CLOSED'];
 const CRAWLS = [
   'NOTHING DOWN AND NOTHING TO PAY UNTIL THE RAIN STOPS',
   'IF YOU CAN CARRY IT OUT YOU CAN BUY IT TONIGHT',
@@ -2745,14 +2866,27 @@ const CRAWLS = [
   'BRING A FRIEND BRING TWO BRING EVERYONE YOU STILL TRUST',
   'CLOSED FOR NOTHING SHORT OF THE END OF THE WORLD',
   'YOUR OLD ONE IS WORTH SOMETHING TO US BRING IT IN',
-  'DO NOT READ THIS SIGN READ THE PRICES INSIDE INSTEAD'];
-function adorn(txt){
-  const s = SIGN_SYM[(rnd() * SIGN_SYM.length) | 0];
+  'DO NOT READ THIS SIGN READ THE PRICES INSIDE INSTEAD',
+  'THE FLOCK SEES EVERYTHING EXCEPT WHAT HAPPENS IN HERE',
+  'WE HAVE NEVER ONCE BEEN INSPECTED AND WE INTEND TO KEEP IT THAT WAY',
+  'PRICES HELD DOWN BY HAND SINCE THE LAST TIME ANYONE CHECKED',
+  'IF THE DOOR IS SHUT KNOCK IF THE LIGHT IS OUT COME BACK TOMORROW',
+  'ASK FOR THE THING WE DO NOT ADVERTISE ON THE SIGN OUTSIDE',
+  'NO REFUNDS NO RETURNS NO ARGUMENTS AND NO HARD FEELINGS EITHER',
+  'EVERYTHING IN THIS WINDOW WAS SOMEBODY ELSES YESTERDAY',
+  'WE STAY OPEN THROUGH THE RAIN THE HEAT AND THE OCCASIONAL RIOT',
+  'YOU HAVE WALKED PAST THIS DOOR ELEVEN TIMES THIS WEEK ALREADY',
+  'THE TOWER SELLS YOU THE SAME THING FOR NINE TIMES THE MONEY'];
+/* A mark on a phrase. `mark` is the shop's own, when it has one - a bowl over
+   a noodle bar stays a bowl all the way round the cycle instead of turning
+   into a different lozenge every three seconds. */
+function adorn(txt, mark){
+  const s = mark || SIGN_SYM[(rnd() * SIGN_SYM.length) | 0];
   const r = rnd();
-  if (r < 0.24) return s + ' ' + txt + ' ' + s;
-  if (r < 0.38) return s + ' ' + txt;
-  if (r < 0.46) return txt + ' ' + s;
-  if (r < 0.52) return txt + '!';
+  if (r < 0.26) return s + ' ' + txt + ' ' + s;
+  if (r < 0.40) return s + ' ' + txt;
+  if (r < 0.48) return txt + ' ' + s;
+  if (r < 0.54) return txt + '!';
   return txt;
 }
 function brandName(D, words, vert){
@@ -2776,19 +2910,33 @@ function signBrands(D, words, vert){
   const n = vert ? 1 : rnd() < 0.30 ? 2 : rnd() < 0.09 ? 3 : 1;
   for (let i = 0; i < n; i++){
     const col = D.neon[(rnd() * D.neon.length) | 0];
+    /* Four colours to a tenant, not one. The frame and the name share `col`;
+       the copy runs in a second neon off the same district palette so the
+       panel visibly changes hands as it cycles; marks and shouted characters
+       take a hot colour of their own. All of them are drawn from the neon set,
+       which is the set the light pass treats as emissive - so every one of
+       these actually throws light onto the street instead of only looking
+       like it does. */
+    let acc = D.neon[(rnd() * D.neon.length) | 0];
+    if (acc === col) acc = rnd() < 0.5 ? C.nWhite : C.nAmber;
+    const sym = rnd() < 0.45 ? C.nWhite : rnd() < 0.6 ? C.nAmber : acc;
+    const hot = rnd() < 0.55 ? C.nWhite : rnd() < 0.5 ? C.nAmber : acc;
     const name = brandName(D, words, vert);
-    const ph = [{ txt: name }];
+    const mark = WORD_SYM[name] || null;         // the trade's own, if it has one
+    const ph = [{ txt: vert || !mark || rnd() < 0.45 ? name : adorn(name, mark) }];
     if (!vert){
       const pitches = 1 + ((rnd() * 2) | 0);
       for (let k = 0; k < pitches; k++){
-        const line = adorn(SLOGANS[(rnd() * SLOGANS.length) | 0]);
-        ph.push(line.length > 13 ? { txt: line, scroll: true } : { txt: line });
+        const line = adorn(SLOGANS[(rnd() * SLOGANS.length) | 0],
+                           mark && rnd() < 0.5 ? mark : null);
+        ph.push(line.length > 13 ? { txt: line, scroll: true, col: acc }
+                                 : { txt: line, col: acc });
         if (rnd() < 0.45) ph.push({ txt: name });   // and the name comes back
       }
       if (n === 1 && rnd() < 0.22)
-        ph.push({ txt: CRAWLS[(rnd() * CRAWLS.length) | 0], scroll: true });
+        ph.push({ txt: CRAWLS[(rnd() * CRAWLS.length) | 0], scroll: true, col: acc });
     }
-    out.push({ col, ph, ch: chaseFor(col, D) });
+    out.push({ col, acc, sym, hot, ph, ch: borderFor(col, acc, D) });
   }
   return out;
 }
@@ -2986,32 +3134,6 @@ function buildWalkGrid(){
 const ROLE = { '.':0, 'B':1, 'W':2, 'T':3, 'L':4, 'R':5, 'S':6, 'P':7,
                'H':8, 'K':9, 'V':10, 'M':11, 'G':12, 'X':13 };
 const NROLE = 14;
-// Literal ASCII art: hand-drawn text is rendered with its EXACT characters,
-// each cell carrying its own glyph, colour and fallback density. Authoring
-// loop: draw in a text file, paste the lines here, give each character class
-// a colour with colorOf(ch, x, y). Far distance levels fall back to density
-// shading so the art still fades into the fog like everything else.
-function parseArtLit(rows, colorOf){
-  let w = 0; for (const r of rows) w = Math.max(w, r.length);
-  const h = rows.length;
-  const data = new Uint8Array(w * h);
-  const g = new Int16Array(w * h);
-  const cm = new Uint8Array(w * h);
-  const dn = new Float32Array(w * h);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < rows[y].length; x++){
-      const ch = rows[y][x];
-      if (ch === ' ') continue;
-      const i = y * w + x;
-      const gi = GI[ch];
-      data[i] = 1;
-      g[i] = gi === undefined ? GI['*'] : gi;
-      cm[i] = colorOf(ch, x, y);
-      const ri = RAMP.indexOf(ch);
-      dn[i] = ri > 0 ? clamp(ri / RMAX, 0.3, 1) : 0.7;
-    }
-  return { w, h, data, g, cm, dn, lit: 1 };
-}
 function parseArt(rows){
   let w = 0; for (const r of rows) w = Math.max(w, r.length);
   const h = rows.length, data = new Uint8Array(w * h);
@@ -3069,21 +3191,6 @@ function voxArt(aw, vd, ah, rle){
   return { w: aw, h: ah, data, vol };
 }
 const ART = {
-  ped: [
-    parseArt(['..HH..', '..HH..', '.SSSS.', 'SSSSSS', 'SSSSSS', '.SSSS.', '.PPPP.', '.PP.PP', '.P...P', '.T...T']),
-    parseArt(['..HH..', '..HH..', '.SSSS.', 'SSSSSS', 'SSSSSS', '.SSSS.', '.PPPP.', '..PP..', '..PP..', '.TTT..'])
-  ],
-  pedSit: parseArt(['..HH..', '..HH..', '.SSSS.', '.SSSS.', '.SSPP.', '.PPPP.', '.TT.TT']),
-  /* Somebody on a board. Two frames: rolling, with both feet on and the
-     knees folded, and pushing, with the back leg down on the road. Wider
-     than a walker because the deck sticks out past the feet, and the deck
-     is the bottom row - these arts read top-down, row 0 is the head. */
-  pedSkate: [
-    parseArt(['...HH...', '...HH...', '..SSSS..', '.SSSSSS.', '.SSSSSS.',
-              '..SSSS..', '..PPPP..', '..P..P..', '.TT..TT.', 'KKKKKKKK']),
-    parseArt(['...HH...', '...HH...', '..SSSS..', '.SSSSSS.', '.SSSSSS.',
-              '..SSSSP.', '..PPP.P.', '..P...P.', '.TT...TT', 'KKKKK...'])
-  ],
   carSide: parseArt([
     '......BBBBBBB.....',
     '....BBWWWWWWWBB...',
@@ -3111,23 +3218,30 @@ const ART = {
     '1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM' +
     '3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM3.dM1.eM1.dM3.cM' +
     '3.dM1.eM1.dM3.cM3.dM1.1'),
-  // the street tree is hand-drawn literal art - from "tree ascii.txt"
-  tree: parseArtLit([
-    '         # #### ####',
-    '      ### \\/#|### |/####',
-    '     ##\\/#/ \\||/##/_/##/_#',
-    '   ###  \\/###|/ \\/ # ###',
-    ' ##_\\_#\\_\\## | #/###_/_####',
-    '## #### # \\ #| /  #### ##/##',
-    ' __#_--###`  |{,###---###-~',
-    '           \\ }{',
-    '            }}{',
-    '            }}{',
-    '            {{}'],
-    ch => (ch === '{' || ch === '}') ? C.trunk
-        : ch === '#' ? C.leaf
-        : (ch === '`' || ch === ',') ? C.leaf
-        : C.trunk),
+  /* The street tree, imported. It was a hand-drawn front elevation inflated
+     into a barrel, which is right for a post and wrong for a canopy: from any
+     angle but head-on the same silhouette came back, so a park of them read
+     as one tree stamped forty times. This is a real volume - V canopy,
+     G its shaded underside, K the trunk - and it turns as you walk round it.
+     tools/voxel-import.mjs, from "voxel models/tree.zip". */
+  tree: voxArt(25, 23, 26,
+    '.bxV1.f8V2.nV3.akV1.oV3.mV3.mV1.5V2.nV2.8V3.cV2.8V3.lV5.1V3.7V2.8V8.5V1.1V2.8V7.6V1.' +
+    '9lV3.kV5.3V4.cV6.3V3.dV7.1V4.8V2.1V9.1V4.7Va.1V2.1V5.5Va.3V7.5Va.3V7.5Va.3V6.6V9.4V7' +
+    '.5V6.8V3.dV1.67V4.lV4.8V2.aV5.8V2.aV5.3V2.3V2.9Vb.3V6.aV6.3V6.aV7.1V5.6G1Vc.1V5.6Vl.' +
+    '3Vm.2Vd.1V8.3Vc.2V8.4Vb.2V7.5V7.1V3.2V7.6V6.6V6.9V3.4cV2.eV5.3V2.fV6.2V3.2V2.9V7.2V8' +
+    '.8V7.2V8.8V7.2V8.7V8.2V8.7Vl.9Vh.4G2V2G3V3G1V9.4G1Vl.2G1Vm.1G1VlG1.2G1Vl.3G1Vl.4G1Vb' +
+    'G1V7.6G1V6.4V8.7V6.4G1V6.2lV3.mV4.dV3.4V5.bV6.3V8.8V7.1Va.6V8.1Va.6V8.1V9G1.6Vi.7Vl.' +
+    '4Vl.7V9G1V9.6G2.3G3.1G1V9.4G7V3G2Va.2VkG2.2G1VjG1.4G1VjG1.4G2V4G2Vd.5G1V4G2V4.1V7G1.' +
+    '6G1V3G7V6G1.7G6.5G7.1vV4.lV4.cV3.6V4.bV5.4V6.1G1.7V7.2V7G1V2.6V7G2Va.6V7G2V9G1.6V7G2' +
+    'V9.7V7G2V9.7V7G2V3G1V6G1V1.4V7G2V3G1V9.4V1G4V1G2V2G1.1V9.iV5G1V1G1.aG3.2G1V5G4.2Gk.5' +
+    'G6V1Gc.6G9V3G7.7G4.2G2V2G9.6G4.2G4.1G2V1G4.8G3.7G6.1wG1.nG1V1G3.kV2G4.aV5.4V4G2.9V6G' +
+    '1.2V6G1.9V6G1.2G1V5G1.1G2.6V6G1.2G1V5G2V1G1.5G1V6G1.2G1V5G1V2.7G1V6.2G1V5G1V2.7G1V3G' +
+    '2V1.2G1V5G1V2.7G1V3G3.2G3.1G6.1G1.4G7.2G3.1G1V1G7.4G1.4G1.2G2.2V2G3V1G3.hV1G5.1G1.hV' +
+    '1G4.11G1.3K1.nG3.mG2.sG1.3dG1.nG2.eG5.4G4.bG1V2G3.3G2V2G2.aG1V2G3.4G1V3G1.aV3G3.4V4G' +
+    '1.2G1.7G1V2G3.4V4G1.1G2.8G1V1G4.3G1V3G1.1G2.8G3.2G1.3G1V1G3.1G2.8G3.zG1.nG2.3G1.jG2.' +
+    'oG1.8nG2.8G2.dG2.8G3.bG3.7G4.cG2.7G4.dG1.8G3.mG1.eiK2.mK2.mK3.fxK2.42K1.oK1.b5K2.42K' +
+    '1.oK1.b5K2.nK2.1fK1.19K1.nK2.ciK2.nK2.nK4.kK2.nK1.d7K2.nK3.mK3.lK3.dvK1.nK3.mK2.nK1.' +
+    'elK1.nK2.f9K1.nK2.f9K1.nK2.f9K1.nK2.f8K2.nK2.f8K2.nK2.f8K3.mK2.f8K3.mK2.7b'),
   /* Three things a big park has and a playground does not: something with
      water in it, something with a dead man on it, and something to stand a
      band under. Authored as elevations rather than volumes - the voxeliser
@@ -3240,29 +3354,211 @@ const ART = {
   play:  parseArt(['.SSSSS.', 'MSSSSSM', 'M.....M', 'M.....M', 'MM...MM', 'M.....M']),
   hoop:  hoopArt(), swing: swingArt(), climb: climbArt(),
   metro: parseArt(['XXXXXXX', 'M.....M', 'MKKKKKM', 'M.KKK.M', 'M..K..M']),
-  apple: parseArt(['..VSV..', '.VVVVV.', 'VSVVVSV', 'VVVVVVV', '.VSVVV.', '..VVV..',
-                   '...K...', '...K...', '..KKK..']),
+  // the orchard tree: S is the fruit, and the model came with it
+  apple: voxArt(14, 15, 26,
+    '.43V1.3tV2.dV4.cV3.bV2.aV4.aV3.cS1.3eV4S1V1.8V7.8V7.8V6.8V5.9V4.aV2.32V1.1S1.8V8.6V9' +
+    '.4Va.4Vb.3Va.8V5.9V2S1V1.aV1.2dV2.9V7.4Vb.3Vb.3Vb.2VcS1.1VbS1.3VaS1.6V7.8V4.1uV5.9V6' +
+    '.5V9G1.3SaV1.3Sb.2Vd.1Vd.1Vc.1Vd.3S1V9.7V7.8V2.rG1V1.9G2V4G1.6V8G1.4Va.4S9V1.4SaV1.3' +
+    'SbV1.2SbV1.1Vd.1Vc.1G1Vc.3SaV1.5V8.7V6G1.oG1.bG1V2G1.6G4V4G1.5V9G1.4Va.4Vb.3Vc.2Vc.1' +
+    'Vd.1Vd.1Vc.3Vb.4V9.6V6G1.cS1.cS1.cG1S2.aG1V2G1.6V2G1V5G1.5V9G1.3VbG1.2VcG1.1VcG1.1Vc' +
+    'G1.1VcG1.1Vc.2S1VaG1.3S1V8G1.6V4S1.15G1.cV2.7G2.1G1V3G1.6V8G1.4G1V9G1.3VbG1.2VbG1.2V' +
+    '1G1Va.2G2Va.2G1VaG1.2G1V9G1.5V7G1.7G1V4.1iG2.bV2G1.7G2V6.6V9.4G1V9G1.3G1Va.3G1S9V1G1' +
+    '.2S9V2G1.2S1G1V7G2.4G1V7G1.6G1V6.9G1V3G1.1uG2.aG2V2G2.6G3V5G1.4S1G2V6G1.4S1G1V8G1.4S' +
+    '1V8G1.3S2V7G2.3S2G1V5G1.7G3V3G1.8G6.aG3.29G2.bG2V1G2.8G1V4G1.7G2V5G1.6G2V4G2S1.5G3V2' +
+    'G2.8G5.bG3.3gG1.bG4.aG5.9G2V1G1.bG2.50K2.cK1G1.5eK2.cK2.5eK2.cK2.5eK2.cK2.5eK2.cK2.b' +
+    'K2.51K2.cK2.cK1.51K2.cK2.5eK2.cK2.5eK2.cK2.5eK2.cK2.50K1.cK3.bK3.cK1.4nK1.cK3.bK3.cK' +
+    '2.24'),
   turbine: parseArt(['.X...X.', '..X.X..', '...X...', '..XXX..', '...X...', '...M...',
                      '...M...', '...M...', '...M...', '...M...', '...M...', '...M...',
                      '...M...', '..MMM..']),
   item: parseArt(['XXXX', 'XSSX', 'XXXX']),           // a small pickup carton
   spark: parseArt(['.X.', 'XXX', '.X.']),             // muzzle / impact flash
-  sakura: parseArt([                                  // cherry blossom canopy
-    '....VVV..VVV...',
-    '..VVGVVVVGVVV..',
-    '.VVVVVGVVVVVVG.',
-    'VGVVVVVVVGVVVV.',
-    '.VVGVVVVVVVGV..',
-    '..VV..VVGVV....',
-    '....K..KK......',
-    '.....KKK.......',
-    '......K........',
-    '......K........',
-    '.....KKK.......']),
+  // cherry blossom: one material in the file, so the trunk is derived
+  sakura: voxArt(16, 12, 22,
+    '.12V6.aV6.aV6.aV6.aV6.aV6.aV6.aV6.22V6.aV6.aV6.aV6.aV6.aV6.aV6.aV6.16V6.aV6.8Va.6Va.' +
+    '6Va.6Va.6Va.6Va.6Va.6Va.6V8.8V8.aV6.aV6.8Va.6Va.6Va.6Va.6Va.6Va.6Va.6Va.6V8.8V8.8Va.' +
+    '6Va.6Va.6Va.6Va.6Va.4Vc.4Vc.4Vc.4Vc.6Va.6Va.6Va.6Va.6Va.6Va.6Va.6Va.4Vc.4Vc.4G2Va.4G' +
+    '2Va.6V8G2.6V8G2.6Va.6Va.8V8.8V8.6Vc.4Vc.2Vc.4Vc.6Va.6Va.6V8.8V8.8V6G4.6V6G4.8V8.8V8.' +
+    '6VaG2.4VaG2.2Vc.4G2Va.6V8G2.6V8G2.6G8.8G8.6V8.8V8.6Ve.2Ve.4Vc.4Vc.4G2.2V8.8V8.6V8.8V' +
+    '8.12V4G4.8V4G4.6V8G6.2V8G6.4V8G4.4V8G4.8V1G7.8V1G7.6V2G6.8G8.12V4.cV4.aV8.8V8.8V8.8V' +
+    '8.cV2G1.dV2G1.dG2.1oG4.cG4.aG2V4G2.8G2V4G2.8G2V4G2V1.7G2V4G2V1.bG2.eG2.30V4.cV4.cV4.' +
+    '2V2.8V4.2V2.3sG4.cG4.cG4.2G2.8G4.2G2.4uK2.eK2.4uK2.eK2.4uK2.eK2.4uK2.eK2.4sK3.dK3.4t' +
+    'K2.eK2.4uK2.eK2.4uK2.eK2.2w'),
   corn: parseArt(['..V..', '.VVV.', 'V.V.V', '.VVV.', 'V.V.V', '..K..', '..K..']),
   rock: parseArt(['.XXX.', 'XXXXM', 'XXXMM']),
   stair: parseArt(['....X', '...XX', '..XXX', '.XXXX', 'XXXXX', 'MMMMM'])
 };
+/*======================= the crowd, in three builds ========================
+  A pedestrian was a six-by-ten front elevation inflated into a solid of
+  revolution, and two things follow from that which you can see from any
+  pavement in the city.
+
+  The head was two columns out of six. At forty metres that is one character,
+  so a person read as a post with a shirt on - and the head is the part you
+  identify a body by.
+
+  And a stride drawn in a FRONT elevation can only move sideways. The legs
+  scissored across the walk rather than along it, so from every angle except
+  dead-on the crowd was shuffling sideways down the street. No amount of
+  redrawing a front elevation fixes that; it is a fact about the projection.
+
+  So the crowd gets what the player already had: real volumes, with the legs
+  swinging along the DEPTH axis - forward and back, the way a stride actually
+  goes - and a head sized to be read across a road.
+
+  Three builds, because bodies differ and because the cast needs them to. The
+  stock frame carries the crowd; a lighter one is for the people who have
+  names, so Rook and Vance read as individuals the moment they walk in; and a
+  slender one is Vesper's. They are one volume function with different
+  numbers, so a fourth build costs a line.
+
+  The cost is bounded by construction. An art object is shared by every body
+  that uses it and voxelize caches its rasterisation on the art, so these are
+  built once for the session however many thousand people walk past - the
+  per-body work is the same ray march it always was, against a grid that is
+  finer in the two axes where the old one was lying.
+===========================================================================*/
+const PED_W = 0.62, PED_H = 1.76, PED_DEP = 0.85;
+const PED_GW = 12, PED_GH = 20;
+/* Half-widths in voxels, out of twelve. `hd` is the head, and it is the
+   number that changed most: a little over half the body's width, against a
+   third before, which is what makes a face a face at thirty metres. */
+/* Twelve voxels across is not much to separate three bodies in, and a first
+   cut proved it: slim and slender came out within nine voxels of each other,
+   because half a voxel of shoulder is nothing once the lattice has rounded
+   it. What survives quantisation is PROPORTION, not size - so slender is not
+   "slim, but less", it is a different silhouette: narrow shoulders over hips
+   that are WIDER than its chest, and the waist standing higher so the legs
+   are long against the trunk. `hz` is where the hip sits, in metres. */
+const PED_BUILD = {
+  stock:   { sh: 3.5, ch: 2.4, hip: 2.6, hd: 3.1, hdd: 2.5, ax: 4.4, lx: 1.5, ld: 1.6, ft: 1.9, hz: 0.84 },
+  slim:    { sh: 2.9, ch: 1.9, hip: 2.0, hd: 3.0, hdd: 2.4, ax: 3.8, lx: 1.3, ld: 1.4, ft: 1.7, hz: 0.86 },
+  slender: { sh: 2.3, ch: 1.5, hip: 2.6, hd: 2.9, hdd: 2.3, ax: 3.2, lx: 1.2, ld: 1.3, ft: 1.6, hz: 0.91 }
+};
+/* Poses. Legs and arms are offsets along DEPTH, which is what makes a stride
+   a stride; `lean` tips the trunk into the walk. Two frames, stride and
+   passing, matching the pace the crowd already animates at - more would be
+   invisible at this glyph size, and these two read because they are not
+   mirrors of each other. */
+const PED_POSE = {
+  idle:   { legL: 0.3, legR: -0.3, armL: 0.2, armR: -0.2 },
+  fold:   { legL: 0.2, legR: -0.2, fold: 1 },
+  pocket: { legL: 0.3, legR: -0.3, armL: 1.1, armR: -0.3, pocket: 1 },
+  walk0:  { legL: 2.7, legR: -2.7, armL: -2.1, armR: 2.1, lean: 0.5, thigh: 0.62 },
+  walk1:  { legL: 0.5, legR: -0.5, armL: 0.6, armR: -0.6, lean: 0.5, thigh: 0.62 },
+  sit:    { sit: 1 },
+  skate0: { legL: 1.5, legR: -1.2, armL: -2.0, armR: 1.8, crouch: 0.08, board: 1 },
+  skate1: { legL: 2.3, legR: -0.8, armL: -1.1, armR: 2.4, crouch: 0.13, board: 1 }
+};
+function pedBodyVol(B, P){
+  /* The body is drawn at yaw + PI/2, which puts its FRONT at low Y. Every
+     pose above is written the way a person thinks about a stride - forward is
+     positive - so it is turned round here, once. */
+  const FWD = -1;
+  const legL = (P.legL || 0) * FWD, legR = (P.legR || 0) * FWD;
+  const armL = (P.armL || 0) * FWD, armR = (P.armR || 0) * FWD;
+  const lean = (P.lean || 0) * FWD, crouch = P.crouch || 0;
+  const thigh = P.thigh === undefined ? 0.5 : P.thigh;
+  return function(aw, vd, ah){
+    const v = new Uint8Array(aw * vd * ah), R2 = ROLE;
+    const zOf = h => Math.round((1 - h / PED_H) * (ah - 1));
+    const cx = (aw - 1) / 2, cy = (vd - 1) / 2;
+    const slab = (h0, h1, hw, hd, role, xo, yo) => {
+      const z0 = zOf(h1), z1 = zOf(h0);
+      const zA = Math.max(0, Math.min(z0, z1)), zB = Math.min(ah - 1, Math.max(z0, z1));
+      for (let z = zA; z <= zB; z++)
+        for (let y = 0; y < vd; y++){
+          if (Math.abs(y - cy - (yo || 0)) > hd) continue;
+          for (let x = 0; x < aw; x++){
+            if (Math.abs(x - cx - (xo || 0)) > hw) continue;
+            v[(z * vd + y) * aw + x] = role;
+          }
+        }
+    };
+    const hip = (P.sit ? 0.56 : (B.hz || 0.84)) - crouch;
+    const tT = hip + 0.52, nT = tT + 0.08, hT = nT + 0.30;
+    const legOff = B.lx + 0.35;
+    if (P.sit){
+      slab(hip - 0.06, hip + 0.08, B.lx + 0.2, 1.5, R2.P, -legOff, FWD * 1.7);
+      slab(hip - 0.06, hip + 0.08, B.lx + 0.2, 1.5, R2.P,  legOff, FWD * 1.7);
+      slab(0.10, hip - 0.04, B.lx, 1.3, R2.P, -legOff, FWD * 2.8);
+      slab(0.10, hip - 0.04, B.lx, 1.3, R2.P,  legOff, FWD * 2.8);
+      slab(0.00, 0.12, B.ft, 1.9, R2.T, -legOff, FWD * 3.0);
+      slab(0.00, 0.12, B.ft, 1.9, R2.T,  legOff, FWD * 3.0);
+    } else {
+      slab(0.00, 0.12, B.ft, B.ft, R2.T, -legOff, legL);
+      slab(0.00, 0.12, B.ft, B.ft, R2.T,  legOff, legR);
+      // the thigh pivots at the hip, so it trails the foot rather than matching it
+      slab(0.12, hip, B.lx, B.ld, R2.P, -legOff, legL * thigh);
+      slab(0.12, hip, B.lx, B.ld, R2.P,  legOff, legR * thigh);
+      if (P.board){
+        slab(0.00, 0.05, 2.4, 3.6, R2.T, 0, (legL + legR) * 0.5);
+        slab(0.05, 0.09, 1.9, 3.8, R2.K, 0, (legL + legR) * 0.5);
+      }
+    }
+    // hips into shoulders: a waist and a chest, not one slab
+    slab(hip, hip + 0.26, B.hip, B.ch, R2.S, 0, lean);
+    slab(hip + 0.26, tT, B.sh, B.ch + 0.4, R2.S, 0, lean);
+    /* Arms in two pieces - a sleeve off the shoulder and a bare forearm under
+       it - which is the whole of "you can see the arms". One slab of shirt
+       the width of the chest is a torso, and reads as one from every angle. */
+    const shoulder = tT - 0.03;
+    if (P.fold){
+      slab(hip + 0.30, hip + 0.44, B.ax - 0.6, 1.3, R2.H, 0, FWD * 1.9);
+      slab(hip + 0.34, shoulder, 1.1, 1.4, R2.S, -B.ax, FWD * 0.8);
+      slab(hip + 0.34, shoulder, 1.1, 1.4, R2.S,  B.ax, FWD * 0.8);
+    } else {
+      const arm = (xo, swing, tucked) => {
+        slab(hip + (tucked ? 0.34 : 0.28), shoulder, 1.1, 1.4, R2.S, xo, swing);
+        slab(hip + (tucked ? 0.20 : 0.06), hip + (tucked ? 0.36 : 0.30),
+             1.0, 1.2, R2.H, xo, swing * 1.15);
+      };
+      arm(-B.ax, armL, 0);
+      arm( B.ax, armR, P.pocket);
+    }
+    slab(tT, nT, 1.2, 1.2, R2.H, 0, lean);                 // neck
+    slab(nT, hT, B.hd, B.hdd, R2.H, 0, lean);              // head
+    return v;
+  };
+}
+/* One art object per build per pose, built the first time it is asked for and
+   kept. voxelize caches its own rasterisation on the art, so a body is
+   rasterised once for the whole session no matter how many people wear it. */
+const PED_ART = new Map();
+function pedArt(build, pose){
+  const k = build + ':' + pose;
+  let a = PED_ART.get(k);
+  if (a) return a;
+  const B = PED_BUILD[build] || PED_BUILD.stock;
+  const P = PED_POSE[pose] || PED_POSE.idle;
+  a = { w: PED_GW, h: PED_GH, data: new Uint8Array(PED_GW * PED_GH),
+        vol: pedBodyVol(B, P) };
+  PED_ART.set(k, a);
+  return a;
+}
+/* How somebody stands when they are not going anywhere. Three stances, keyed
+   off whatever identity the body already carries, so the same person always
+   stands the same way and a bus queue is not eight copies of one mannequin. */
+const PED_STAND = ['idle', 'fold', 'pocket'];
+function pedStand(o){
+  if (o._st) return o._st;
+  const k = o.pid !== undefined ? o.pid : (o.id !== undefined ? o.id + 977 : 0);
+  return (o._st = PED_STAND[(hash3(k, 31, 6151) * PED_STAND.length) | 0]);
+}
+/* And which frame they are built on. Keyed off the NAME rather than set at
+   the spawn, because the people who need a particular build are placed from
+   several sites each - Vesper alone is spawned in three - and a table here
+   cannot be missed by one of them the way a spawn argument can. Anything
+   carrying an explicit `build` still wins. */
+const CAST_BUILD = { ROOK: 'slim', VANCE: 'slim', 'THE FIXER': 'slim',
+                     VESPER: 'slender' };
+function pedBuild(o){
+  if (o.build) return o.build;
+  if (o.name && CAST_BUILD[o.name]) return (o.build = CAST_BUILD[o.name]);
+  const k = o.pid !== undefined ? o.pid : (o.id !== undefined ? o.id + 613 : 0);
+  const r = hash3(k, 77, 40503);
+  return (o.build = r < 0.62 ? 'stock' : r < 0.84 ? 'slim' : 'slender');
+}
 /*-------------------------------- the bench --------------------------------
   A park bench is mostly the gaps: slats you can see the street through, a
   back you can see over, and arms at each end. Extruding a flat elevation
@@ -3581,7 +3877,12 @@ const PROPDEF = [
      the traffic. X is the lens, and it takes the lamp palette through `dyn`. */
   { art: ART.lamp,   w: 5.4 * 15 / 55, h: 5.4, dep: 4 / 15, anchor: 0.4,
     sl: slots({ M: [C.metal, 0.58], X: [-1, 1.0] }) },
-  { art: ART.tree,   w: 5.4,  h: 4.6, sl: slots({ V: [C.leaf, 0.72], K: [C.trunk, 0.8] }) },
+  /* 25 x 23 x 26 voxels. w/h holds the importer's reported aspect and `dep`
+     its depth scale, or the canopy comes out stretched; the metre height is
+     the one the city was laid out around, so nothing about spacing or the
+     skyline moves. G is the canopy's own underside, in shade. */
+  { art: ART.tree,   w: 4.42, h: 4.6, dep: 0.92,
+    sl: slots({ V: [C.leaf, 0.72], G: [C.turf, 0.80], K: [C.trunk, 0.8] }) },
   /* 19 x 28 x 14 voxels, so 0.61 wide and 0.90 tall keeps them cubic and
      stands the thing at the height of a real one. */
   { art: ART.hydr,   w: 0.61, h: 0.90, dep: 14 / 19, sl: slots({ B: [C.hydr, 0.85] }) },
@@ -3599,16 +3900,67 @@ const PROPDEF = [
   { art: ART.play,   w: 3.2,  h: 2.4, sl: slots({ M: [C.rail, 0.62], S: [C.nPink, 0.82] }) },
   { art: ART.metro,  w: 2.6,  h: 2.2, sl: slots({ X: [-1, 1.0], K: [C.dataDk, 0.45],
                                                   M: [C.rail, 0.60] }) },
-  { art: ART.apple,  w: 2.6,  h: 3.9, sl: slots({ V: [C.leaf, 0.70], K: [C.trunk, 0.78],
-                                                  S: [C.camRed, 0.95] }) },
+  { art: ART.apple,  w: 2.10, h: 3.9, dep: 1.0714,
+    sl: slots({ V: [C.leaf, 0.70], G: [C.turf, 0.78], K: [C.trunk, 0.78],
+                S: [C.camRed, 0.95] }) },
   { art: ART.turbine, w: 3.6, h: 17.0, sl: slots({ X: [-1, 0.85], M: [C.rail, 0.6] }) },
   { art: ART.item,    w: 0.5, h: 0.42, sl: slots({ X: [-1, 0.95], S: [C.nWhite, 0.9] }) },
-  { art: ART.sakura,  w: 3.3, h: 4.4, sl: slots({ V: [C.blossom, 0.76], G: [C.blossomD, 0.9],
-                                                  K: [C.trunk, 0.8] }) },
+  { art: ART.sakura,  w: 3.20, h: 4.4, dep: 0.75,
+    sl: slots({ V: [C.blossom, 0.76], G: [C.blossomD, 0.9], K: [C.trunk, 0.8] }) },
   { art: ART.corn,    w: 0.55, h: 1.8, sl: slots({ V: [C.leaf, 0.8], K: [C.trunk, 0.8] }) },
   { art: ART.rock,    w: 1.0, h: 0.7, sl: slots({ X: [C.rail, 0.72], M: [C.dataDk, 0.6] }) },
   { art: ART.stair,   w: 1.4, h: 1.5, sl: slots({ X: [C.worktop, 0.8], M: [C.dataDk, 0.7] }) }
 ];
+/*--------------------------- what a saw leaves -----------------------------
+  A hacksaw through a streetlight did not take anything off it. The prop was
+  marked dead and recoloured, so the head, the arm and five metres of pole
+  went on standing there in grey - which reads as a lamp that has been turned
+  off, and the job was to bring one down.
+
+  A stump is the same artwork with everything above the cut cleared. Keeping
+  the model's own frame is the whole trick: width, depth, `anchor` and metre
+  height are untouched, so the stub lands on exactly the tile the post stood
+  on and needs no second set of numbers. voxelize trims a solid to its own
+  occupied extent, so no ray is ever marched through the empty four fifths
+  above the cut - the stump costs less to draw than the post did.
+
+  The cut is not level. A saw wanders, so the line steps a voxel or two across
+  the width, which at this size is the whole difference between "somebody cut
+  this down" and "somebody installed a shorter one".
+---------------------------------------------------------------------------*/
+function cutArt(src, keep, seed){
+  const aw = src.w, ah = src.h;
+  const z0 = Math.round(ah * (1 - keep));      // rows run DOWN from the top
+  const cut = new Int32Array(aw);
+  for (let x = 0; x < aw; x++) cut[x] = z0 + ((hash3(x, seed, 4177) * 3) | 0);
+  const data = new Uint8Array(aw * ah);
+  for (let z = 0; z < ah; z++)
+    for (let x = 0; x < aw; x++)
+      if (z >= cut[x]) data[z * aw + x] = src.data[z * aw + x];
+  return { w: aw, h: ah, data,
+    vol(w, d, h){
+      // slice: at its native lattice the source hands back its ONE grid, and
+      // clearing that in place would saw down every lamp in the city
+      const v = src.vol(w, d, h).slice();
+      for (let z = 0; z < h; z++){
+        const sz = z * ah / h;
+        for (let x = 0; x < w; x++){
+          if (sz >= cut[Math.min(aw - 1, (x * aw / w) | 0)]) continue;
+          for (let y = 0; y < d; y++) v[(z * d + y) * w + x] = 0;
+        }
+      }
+      return v;
+    } };
+}
+const STUMP_DEF = [];
+function stumpDef(k){
+  let d = STUMP_DEF[k];
+  if (!d){
+    const s = PROPDEF[k];
+    d = STUMP_DEF[k] = Object.assign({}, s, { art: cutArt(s.art, 0.25, k) });
+  }
+  return d;
+}
 ART.rack = parseArt(['MMMMMMMMM',
                      'S.W.S.P.S',
                      'S.W.S.P.S',
@@ -5168,6 +5520,7 @@ function spawnActor(kind, x, y, o){
     x, y, dx: 0, dy: 1, spd: def.speed, r: def.r, solid: def.solid,
     path: null, pi: 0, phase: rnd() * 6, moving: 0, cool: rnd() * 3,
     brain: o.brain || 'still', dialog: o.dialog || null, tree: o.tree || null,
+    build: o.build || null,                     // CAST_BUILD answers for the rest
     homeX: x | 0, homeY: y | 0, range: o.range || 12,
     skin: sl.base[ROLE.H], shirt: sl.base[ROLE.S],   // the body keeps the coat
     /* CIVIL_HP, not 0. Zero was doing double duty as "nobody has set this
@@ -7242,6 +7595,16 @@ function toggleRide(){
     if (c.mine && c.z > heightAt(c.x | 0, c.y | 0) + 5){
       toast('bring it low first - F descends'); return;
     }
+    /* Over open water there is no door worth opening. The scan below reaches
+       fourteen tiles looking for somewhere to stand, and from the middle of
+       the channel it finds a BANK and puts you on it - you step out over the
+       river and arrive dry on the far side, having crossed it on foot in one
+       frame. A bridge deck is not the river: it is roadway with a parapet,
+       and stepping onto it is exactly right, so the test is the tile's own
+       type rather than inChannel, which counts the bed under every deck. */
+    if (tileAt(c.x | 0, c.y | 0) === T_WATER){
+      toast('nothing to step out onto - the river is under you'); return;
+    }
     for (let r = 2; r < 14; r++){
       for (let a = 0; a < 12; a++){
         const th = a / 12 * Math.PI * 2;
@@ -7945,6 +8308,10 @@ function topMode(){ return modeStack.length ? modeStack[modeStack.length - 1] : 
    So: leaving play hands the pointer back, and returning to play takes it
    again. Every menu, dialog, shop and scene closes through popMode, and
    RESUME closes through closeMenus, so both ends are covered by these two. */
+/* A mode may carry `open` and `shut` - things it has to do to the world on
+   the way in and undo on the way out. The city map is the one that needs it:
+   it changes the glyph grid under itself, and nothing may leave that changed
+   behind however the card is closed. */
 function pushMode(m){
   m.openedT = performance.now();
   const wasPlaying = !modeStack.length;
@@ -7952,9 +8319,11 @@ function pushMode(m){
   if (wasPlaying && document.pointerLockElement === view){
     try { document.exitPointerLock(); } catch (e){}
   }
+  if (m.open) m.open();
 }
 function popMode(){
-  modeStack.pop();
+  const m = modeStack.pop();
+  if (m && m.shut) m.shut();
   if (!modeStack.length) resumePlay();       // back in the world, back to the controls
 }
 // keys are listened for on the window, so the window has to be the one
@@ -7984,6 +8353,9 @@ function tryPointerLock(){
   } catch (e){ retryPointerLock(); }
 }
 function closeMenus(){
+  // every card gets its `shut`, however abruptly the stack is emptied
+  for (let i = modeStack.length - 1; i >= 0; i--)
+    if (modeStack[i].shut) modeStack[i].shut();
   modeStack.length = 0;
   resumePlay();              // back to the game means back to the controls
 }
@@ -10946,12 +11318,29 @@ function sfx(name, o){
     el.play().catch(() => { audio.oneShots--; });
   }
 }
-/* one-shot at a world position: distance attenuation, panned by bearing */
+/*---- one-shot at a world position: distance attenuation, panned by bearing --
+  How far a sound carries, and how fast it dies on the way, are two numbers
+  and not one. The defaults are the street's - a bin lid, a door, a footstep,
+  gone inside fifty tiles.
+
+  Gunfire is not that. A shot is heard across a district, which is why the
+  crowd four blocks over scatters when one goes off, and it wants three times
+  the reach on a fifth of the roll-off. Both curves end with a linear tail
+  over their last third, so the edge of the range is a horizon rather than a
+  circle you can hear yourself walk across.
+----------------------------------------------------------------------------*/
+const SFX_FAR = 46, SFX_ROLL = 0.22;      // the street: near things, briefly
+const GUN_FAR = 130, GUN_ROLL = 0.045;    // a report, carrying over rooftops
 function sfxAt(name, x, y, o){
   const dx = x - cam.x, dy = y - cam.y, d = Math.hypot(dx, dy);
-  if (d > 46) return;
   o = Object.assign({}, o);
-  o.vol = (o.vol !== undefined ? o.vol : 1) / (1 + d * 0.22);
+  const far = o.far !== undefined ? o.far : SFX_FAR;
+  const roll = o.roll !== undefined ? o.roll : SFX_ROLL;
+  delete o.far; delete o.roll;
+  if (d > far) return;
+  const tail = clamp((far - d) / (far * 0.34), 0, 1);
+  o.vol = (o.vol !== undefined ? o.vol : 1) / (1 + d * roll) * tail;
+  if (o.vol < 0.004) return;               // under this nobody hears anything
   o.pan = clamp((dirX * dy - dirY * dx) / Math.max(0.001, d) * 0.9, -1, 1);
   sfx(name, o);
 }
@@ -11403,6 +11792,88 @@ const BODY_POSE = {
   punch:  { armL: 3.4, armR:-1.0, armInL: 3.0, armRaise: 0.06, lean: 0.8 },
   hurt:   { lean: -1.2, crouch: 0.12, armL: 1.0, armR: 1.0, armRaise: -0.06 }
 };
+/*==================== the board, seen from outside =========================
+  From the first person a trick is a deck flipping under you and a word in
+  the corner of the screen. From outside it was two stances - rolling, and
+  rolling with the arms slightly different - held through pushes, ollies,
+  grinds, six named flicks and every landing. Somebody watching you put down
+  a QUANTUM DOUBLE IMPOSSIBLE saw a mannequin slide past.
+
+  So the board gets the poses the first person already has artwork for. The
+  kick is a real kick: the back foot leaves the deck, goes down to the road
+  and drives. The ollie folds and pops. The air tucks. Each of the six
+  flicks does something a body actually does to make that flick happen -
+  a kickflip drags the front foot off the edge, a shove-it turns the hips
+  and lets the board go, an impossible wraps the whole body round it - and
+  a grind stands over the rail with the arms out, because that is the only
+  part of it that is about balance.
+===========================================================================*/
+const SKATE_POSE = {
+  // rolling: both feet on, knees folded, arms out for balance
+  skate0: { legL: 1.6, legR: -1.4, armL: -2.4, armR: 2.2, crouch: 0.07, board: 1 },
+  skate1: { legL: 2.4, legR: -1.0, armL: -1.4, armR: 2.8, crouch: 0.12, board: 1 },
+  /* The push. The back leg is DOWN - off the deck, on the road, behind the
+     board - and the body is folded over the front foot. This is the pose the
+     two rolling stances were standing in for, and it is the one that reads
+     from furthest away because the silhouette breaks. */
+  skpush: { legL: 1.2, legR: -4.6, armL: -3.0, armR: 1.4, crouch: 0.16,
+            lean: 1.4, board: 1, footDown: 1 },
+  // crouched over the tail, winding up
+  skcrouch: { legL: 1.0, legR: -1.0, armL: -1.6, armR: 1.6, crouch: 0.26,
+              lean: 0.9, board: 1 },
+  // off the ground, knees up under the chest
+  skair:  { legL: 0.8, legR: -0.8, armL: -3.2, armR: 3.0, crouch: 0.30,
+            lean: 0.4, board: 1, tuck: 1 },
+  // absorbing it
+  skland: { legL: 1.4, legR: -1.4, armL: -2.8, armR: 2.6, crouch: 0.22, board: 1 },
+  // standing over the rail, arms wide, board sideways under the feet
+  skgrind: { legL: 0.6, legR: -0.6, armL: -4.0, armR: 3.8, crouch: 0.14,
+             board: 1, cross: 1 },
+  /*--- the six flicks -------------------------------------------------
+    Each one is the air pose with the thing that MAKES it done to the body:
+    which foot has left the board, which way the hips have gone, and how far
+    round the shoulders have come. */
+  // front foot dragged off the heel edge, back knee tucked
+  tr_kickflip:   { legL: 2.8, legR: -1.0, armL: -3.4, armR: 2.4, crouch: 0.30,
+                   lean: 0.3, board: 1, tuck: 1, roll: -1.6 },
+  // the mirror of it, off the toe edge
+  tr_heelflip:   { legL: 1.0, legR: -2.8, armL: -2.4, armR: 3.4, crouch: 0.30,
+                   lean: 0.3, board: 1, tuck: 1, roll: 1.6 },
+  // straight up: both knees to the chest, arms up
+  tr_ollie:      { legL: 0.6, legR: -0.6, armL: -3.6, armR: 3.4, crouch: 0.34,
+                   lean: 0.2, board: 1, tuck: 1 },
+  // hips turned, board let go under a level body
+  'tr_shove-it': { legL: 1.8, legR: -1.8, armL: -2.0, armR: 3.6, crouch: 0.26,
+                   board: 1, tuck: 1, twist: 2.2 },
+  // the whole body round with it
+  tr_bigspin:    { legL: 2.2, legR: -2.2, armL: -1.2, armR: 4.0, crouch: 0.28,
+                   board: 1, tuck: 1, twist: 3.6, roll: 0.8 },
+  // wrapped: shoulders one way, hips the other, board vertical
+  tr_impossible: { legL: 3.0, legR: -3.0, armL: -4.2, armR: 1.0, crouch: 0.32,
+                   lean: -0.8, board: 1, tuck: 1, twist: -3.2, roll: 2.6,
+                   vert: 1 }
+};
+for (const k in SKATE_POSE) BODY_POSE[k] = SKATE_POSE[k];
+/* Which of them a body is in. The local player reads the live skate state
+   directly - the same variables the first-person deck art is driven from -
+   so the camjack sees the trick you are actually doing. A peer reads what
+   the wire carried: the trick's base name if one is live, otherwise air,
+   push or roll. */
+function skatePose(p){
+  if (p.local === false){
+    if (p.trick && SKATE_POSE['tr_' + p.trick]) return 'tr_' + p.trick;
+    if (p.air) return 'skair';
+    if (p.pushT > 0) return 'skpush';
+    return 'skate' + ((p.phase | 0) & 1);
+  }
+  if (grind) return 'skgrind';
+  if (skTrick && airT > 0 && SKATE_POSE['tr_' + skTrick.base]) return 'tr_' + skTrick.base;
+  if (airT > 0) return 'skair';
+  if (crouchT > 0 || ollieHold >= 0) return 'skcrouch';
+  if (landT > 0) return 'skland';
+  if (pushArtT > 0) return 'skpush';
+  return 'skate' + ((p.phase | 0) & 1);
+}
 /*------------------------- taking something -------------------------------
   Every consumable in the game, classed by how it is actually TAKEN rather
   than by what it does - which the names hand you: a RUSH INHALER goes to the
@@ -11469,6 +11940,14 @@ function playerBodyVol(worn, P){
   const armL = (P.armL || 0) * FWD, armR = (P.armR || 0) * FWD;
   const reachL = P.reachL || 0, reachR = P.reachR || 0;
   const dropL = P.dropL || 0, dropR = P.dropR || 0;
+  /* How far each reaching hand comes IN toward the centre line. The poses
+     have carried armInL/armInR since the aim stance was written and nothing
+     ever read them, so every two-handed weapon was gripped at shoulder width
+     - hands 0.46 m apart with the gun on the centre line between them, which
+     is a body holding a gun near rather than holding it. A value past the
+     shoulder offset carries the hand across the middle, which is what a
+     blade held up on one side needs. */
+  const inL = P.armInL || 0, inR = P.armInR || 0;
   const lean = (P.lean || 0) * FWD, crouch = P.crouch || 0, raise = P.armRaise || 0;
   // the thigh pivots at the hip, so it trails the foot rather than matching it
   const thigh = P.thigh === undefined ? 0.5 : P.thigh;
@@ -11496,7 +11975,16 @@ function playerBodyVol(worn, P){
        it. The stock figure has its hip at 0.86 and its crown at 1.76. */
     const hip = (P.sit ? 0.60 : 0.86) - crouch;
     const tT = hip + 0.56, nT = tT + 0.10, hT = nT + 0.24;   // torso/neck/head tops
-    // --- the legs -----------------------------------------------------
+    /*--- the legs, and whatever is under them ------------------------
+      Four things a trick does to a body that a rolling stance does not, and
+      all four live here. `tuck` brings the knees up under the chest and the
+      board up with them. `footDown` says the back foot has left the deck
+      for the road, which is what a push IS, so the board follows the front
+      foot alone. `cross` turns the deck across the direction of travel, for
+      a grind. `vert` stands it on its edge.
+    -------------------------------------------------------------------*/
+    const tuck = P.tuck ? 0.30 : 0;
+    const rz = P.footDown ? 0 : tuck;            // the pushing foot is on the road
     if (P.sit){
       // thighs forward off the hip, shins down from the knee
       slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P, -2.4, FWD * 2.0);
@@ -11506,17 +11994,32 @@ function playerBodyVol(worn, P){
       slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T, -2.4, FWD * 3.4);
       slab(0.00, 0.10, 2.6, 2.2, shoes ? R.W : R.T,  2.4, FWD * 3.4);
     } else {
-      slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T, -2.4, legL);
-      slab(0.00, 0.10, 2.6, 2.6, shoes ? R.W : R.T,  2.4, legR);
-      slab(0.10, hip, 1.6, 1.6, R.P, -2.4, legL * thigh);    // thigh trails the foot
-      slab(0.10, hip, 1.6, 1.6, R.P,  2.4, legR * thigh);
+      slab(tuck, tuck + 0.10, 2.6, 2.6, shoes ? R.W : R.T, -2.4, legL);
+      slab(rz, rz + 0.10, 2.6, 2.6, shoes ? R.W : R.T,  2.4, legR);
+      slab(tuck + 0.10, hip, 1.6, 1.6, R.P, -2.4, legL * thigh);  // thigh trails the foot
+      slab(rz + 0.10, hip, 1.6, 1.6, R.P,  2.4, legR * thigh);
       if (P.board){                                          // the deck underfoot
-        slab(0.00, 0.05, 3.0, 4.2, R.T, 0, (legL + legR) * 0.5);
-        slab(0.05, 0.09, 2.2, 4.4, R.W, 0, (legL + legR) * 0.5);
+        const by = P.footDown ? legL : (legL + legR) * 0.5;
+        if (P.vert){                             // stood on its edge, mid-flick
+          slab(tuck, tuck + 0.34, 0.9, 4.2, R.T, 0, by);
+          slab(tuck + 0.03, tuck + 0.31, 0.6, 4.4, R.W, 0, by);
+        } else if (P.cross){                     // turned across the rail
+          slab(tuck, tuck + 0.05, 4.2, 1.6, R.T, 0, by);
+          slab(tuck + 0.05, tuck + 0.09, 4.4, 1.1, R.W, 0, by);
+        } else {
+          slab(tuck, tuck + 0.05, 3.0, 4.2, R.T, 0, by);
+          slab(tuck + 0.05, tuck + 0.09, 2.2, 4.4, R.W, 0, by);
+        }
       }
     }
-    // --- the trunk ----------------------------------------------------
-    slab(hip, tT, 4.2, 2.4, shirt || outer ? R.B : R.S, 0, lean);
+    /*--- the trunk ----------------------------------------------------
+      `twist` slides the upper body off the hips - shoulders one way while
+      the legs stay where the board put them - which is as much rotation as
+      a stack of slabs can carry and enough to read a shove-it from a
+      kickflip at this size. `roll` drops one shoulder and lifts the other.
+    -------------------------------------------------------------------*/
+    const tw = P.twist || 0, rl = (P.roll || 0) * 0.022;
+    slab(hip, tT, 4.2, 2.4, shirt || outer ? R.B : R.S, tw * 0.35, lean);
     /* An arm that HANGS is a tall post at the shoulder. An arm that HOLDS
        something is a short one reaching forward from it. Those are two
        shapes, not one shape nudged: the chest is wider than the shoulders
@@ -11524,21 +12027,32 @@ function playerBodyVol(worn, P){
        torso - which is exactly why both arms disappeared the moment anybody
        drew a weapon. Reaching arms get built forward instead. */
     const shoulder = tT - 0.04 + raise, armLo = hip + 0.06 + raise;
-    const arm = (xoff, swing, reach, drop, role, hw, mouth) => {
+    // a reaching hand comes in toward whatever it is holding; a hanging one
+    // stays where the shoulder put it
+    const inward = (xoff, reach, inw) =>
+      reach > 0 && inw ? xoff - Math.sign(xoff) * inw : xoff;
+    const arm = (xoff, swing, reach, drop, role, hw, mouth, inw, dz) => {
+      const sh = shoulder + (dz || 0);
       if (mouth){
         // a hand brought up to the face: the forearm folds IN and UP rather
         // than reaching out, which is what eating and smoking look like
-        slab(shoulder - 0.08, nT + 0.02, hw, 1.5, role, xoff * 0.5, FWD * 1.1);
+        slab(sh - 0.08, nT + 0.02, hw, 1.5, role, xoff * 0.5, FWD * 1.1);
         return;
       }
       if (reach > 0){
-        const top = shoulder - (drop || 0);
-        slab(top - 0.28, top, hw, reach * 0.5 + 0.9, role, xoff,
-             FWD * (reach * 0.5 + 0.7));
-      } else slab(armLo, shoulder, hw, 1.9, role, xoff, swing);
+        const top = sh - (drop || 0);
+        const x2 = inward(xoff, reach, inw);
+        /* The upper arm still leaves the SHOULDER, so a hand pulled in to
+           the centre line has a forearm angling in to meet it rather than a
+           limb teleported inboard. Two slabs, and the join is under the
+           sleeve. */
+        slab(top - 0.28, top, hw, 1.1, role, (xoff + x2) * 0.5 + tw * 0.35, FWD * 0.9);
+        slab(top - 0.28, top, hw, reach * 0.5 + 0.7, role, x2 + tw * 0.35,
+             FWD * (reach * 0.5 + 0.9));
+      } else slab(armLo + (dz || 0), sh, hw, 1.9, role, xoff + tw * 0.35, swing);
     };
-    arm(-5.2, armL, reachL, dropL, R.S, 1.2, P.mouthL);
-    arm( 5.2, armR, reachR, dropR, R.S, 1.2, P.mouthR);
+    arm(-5.2, armL, reachL, dropL, R.S, 1.2, P.mouthL, inL, -rl);
+    arm( 5.2, armR, reachR, dropR, R.S, 1.2, P.mouthR, inR,  rl);
     // and whatever is being lifted to it
     if (P.mouthItem){
       const M = P.mouthItem;
@@ -11548,13 +12062,27 @@ function playerBodyVol(worn, P){
       const off = M.both ? 0 : (P.mouthR ? 2.4 : -2.4);
       slab(z0, z1, M.w || 1.0, 1.2, R[M.r] || R.W, off, FWD * 1.6);
     }
-    slab(tT, nT, 2.0, 2.0, R.S, 0, lean);                    // neck
-    slab(nT, hT, 3.0, 2.6, R.S, 0, lean);                    // head
-    // --- what you put on ----------------------------------------------
+    slab(tT, nT, 2.0, 2.0, R.S, tw * 0.55, lean);            // neck
+    slab(nT, hT, 3.0, 2.6, R.S, tw * 0.7, lean);             // head
+    /*--- what you put on, and in what order ---------------------------
+      The layering is the whole point of a wardrobe, and it was invisible.
+      A coat drawn as one slab from below the hip to the shoulders hides
+      everything under it, so a tee, a jacket and a chain all came out as
+      the same silhouette in the coat's colour: you could not tell what you
+      had put on, which is most of the reason for putting anything on.
+
+      Three cuts fix it, and all three are in the FRONT face - the half of a
+      body anybody ever looks at. The hem stops short so what is stacked
+      under it shows below. The coat parts down the centre so it shows
+      through. And the trinkets sit PROUD of whatever they are worn over
+      instead of being buried inside it.
+    ------------------------------------------------------------------*/
+    const FRONT = FWD * 1.9;                   // the front face, in voxels
+    const under = shirt ? R.B : R.S;           // whatever the coat is over
     if (outer){                                              // the coat wins
       slab(hip - 0.02, tT + 0.04, 4.6, 2.7, R.K, 0, lean);
-      arm(-5.3, armL, reachL, dropL, R.K, 1.5, P.mouthL);    // sleeves
-      arm( 5.3, armR, reachR, dropR, R.K, 1.5, P.mouthR);
+      arm(-5.3, armL, reachL, dropL, R.K, 1.5, P.mouthL, inL);   // sleeves
+      arm( 5.3, armR, reachR, dropR, R.K, 1.5, P.mouthR, inR);
       if (outer === 'puffer'){                               // horizontal baffles
         for (let h = hip + 0.04; h < tT + 0.04; h += 0.16)
           slab(h, h + 0.05, 4.8, 2.8, R.W, 0, lean);
@@ -11563,30 +12091,67 @@ function playerBodyVol(worn, P){
         slab(hip, tT + 0.02, 4.7, 0.6, R.W,  3.4, lean);
       } else if (outer === 'hoodie'){                        // the hood, bunched
         slab(tT + 0.02, tT + 0.16, 3.4, 2.9, R.K, 0, lean);
-      } else if (outer === 'vest'){                          // open at the front
-        slab(hip + 0.02, tT + 0.02, 4.7, 0.9, R.B, 0, lean);
       }
+      /* The hem, cut away at the front, and the placket down the middle of
+         it. Last, so the baffles and the stripes stop at the opening the
+         way a real one does rather than running across it. */
+      slab(hip - 0.02, hip + 0.20, 4.2, 1.0, under, 0, lean + FRONT);
+      // a vest is open to the waist; everything else parts a hand's width
+      slab(hip + 0.18, tT + 0.02, outer === 'vest' ? 2.2 : 0.7, 1.0,
+           under, 0, lean + FRONT);
+      // and the collar of whatever is under it, at the throat
+      if (shirt) slab(tT - 0.04, tT + 0.06, 2.4, 1.0, R.B, 0, lean + FRONT);
     }
-    if (has('workjacket') && outer !== 'workjacket')         // worn under
+    if (has('workjacket') && outer !== 'workjacket'){        // worn under
       slab(hip + 0.02, hip + 0.44, 4.4, 2.6, R.K, 0, lean);
+      slab(hip + 0.02, hip + 0.16, 4.0, 1.0, under, 0, lean + FRONT);
+    }
     if (shoes && !P.sit){
       slab(0.00, 0.14, 2.8, 2.8, R.W, -2.4, legL);           // the good shoes
       slab(0.00, 0.14, 2.8, 2.8, R.W,  2.4, legR);
     }
-    if (has('shades')) slab(nT + 0.10, nT + 0.16, 3.1, 2.8, R.X, 0, lean);
-    if (has('chain'))  slab(tT - 0.08, tT + 0.02, 2.6, 2.5, R.X, 0, lean);
+    if (has('shades')){
+      /* Glasses, not a headband. This was one band the full depth of the
+         head, which from the side is a stripe round the back of somebody's
+         skull and from any angle is not a pair of glasses. A frame across
+         the FRONT only, two lenses set into it, and arms down the temples -
+         which is what reads as glasses from every side a body is seen from.
+         The lenses go on after the frame, so what is left of the frame is a
+         rim round them and a bridge between them. */
+      slab(nT + 0.10, nT + 0.17, 3.1, 0.9, R.X, 0, lean + FRONT);
+      // ±1.8 at 0.9, not ±1.6 at 1.1: the wider pair met in the middle and
+      // the two lenses came out as one visor with no bridge between them
+      slab(nT + 0.11, nT + 0.16, 0.9, 0.8, R.T, -1.8, lean + FRONT);
+      slab(nT + 0.11, nT + 0.16, 0.9, 0.8, R.T,  1.8, lean + FRONT);
+      slab(nT + 0.14, nT + 0.16, 0.4, 0.5, R.W, -2.2, lean + FRONT);  // a glint
+      slab(nT + 0.12, nT + 0.16, 0.5, 1.7, R.X, -3.0, lean);          // temples
+      slab(nT + 0.12, nT + 0.16, 0.5, 1.7, R.X,  3.0, lean);
+    }
+    if (has('chain')){
+      /* Worn OVER whatever else is on, because a chain under a coat is a
+         chain nobody bought. Over one it hangs lower and stands further
+         out; against the skin it sits at the collarbone. */
+      const cz = outer ? tT - 0.28 : tT - 0.10;
+      slab(cz + 0.12, tT + 0.02, 2.9, 1.0, R.X, 0, lean + FRONT);
+      slab(cz, cz + 0.13, 1.0, 1.0, R.X, 0, lean + FRONT);   // and the pendant
+    }
     // the hand end of whichever arm it is on, reaching or hanging
-    const handAt = (xoff, swing, reach, drop, h0, h1, role) => {
+    // and the trinkets follow the hand in, or a ring stays out at the
+    // shoulder while the hand it is on is gripping something at the middle
+    const handAt = (xoff, swing, reach, drop, h0, h1, role, hw, inw) => {
       if (reach > 0){
         const top = shoulder - (drop || 0);
-        slab(top - 0.24, top - 0.10, 1.3, 0.8, role, xoff, FWD * (reach + 1.0));
-      } else slab(h0, h1, 1.4, 2.0, role, xoff, swing);
+        slab(top - 0.24, top - 0.10, hw, 0.8, role, inward(xoff, reach, inw),
+             FWD * (reach + 0.9));
+      } else slab(h0, h1, hw, 2.0, role, xoff, swing);
     };
     if (has('ring'))  handAt( 5.4, armR, reachR, dropR,
-                              hip + 0.14 + raise, hip + 0.20 + raise, R.X);
+                              hip + 0.14 + raise, hip + 0.20 + raise, R.X, 1.4, inR);
+    /* A watch worn over a coat sleeve is a wider band than one on a bare
+       wrist, and it has to be, or the sleeve simply swallows it. */
     if (has('watch')) handAt(-5.4, armL, reachL, dropL,
-                              hip + 0.20 + raise, hip + 0.26 + raise, R.X);
-
+                             hip + 0.20 + raise, hip + 0.28 + raise, R.X,
+                             outer ? 1.7 : 1.4, inL);
     return v;
   };
 }
@@ -11624,35 +12189,86 @@ function playerBodyVol(worn, P){
 --------------------------------------------------------------------------*/
 const WEAPON_HOLD = {
   fist:     { reachL: 1.6, reachR: 1.6, armRaise: 0.10 },
-  knife:    { reachL: 1.2, reachR: 2.4, armRaise: 0.04,
+  knife:    { reachL: 1.2, reachR: 2.4, armRaise: 0.04, armInL: 0.8, armInR: 3.6,
               gun: { id:'knife',    len:0.26, w:0.07, h:0.10, fwd:0.18, z:1.16 } },
-  pipe:     { reachL: 1.0, reachR: 2.6, armRaise: 0.06,
+  pipe:     { reachL: 1.0, reachR: 2.6, armRaise: 0.06, armInL: 0.8, armInR: 3.6,
               gun: { id:'pipe',     len:0.58, w:0.09, h:0.09, fwd:0.20, z:1.14 } },
-  bat:      { reachL: 2.0, reachR: 2.2, armRaise: 0.16,
+  bat:      { reachL: 2.0, reachR: 2.2, armRaise: 0.16, armInL: 8.6, armInR: 1.8,
               gun: { id:'bat',      len:0.85, w:0.11, th:0.11, z:1.10, up:1 } },
-  katana:   { reachL: 2.2, reachR: 2.4, armRaise: 0.18,
+  katana:   { reachL: 2.2, reachR: 2.4, armRaise: 0.18, armInL: 8.6, armInR: 1.8,
               gun: { id:'katana',   len:1.00, w:0.09, th:0.09, z:1.14, up:1 } },
-  maul:     { reachL: 2.0, reachR: 2.4, armRaise: 0.16,
+  maul:     { reachL: 2.0, reachR: 2.4, armRaise: 0.16, armInL: 8.6, armInR: 1.8,
               gun: { id:'maul',     len:0.90, w:0.16, th:0.16, z:1.08, up:1 } },
-  holdout:  { reachL: 1.4, reachR: 2.8, armRaise: 0.12,
+  holdout:  { reachL: 1.4, reachR: 2.8, armRaise: 0.12, armInL: 3.2, armInR: 3.4,
               gun: { id:'holdout',  len:0.20, w:0.10, h:0.14, fwd:0.20, z:1.26 } },
-  pistol:   { reachL: 2.6, reachR: 3.0, armRaise: 0.12,
+  pistol:   { reachL: 2.6, reachR: 3.0, armRaise: 0.12, armInL: 3.2, armInR: 3.4,
               gun: { id:'pistol',   len:0.28, w:0.10, h:0.18, fwd:0.20, z:1.26 } },
-  revolver: { reachL: 2.6, reachR: 3.2, armRaise: 0.12,
+  revolver: { reachL: 2.6, reachR: 3.2, armRaise: 0.12, armInL: 3.2, armInR: 3.4,
               gun: { id:'revolver', len:0.34, w:0.11, h:0.20, fwd:0.20, z:1.26 } },
-  smg:      { reachL: 3.2, reachR: 2.2, armRaise: 0.10,
+  smg:      { reachL: 3.2, reachR: 2.2, armRaise: 0.10, armInL: 3.4, armInR: 3.4,
               gun: { id:'smg',      len:0.50, w:0.12, h:0.24, fwd:0.20, z:1.22 } },
-  nailer:   { reachL: 3.0, reachR: 2.2, armRaise: 0.10,
+  nailer:   { reachL: 3.0, reachR: 2.2, armRaise: 0.10, armInL: 3.4, armInR: 3.4,
               gun: { id:'nailer',   len:0.44, w:0.13, h:0.24, fwd:0.20, z:1.22 } },
-  arcgun:   { reachL: 3.2, reachR: 2.2, armRaise: 0.10,
+  arcgun:   { reachL: 3.2, reachR: 2.2, armRaise: 0.10, armInL: 3.4, armInR: 3.4,
               gun: { id:'arcgun',   len:0.52, w:0.14, h:0.24, fwd:0.20, z:1.22 } },
-  shotgun:  { reachL: 3.8, reachR: 2.0, armRaise: 0.08,
+  shotgun:  { reachL: 3.8, reachR: 2.0, armRaise: 0.08, armInL: 3.4, armInR: 3.4,
               gun: { id:'shotgun',  len:0.85, w:0.12, h:0.22, fwd:0.22, z:1.20 } },
-  rifle:    { reachL: 4.0, reachR: 2.0, armRaise: 0.08,
+  rifle:    { reachL: 4.0, reachR: 2.0, armRaise: 0.08, armInL: 3.4, armInR: 3.4,
               gun: { id:'rifle',    len:1.05, w:0.11, h:0.24, fwd:0.22, z:1.20 } },
-  railgun:  { reachL: 4.0, reachR: 2.0, armRaise: 0.08,
+  railgun:  { reachL: 4.0, reachR: 2.0, armRaise: 0.08, armInL: 3.4, armInR: 3.4,
               gun: { id:'railgun',  len:1.20, w:0.14, h:0.28, fwd:0.22, z:1.18 } }
 };
+/*---------------------- the moment it goes off -----------------------------
+  A body firing a gun used to be a body holding a gun with a flash in front
+  of it. From outside - a hijacked camera, another player across a junction -
+  that reads as a mannequin with a light on, and the shot is the single most
+  important thing anybody watching you needs to be able to see.
+
+  So every weapon gets a recoil, and the recoil is the weapon's. A holdout
+  snaps; a revolver throws the wrist up; a shotgun drives the whole body back
+  and the leading hand rides the pump; a railgun does not recoil so much as
+  brace, because what it does to the person holding it is soak. The numbers
+  come off the same GUNS table the first-person kick does, so a weapon tuned
+  to hit hard also looks like it does.
+
+  `flash` names the shape of what leaves the bore, which is where the special
+  weapons earn their names: an arc gun throws a sphere of light rather than a
+  cone, a railgun leaves a line of it standing in the air, and a nailer
+  barely lights at all.
+---------------------------------------------------------------------------*/
+const WEAPON_FIRE = {
+  holdout:  { back: 0.5, rise: 0.030, lean: -0.5, flash: 'small' },
+  pistol:   { back: 0.7, rise: 0.040, lean: -0.6, flash: 'cone' },
+  revolver: { back: 1.1, rise: 0.075, lean: -1.0, flash: 'cone' },
+  smg:      { back: 0.5, rise: 0.026, lean: -0.4, flash: 'small' },
+  nailer:   { back: 0.6, rise: 0.022, lean: -0.4, flash: 'none' },
+  arcgun:   { back: 0.4, rise: 0.020, lean: -0.3, flash: 'arc' },
+  // the pump is a stroke along the forestock, not a hand let go of the gun:
+  // 1.4 pulled the leading fist clean off the back of the receiver
+  shotgun:  { back: 1.6, rise: 0.060, lean: -1.6, pump: 1.0, flash: 'cone' },
+  rifle:    { back: 1.2, rise: 0.050, lean: -1.1, flash: 'cone' },
+  railgun:  { back: 0.9, rise: 0.030, lean: 0.9, crouch: 0.05, flash: 'rail' }
+};
+/* The hold, with the shot going through it. Cached like the swing is. */
+function weaponFire(H, id){
+  const F = WEAPON_FIRE[id];
+  if (!F || !H.gun) return H;
+  const S = Object.assign({}, H);
+  // both hands come back toward the shoulder; the leading one comes back
+  // furthest, which is what a recoiling weapon does to the arm under it
+  S.reachL = Math.max(0.6, (H.reachL || 1.6) - F.back * (F.pump ? 1.6 : 1));
+  S.reachR = Math.max(0.6, (H.reachR || 1.6) - F.back * 0.6);
+  S.armRaise = (H.armRaise || 0) + F.rise;
+  S.lean = F.lean;
+  if (F.crouch) S.crouch = F.crouch;
+  // and the muzzle climbs: the weapon lifts and comes back with the hands
+  S.gun = Object.assign({}, H.gun, {
+    z: H.gun.z + F.rise * 1.4,
+    fwd: Math.max(0.10, (H.gun.fwd || 0.20) - F.back * 0.035)
+  });
+  S.fire = F;
+  return S;
+}
 /* A swing is the same hold with the leading arm thrown out and the body
    turned into it. Guns recoil rather than swing, so they only lurch. */
 function weaponSwing(H){
@@ -11670,14 +12286,21 @@ function weaponSwing(H){
    are the skate pose; the arms are the weapon's, tucked in a little because
    you are also balancing. The arms stop swinging - they are busy. */
 const _skwCache = new Map();
-function skateHold(fr, id){
-  const k = fr + ':' + id;
+function skateHold(pose, id){
+  const k = pose + ':' + id;
   let P = _skwCache.get(k);
   if (!P){
-    const S = BODY_POSE['skate' + fr], W = WEAPON_HOLD[id] || WEAPON_HOLD.fist;
+    const S = BODY_POSE[pose] || BODY_POSE.skate0;
+    const W = WEAPON_HOLD[id] || WEAPON_HOLD.fist;
+    /* Riding with something in your hands. The board, the crouch and the
+       stance are the skate pose; the arms are the weapon's, tucked in a
+       little because you are also balancing, and they stop swinging - they
+       are busy. Everything a trick does to the LEGS survives, because the
+       hold only ever overwrites the arms. */
     P = Object.assign({}, S, {
       reachL: (W.reachL || 0) * 0.78,
       reachR: (W.reachR || 0) * 0.78,
+      armInL: W.armInL, armInR: W.armInR,
       armRaise: (W.armRaise || 0) * 0.7,
       gun: W.gun, armL: 0, armR: 0
     });
@@ -11685,12 +12308,16 @@ function skateHold(fr, id){
   }
   return P;
 }
-const _swingCache = new Map();
-function weaponHold(id, swinging){
+const _swingCache = new Map(), _fireCache = new Map();
+function weaponHold(id, mode){
   const H = WEAPON_HOLD[id] || WEAPON_HOLD.fist;
-  if (!swinging) return H;
-  let S = _swingCache.get(id);
-  if (!S){ S = weaponSwing(H); _swingCache.set(id, S); }
+  if (!mode) return H;
+  const C2 = mode === 'sw' ? _swingCache : _fireCache;
+  let S = C2.get(id);
+  if (!S){
+    S = mode === 'sw' ? weaponSwing(H) : weaponFire(H, id);
+    C2.set(id, S);
+  }
   return S;
 }
 /*------------------------- the things themselves --------------------------
@@ -11806,14 +12433,41 @@ function weaponArt(id, vertical){
    twelfth of a second, which is why it is driven by an event rather than by
    the position stream - at fifteen packets a second a flag would be missed
    more often than it was caught. */
-function drawMuzzleFlash(x, y, yaw, G, t){
-  if (!G || G.up) return;                       // a blade has no bore
+/* What leaves the bore, and it is not the same thing for all of them. The
+   ordinary guns throw a cone of light; the two that are not ordinary throw
+   what their name says they do, which is the only chance anybody watching
+   from across a junction gets to tell a railgun from a rifle. */
+function drawMuzzleFlash(x, y, yaw, G, t, kind){
+  if (!G || G.up || kind === 'none') return;    // a blade has no bore
   const sl = gunSlots(), art = weaponArt('flash', false);
   const fx = Math.cos(yaw), fy = Math.sin(yaw);
   const d = (G.fwd || 0.22) + G.len + 0.05;
-  const k = 0.10 + 0.20 * Math.min(1, t / 0.09);
+  const u = Math.min(1, t / 0.09);
+  const k = (0.10 + 0.20 * u) * (kind === 'small' ? 0.62 : 1);
   drawModel(x + fx * d, y + fy * d, G.z - k * 0.45, k, k, art,
             sl.base, sl.dens, 0, yaw + Math.PI / 2, 1.5, 0);
+  if (kind === 'rail'){
+    /* A line of light standing in the air where the slug went, fading from
+       the bore outward. Three blocks, because at this size a fourth is a
+       cell nobody sees and the march is not free. */
+    for (let i = 1; i <= 3; i++){
+      const s = k * (0.85 - i * 0.16);
+      if (s <= 0.02) continue;
+      const dd = d + i * 0.62 * (0.4 + 0.6 * u);
+      drawModel(x + fx * dd, y + fy * dd, G.z - s * 0.45, s, s, art,
+                sl.base, sl.dens, 0, yaw + Math.PI / 2, 1.5, 0);
+    }
+  } else if (kind === 'arc'){
+    // it does not fire so much as reach: two forks off the axis of the bore
+    for (const s2 of [1, -1]){
+      const a2 = yaw + s2 * (0.30 + 0.22 * Math.sin(t * 90 + s2));
+      const dd = d + 0.34 * u;
+      const s = k * 0.55;
+      drawModel(x + Math.cos(a2) * dd, y + Math.sin(a2) * dd,
+                G.z - s * 0.45 + s2 * 0.05, s, s, art,
+                sl.base, sl.dens, 0, a2 + Math.PI / 2, 1.5, 0);
+    }
+  }
 }
 function drawHeldWeapon(x, y, yaw, H){
   const G = H && H.gun;
@@ -11822,9 +12476,13 @@ function drawHeldWeapon(x, y, yaw, H){
   const fx = Math.cos(yaw), fy = Math.sin(yaw);
   if (G.up){
     // carried upright, out past the shoulder rather than through the head
+    /* Out past the shoulder rather than through the head - but only just.
+       At 0.26 m the haft stood a hand's width outboard of the fists holding
+       it; the head is 0.13 m across, so 0.17 clears it and lands on the
+       grip, which is where both hands now converge. */
     const sx = Math.cos(yaw + Math.PI * 0.5), sy = Math.sin(yaw + Math.PI * 0.5);
     const art = weaponArt(G.id, true);
-    drawModel(x + fx * 0.08 + sx * 0.26, y + fy * 0.08 + sy * 0.26, G.z,
+    drawModel(x + fx * 0.08 + sx * 0.17, y + fy * 0.08 + sy * 0.17, G.z,
               G.w, G.len, art, sl.base, sl.dens, 0, yaw + Math.PI / 2,
               G.th / G.w, 1);
     return;
@@ -11880,10 +12538,17 @@ function bodyPoseOf(p){
   if (p.hitT > 0) return 'hurt';
   const w = bodyWeaponOf(p);
   if (p.skate){
-    const fr = (p.pushT > 0 || ((p.phase | 0) & 1)) ? 1 : 0;
-    return w === 'fist' ? 'skate' + fr : 'sk' + fr + ':' + w;
+    const sp = skatePose(p);
+    return w === 'fist' ? sp : 'sk:' + sp + ':' + w;
   }
   if (p.punchT > 0) return 'sw:' + w;
+  /* The shot outranks the hold. The muzzle timer is a twelfth of a second,
+     which is short enough that a body could hold its aim stance right
+     through one - so a firing body is its own pose, not a hold with a light
+     in front of it. Ours reads the first-person timer directly, so the
+     camjack shows our own shots with netplay switched off entirely. */
+  const fT = p.local === false ? (p.fireT || 0) : (typeof muzzleT === 'number' ? muzzleT : 0);
+  if (fT > 0 && WEAPON_FIRE[w]) return 'fi:' + w;
   if (p.aiming && w !== 'fist') return 'wp:' + w;
   if (p.moving) return (p.running ? 'run' : 'walk') + ((p.phase | 0) & 1);
   return 'idle';
@@ -11894,9 +12559,11 @@ function bodyPose(key){
   if (c < 0) return BODY_POSE[key] || BODY_POSE.idle;
   const mode = key.slice(0, c), arg = key.slice(c + 1);
   if (mode === 'use') return CONSUME_POSE[arg] || CONSUME_POSE.eat;
-  if (mode === 'sk0') return skateHold(0, arg);
-  if (mode === 'sk1') return skateHold(1, arg);
-  return weaponHold(arg, mode === 'sw');
+  if (mode === 'sk'){                            // sk:<pose>:<weapon>
+    const c2 = arg.indexOf(':');
+    return skateHold(arg.slice(0, c2), arg.slice(c2 + 1));
+  }
+  return weaponHold(arg, mode === 'sw' ? 'sw' : mode === 'fi' ? 'fi' : 0);
 }
 /* Draw anybody's body where they are standing - the camjack looking back at
    you, and everyone else in the room. */
@@ -11912,7 +12579,7 @@ function drawBodyOf(p, x, y, yaw){
     // ours reads the same muzzle timer the first-person view uses, so the
     // camjack sees our own shots without netplay being on at all
     const fT = p.local === false ? (p.fireT || 0) : muzzleT;
-    if (fT > 0) drawMuzzleFlash(x, y, yaw, P.gun, fT);
+    if (fT > 0) drawMuzzleFlash(x, y, yaw, P.gun, fT, P.fire && P.fire.flash);
   }
 }
 /* the camjack's view of you, left standing where you walked away from */
@@ -15002,7 +15669,12 @@ function fireWeapon(){
   muzzleT = 0.09;
   // a flash is gone in a twelfth of a second, far too short to survive being
   // sampled by the position stream - it goes as its own event or not at all
-  netBroadcastEvent('shot', { x: +cam.x.toFixed(2), y: +cam.y.toFixed(2) });
+  /* The weapon goes on the wire with the position. Everyone else was hearing
+     a flat half-volume pistol whatever was actually fired, so a railgun two
+     streets over and a holdout at your elbow arrived as the same noise from
+     nowhere. The id is three to seven characters once a second at most. */
+  netBroadcastEvent('shot', { x: +cam.x.toFixed(2), y: +cam.y.toFixed(2),
+                              w: wid, s: netSceneId() });
   addRecoil(G.kick * RECOIL_GAIN, G.settle || (G.auto ? RECOIL_AUTO : RECOIL_TAU));
   sfx('shot', { vol: G.snd, rate: G.rate * (0.97 + Math.random() * 0.06) });
   panicHere(cam.x, cam.y, 120);
@@ -15671,132 +16343,146 @@ function mirrorView(rows){
   return rows.map(r => r.padEnd(w).split('').reverse().map(c => M[c] || c).join(''));
 }
 const CM_ARM = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT };
+/* The gun's own palette. Grey body, dark seams, white pins - and one entry
+   per ACCENT, so a weapon can carry a light without needing its own colour
+   map: amber for anything counting rounds, blue for heat and coils, violet
+   for stored charge, red for a barrel that has been working, green for
+   glass. Anything not named here falls to H_DRK, which is what draws the
+   outlines. */
 const CM_GUN = { s: H_SKIN, '@': H_SKIN, j: H_JKT,
-                 '%': H_GRY, '=': H_GRY, '.': H_GRY, '#': H_DRK, o: H_WHT };
+                 '%': H_GRY, '=': H_GRY, '.': H_GRY, '#': H_DRK, o: H_WHT,
+                 a: H_YEL, c: H_BLU, v: H_PUR, r: H_RED, g: H_GRN,
+                 '~': H_BLU, '*': H_WHT };
 const CM_MUZ = { '\\': H_YEL, '|': H_YEL, '/': H_YEL, '-': H_YEL, '*': H_YEL };
 
-/* the pistol from behind, both hands on the grip, muzzle at the reticle */
-const VM_GUN = [
-  '             .|.              ',
-  '            (===)             ',
-  '           |=====|            ',
-  '           |=%o%=|            ',
-  '          /#=====#\\          ',
-  '          |#=====#|           ',
-  '         |%%=====%%|          ',
-  '         |%%#===#%%|          ',
-  '        |%%%[o]%%%%|          ',
-  '        |%%%%#%%%%%|          ',
-  '     ___|%%%%#%%%%%|___       ',
-  '    (ss/#%%%%#%%%%#\\ss)      ',
-  '   (sss|#%%%%#%%%%#|sss)      ',
-  '  (@s@s(#%%%%%%%%%#)s@s@)     ',
-  '  (sssss(#%%%%%%%#)sssss)     ',
-  '  |sssss|#%%%%%%%#|sssss|     ',
-  '   (ssss(%%%%%%%%%)ssss)      ',
-  '   (jjss(%%%%%%%%%)ssjj)      ',
-  '  /jjjjss\\%%%%%%%/ssjjjj\\   ',
-  ' /jjjjj|ss(_______)ss|jjjjj\\ ',
-  '/jjjjjj(ss)       (ss)jjjjjj\\',
-  'jjjjjj/ (s(       )s) \\jjjjjj',
-  'jjjjj/  (s)       (s)  \\jjjjj',
-  'jjj~/                   \\~jjj',
-  'jjj/                     \\jjj',
-  'jj/                       \\jj'
+/*========================= what is in your hands ===========================
+  The viewmodel was sixty percent of the screen, thirty characters across,
+  and sixteen of its twenty-six rows were the player's own forearms. On the
+  finer grids that is most of the lower half of the frame spent on a grey
+  shape you already know the shape of - and the street you are aiming into
+  is the thing you actually need to see.
+
+  So: narrower arms, shorter models, and forty-two percent of the height
+  instead of sixty. That buys back a third of the screen with no loss of
+  legibility, because what reads at this size was always the SILHOUETTE and
+  never the interior detail.
+
+  What goes into the room the shrink made is flair. Every weapon now carries
+  one light of its own - an amber round counter, a blue heat vent, a violet
+  capacitor, a red-hot shield, a green reticle - drawn in the same neon the
+  city is lit by. A gun in this game should look like it came from THIS
+  world, not like a grey rectangle held up in front of one, and one lit
+  element per weapon is what separates the two at eight characters wide.
+===========================================================================*/
+/* The two-hand grip, and the sleeves it comes out of. Every gun is stacked
+   on this: the grip does not change, the thing gripped does. */
+const VM_GUN_ARMS = [
+  '      ___________       ',
+  '     /#%%%%%%%%%#\\      ',
+  '    (ss#%%%%%%%#ss)     ',
+  '   (@s@s#%%%%%#s@s@)    ',
+  '   (ssss(#%%%#)ssss)    ',
+  '   |ssss|_____|ssss|    ',
+  '   (ssss)     (ssss)    ',
+  '  /jjss/       \\ssjj\\   ',
+  ' /jjjj/         \\jjjj\\  ',
+  '/jjjj/           \\jjjj\\ ',
+  'jjj~/             \\~jjj ',
+  'jj/                 \\jj '
 ];
-/* an idle fist, boxer guard - knuckle ridge, finger seams, thumb, cuff folds */
+const gunArt = (top) => top.concat(VM_GUN_ARMS);
+/* Row 0 carries the .|. front sight the reticle code aligns to. Nothing else
+   in a top is load-bearing, so a new weapon is nine lines of drawing. */
+const VM_GUN = gunArt([
+  '          .|.           ',
+  '         (===)          ',
+  '        |=====|         ',
+  '        |=%a%=|         ',      // the round counter, lit
+  '       /#=====#\\        ',
+  '       |%%===%%|        ',
+  '      |%%%[o]%%%|       '
+]);
 const GUN_SIGHT_COL = VM_GUN[0].indexOf('|');   // the front sight post
-/* Every gun shares the same pair of hands - the grip does not change, the
-   thing gripped does. Each top is stacked onto the arms base; row 0 carries
-   the .|. sight post the reticle code aligns to. */
-const GUN_ARMS = VM_GUN.slice(10);              // the two-hand grip and jacket
-const gunArt = (top) => top.concat(GUN_ARMS);
 const VM_GUNS = {
   pistol: VM_GUN,
+  // a pocket gun: barely clears the fist, one amber pip and nothing else
   holdout: gunArt([
-  '             .|.              ',
-  '            (=#=)             ',
-  '           |=====|            ',
-  '          |#=====#|           ',
-  '         |%%#===#%%|          ',
-  '        |%%%[o]%%%%|          ']),
+  '          .|.           ',
+  '         (=#=)          ',
+  '        |==a==|         ',
+  '       |%%===%%|        ']),
+  // the cylinder is the whole silhouette, so it gets the width
   revolver: gunArt([
-  '             .|.              ',
-  '            (===)             ',
-  '           |=====|            ',
-  '          |#=====#|           ',
-  '        ((#o=====o#))         ',
-  '       ((o%%=====%%o))        ',
-  '       ((%%%#===#%%%))        ',
-  '        ((%%[===]%%))         ',
-  '         |%%%#=#%%%|          ',
-  '        |%%%%[o]%%%%|         ']),
+  '          .|.           ',
+  '         (===)          ',
+  '        |=====|         ',
+  '      ((#o===o#))       ',
+  '      ((a%===%a))       ',
+  '       ((%[=]%))        ',
+  '       |%%[o]%%|        ']),
+  // stubby, top-railed, and venting heat where the bolt runs
   smg: gunArt([
-  '             .|.              ',
-  '        _____(=)_____         ',
-  '       |=============|        ',
-  '       |==#==========|        ',
-  '      |#===[ooo]====#|        ',
-  '      |#=============|        ',
-  '       |%%%#=====#%%|         ',
-  '        |%%[#####]%%|         ',
-  '        |%%[#####]%%|         ',
-  '        |%%%[###]%%%|         ']),
+  '          .|.           ',
+  '      ____(=)____       ',
+  '     |===========|      ',
+  '     |=[ccc]=====|      ',
+  '     |#==========|      ',
+  '      |%%#===#%%|       ',
+  '      |%%[###]%%|       ',
+  '       |%%[#]%%|        ']),
+  // twin bores over a heat shield that glows where it has been working
   shotgun: gunArt([
-  '            .|.               ',
-  '          (O) (O)             ',
-  '          (O) (O)             ',
-  '          (O) (O)             ',
-  '         |=======|            ',
-  '         |==###==|            ',
-  '        |#=======#|           ',
-  '        |%%=====%%|           ',
-  '       |%%%#===#%%%|          ',
-  '        |%%%[o]%%%%|          ']),
+  '         .|.            ',
+  '        (O)(O)          ',
+  '        (O)(O)          ',
+  '       |======|         ',
+  '       |=r##r=|         ',
+  '      |#======#|        ',
+  '      |%%%==%%%|        ',
+  '       |%%[o]%%|        ']),
+  // glass on top, and the reticle inside it lit green
   rifle: gunArt([
-  '             .|.              ',
-  '             (=)              ',
-  '             |=|              ',
-  '             |=|              ',
-  '            |===|             ',
-  '        [o==|===|==o]         ',
-  '        [===|===|===]         ',
-  '           |#===#|            ',
-  '          |%%===%%|           ',
-  '         |%%#===#%%|          ',
-  '        |%%%[===]%%%|         ',
-  '        |%%%%[o]%%%%|         ']),
+  '          .|.           ',
+  '          (=)           ',
+  '          |=|           ',
+  '         |===|          ',
+  '      [o=|===|=o]       ',
+  '      [g=|===|=g]       ',
+  '     a  |#===#|  a      ',
+  '       |%%===%%|        ',
+  '      |%%%[=]%%%|       ',
+  '       |%%[o]%%|        ']),
+  // capacitor stack: two coils, and the charge sitting in them
   railgun: gunArt([
-  '             .|.              ',
-  '          ~~(===)~~           ',
-  '         ((=======))          ',
-  '          ~~|===|~~           ',
-  '         ((=======))          ',
-  '          ~~|===|~~           ',
-  '         ((=======))          ',
-  '          |#=====#|           ',
-  '         |%%~===~%%|          ',
-  '        |%%%[~o~]%%%|         ']),
+  '          .|.           ',
+  '       ~~(===)~~        ',
+  '      ((c=====c))       ',
+  '       ~~|===|~~        ',
+  '      ((c=====c))       ',
+  '       ~~|===|~~        ',
+  '       |#=====#|        ',
+  '      |%%v===v%%|       ',
+  '       |%%[v]%%|        ']),
+  // it arcs before it fires, and the arc is the point of owning one
   arcgun: gunArt([
-  '        *    .|.    *         ',
-  '         \\  (=~=)  /          ',
-  '        ~*~ |=~=| ~*~         ',
-  '          \\_|=~=|_/           ',
-  '         |#==~~~==#|          ',
-  '         |#=======#|          ',
-  '          |%%~~~%%|           ',
-  '         |%%[~~~]%%|          ',
-  '        |%%%[~o~]%%%|         ']),
+  '      *   .|.   *       ',
+  '       \\ (=v=) /        ',
+  '      ~*~|=v=|~*~       ',
+  '        \\|=v=|/         ',
+  '       |#=vvv=#|        ',
+  '       |#======#|       ',
+  '        |%%vv%%|        ',
+  '       |%%[v]%%|        ']),
+  // the magazine IS the gun: a bar of nails lying along the top
   nailer: gunArt([
-  '             .|.              ',
-  '     ________(=)________      ',
-  '    |==================|      ',
-  '    |==#############===|      ',
-  '    |==================|      ',
-  '       |#==========#|         ',
-  '        |%%======%%|          ',
-  '        |%%%[oo]%%%|          ',
-  '        |%%%%[]%%%%|          '])
+  '          .|.           ',
+  '    ______(=)______     ',
+  '   |===============|    ',
+  '   |==aaaaaaaaa====|    ',
+  '   |===============|    ',
+  '      |#=======#|       ',
+  '      |%%=====%%|       ',
+  '       |%%[oo]%%|       '])
 };
 const GUN_SIGHTS = {};
 for (const gid in VM_GUNS) GUN_SIGHTS[gid] = VM_GUNS[gid][0].indexOf('|');
@@ -17430,6 +18116,120 @@ function stampIntersectionIds(){
         signFloor[y0 * MAP + x0 + i] = id[i];
     }
 }
+/*---- the chart takes the finest grid it can get ---------------------------
+  The map is HUD: no rays, no marching, no sprites - a few thousand character
+  cells laid out over a paused world. It has no business being drawn at the
+  grid the WORLD is tuned for, and on the default 7px grid the chart is 182
+  cells across, which is a hundred and eighty samples to hold four square
+  kilometres and every label fighting every other for room.
+
+  So it takes the finest rung while it is open and gives it straight back.
+  The world behind it is paused and dimmed twice over, so the one frame it
+  costs to re-lay the grid lands on a still picture and is not seen.
+
+  Held outside the mode as well as on it: a card can be closed by paths that
+  do not run its `shut` - the pause overlay clears the stack outright - and a
+  glyph grid left switched is not a thing anybody should have to notice.
+---------------------------------------------------------------------------*/
+let mapResSave = null, mapManSave = false;
+function mapTakeRes(){
+  if (mapResSave !== null) return;
+  const fine = CFG.CELLW.length - 1;
+  if (CFG.resIdx >= fine) return;               // already there; nothing to do
+  mapResSave = CFG.resIdx; mapManSave = CFG.manualRes;
+  CFG.manualRes = true; CFG.resIdx = fine;
+  initRender();
+}
+function mapGiveRes(){
+  if (mapResSave === null) return;
+  CFG.resIdx = mapResSave; CFG.manualRes = mapManSave;
+  mapResSave = null;
+  initRender();
+}
+/*---- everything on the chart worth steering to ---------------------------
+  One list, built when the map opens and kept for as long as it is open: the
+  landmarks the city placed, the named regions, the tracked job, your own
+  pin, and every door that sells something. That is what the cycle button
+  walks and what the search box looks in, so the two can never disagree about
+  what exists.
+
+  Doors are the bulk of it and there are thousands, so this is built once per
+  opening rather than per keystroke.
+--------------------------------------------------------------------------*/
+function mapMarks(m){
+  if (m._marks) return m._marks;
+  const out = [];
+  const qt = questTarget();
+  if (qt) out.push({ n: qt.name || 'OBJECTIVE', x: qt.x, y: qt.y, k: 'quest' });
+  if (waypoint) out.push({ n: 'WAYPOINT', x: waypoint.x, y: waypoint.y, k: 'pin' });
+  for (const l of landmarks) out.push({ n: l.name, x: l.x, y: l.y, k: 'landmark' });
+  for (const d of m.dlbl) out.push({ n: d.name, x: d.x, y: d.y, k: 'district' });
+  for (const h in HOMES){
+    const H = HOMES[h];
+    if (H && player.homes && player.homes[h]) out.push({ n: H.name || 'HOME', x: H.x, y: H.y, k: 'home' });
+  }
+  /* Ordered by how far they are from YOU, once, when the map opens. Nearest
+     first, so the first press of the step button goes somewhere useful - and
+     fixed for the life of the card, because re-sorting on the cursor would
+     make "next" mean something different after every press. */
+  out.sort((a, b) => Math.hypot(a.x - cam.x, a.y - cam.y) -
+                     Math.hypot(b.x - cam.x, b.y - cam.y));
+  m._marks = out;
+  return out;
+}
+/* And the same list with every shop on it, which is what SEARCH wants and
+   the cycle button does not - nobody wants to step through nine hundred
+   bodegas one at a time. */
+function mapSearchIndex(m){
+  if (m._index) return m._index;
+  const out = mapMarks(m).slice();
+  for (const d of doors){
+    const b = buildings[d.b];
+    if (!b || d.sealed) continue;
+    const sw = specialWordFor(b);
+    if (sw){ out.push({ n: sw, x: d.x, y: d.y, k: 'place' }); continue; }
+    const u = buildingUse(b);
+    if (!u || !USES[u]) continue;
+    const t = USES[u].trade;
+    // both what the door says and what the trade is called, so LIQUOR and
+    // BODEGA both find the same shutter
+    out.push({ n: USES[u].door, x: d.x, y: d.y, k: 'shop',
+               alt: t ? t.toUpperCase() : null });
+  }
+  m._index = out;
+  return out;
+}
+function mapFind(m, q){
+  if (!q) return null;
+  const Q = q.toUpperCase();
+  let best = null, bd = Infinity;
+  for (const e of mapSearchIndex(m)){
+    if (e.n.indexOf(Q) < 0 && !(e.alt && e.alt.indexOf(Q) >= 0)) continue;
+    const d = Math.hypot(e.x - m.cx, e.y - m.cy);
+    if (d < bd){ bd = d; best = e; }
+  }
+  return best;
+}
+function mapHits(m, q){
+  if (!q) return 0;
+  const Q = q.toUpperCase();
+  let n = 0;
+  for (const e of mapSearchIndex(m))
+    if (e.n.indexOf(Q) >= 0 || (e.alt && e.alt.indexOf(Q) >= 0)) n++;
+  return n;
+}
+/* Step to the next mark and put the cursor on it. The order is the one
+   mapMarks fixed at open - nearest to you first - so stepping walks outward
+   and stepping back comes home. */
+function mapStep(m, dir){
+  const marks = mapMarks(m);
+  if (!marks.length) return null;
+  if (m.markI === undefined || m.markI < 0) m.markI = dir > 0 ? -1 : 0;
+  m.markI = (m.markI + dir + marks.length * 2) % marks.length;
+  const e = marks[m.markI];
+  m.cx = e.x; m.cy = e.y;
+  return e;
+}
 function openMap(){
   // region labels: the centroid of each named place's blocks
   const acc = {};
@@ -17456,9 +18256,31 @@ function openMap(){
   }
   pushMode({
     name: 'map', pausesWorld: true,
-    cx: cam.x, cy: cam.y, zi: 1, dlbl,
+    cx: cam.x, cy: cam.y, zi: 1, dlbl, find: null, markI: -1,
+    open(){ mapTakeRes(); },
+    shut(){ mapGiveRes(); },
     onKey(code){
       const L = mapLattice(this);
+      /* The search box owns the keyboard while it is up, or WASD pans the
+         chart instead of spelling anything, and every name in this city has
+         at least one of those letters in it. */
+      if (this.find !== null){
+        if (code === 'Escape'){ this.find = null; sfx('ui_back', { vol: 0.4 }); return; }
+        if (code === 'Backspace'){ this.find = this.find.slice(0, -1); return; }
+        if (code === 'Enter'){
+          const hit = mapFind(this, this.find);
+          if (hit){
+            this.cx = hit.x; this.cy = hit.y; this.find = null;
+            toast(hit.n + ' - ' + Math.round(Math.hypot(hit.x - cam.x, hit.y - cam.y) * 2) + ' m away');
+            sfx('ui_select', { vol: 0.5 });
+          } else sfx('ui_back', { vol: 0.5, rate: 0.7 });
+          return;
+        }
+        if (code === 'Space'){ if (this.find.length < 18) this.find += ' '; return; }
+        if (/^Key[A-Z]$/.test(code)){ if (this.find.length < 18) this.find += code[3]; return; }
+        if (/^Digit[0-9]$/.test(code)){ if (this.find.length < 18) this.find += code[5]; return; }
+        return;
+      }
       // A nudge moves one SAMPLE, and only a HELD key builds up speed. A nudge
       // used to move one TILE, which at any zoom past the closest moved
       // nothing at all: the lattice is pinned to the world in sample-sized
@@ -17478,6 +18300,19 @@ function openMap(){
           this.zi = Math.max(0, L.zi - 1); sfx('ui_move', { vol: 0.4 }); break;
         case 'KeyE': case 'BracketRight':
           this.zi = Math.min(L.nz - 1, L.zi + 1); sfx('ui_move', { vol: 0.4 }); break;
+        // step the cursor round the marked places, both ways
+        case 'KeyZ': case 'Comma': {
+          const e = mapStep(this, -1);
+          if (e){ toast(e.n); sfx('ui_move', { vol: 0.5, rate: 0.9 }); }
+          break;
+        }
+        case 'KeyC': case 'Period': {
+          const e = mapStep(this, 1);
+          if (e){ toast(e.n); sfx('ui_move', { vol: 0.5, rate: 1.2 }); }
+          break;
+        }
+        case 'KeyF': case 'Slash':
+          this.find = ''; sfx('ui_select', { vol: 0.4, rate: 1.3 }); break;
         case 'Enter':                          // drop the line at the crosshair
           setWaypoint(this.cx, this.cy); break;
         case 'KeyX':
@@ -17495,9 +18330,14 @@ function openMap(){
       this.cy = clamp(this.cy - dy / (R.cellH * L.blk) * L.za, 0, MAP);
     },
     tap(cx, cy){
-      if (cy <= 4 && cx >= R.cols - 8){         // the corner zoom buttons
-        if (cy <= 2) this.onKey('KeyQ'); else this.onKey('KeyE');
+      if (cy <= 6 && cx >= R.cols - 8){         // the corner buttons
+        if (cy <= 2) this.onKey('KeyQ');
+        else if (cy <= 4) this.onKey('KeyE');
+        else this.onKey('KeyF');
         return;
+      }
+      if (cy <= 6 && cx >= R.cols - 16 && cx < R.cols - 8){
+        this.onKey(cy <= 3 ? 'KeyZ' : 'KeyC'); return;
       }
       if (cy >= R.rows - 3){ this.onKey('Escape'); return; }
       // anywhere else: that is where you want to go - read back through the
@@ -17648,6 +18488,11 @@ function mapKeyParts(cols, street){
     add('=', H_WHT, 'bridge',   'br');
     add('*', H_YEL, 'landmark', 'lm');
   } else {
+    /* Pulled back, the chart still draws built ground as built ground - the
+       district supplies the COLOUR, not a different shape - so the key names
+       the two marks first and then what the colours mean. */
+    add('#', H_GRY, 'built', 'blt');
+    add(':', H_DIM, 'open',  'opn');
     for (const d of MAP_KEY){
       const p = MAP_PLACE[d];
       add(p[0], p[1], DISTRICT[d].name.toLowerCase(), p[2]);
@@ -17703,8 +18548,25 @@ function drawMapMode(m){
         else if (f[T_WALK] >= 0.30){ ch = ':'; col = H_DRK; }
         else { ch = '"'; col = H_DRK; }
       } else {
+        /* Past the zoom where a roadway is resolvable the chart used to
+           throw the city away and draw a field of district glyphs instead -
+           so a tower you were steering by became a plus sign, and then a
+           comma, and the block you had memorised changed shape twice on the
+           way out. That is the disorientation, and it is not the samples'
+           fault: the STREETS stop resolving at four tiles to a sample, the
+           BLOCKS do not. A block is twenty tiles, so a sample lands mostly
+           inside one or mostly outside it however far you pull back.
+
+           So the built ground stays built ground at every zoom and keeps the
+           shape it had, and the district only supplies the colour. */
         const p = mapPlace(wx + z * 0.5, wy + za * 0.5);
-        ch = p[0]; col = p[1];
+        const built = f[T_BLD];
+        if (built >= 0.24){ ch = '#'; col = p[1]; }
+        else if (built >= 0.10){ ch = p[0]; col = p[1]; }
+        else if (f[T_PATH] >= 0.20){ ch = ','; col = H_GRN; }
+        // open ground, and the ring past the last road is not the same
+        // open ground as a car park between two blocks
+        else { ch = ':'; col = p === MAP_WILD ? H_PNT : H_DRK; }
       }
       if (!ch) continue;
       const x0 = L.ox0 + c * blk;
@@ -17735,7 +18597,12 @@ function drawMapMode(m){
   const qt = questTarget();
   const qx = qt ? sx(qt.x) : 0, qy = qt ? sy(qt.y) : 0;
   if (qt) claim(qx, qy, 1, 0);
-  const lmOn = z <= MAP_STREET_Z * 2;                 // landmarks are on show
+  /* Landmarks are on show at EVERY zoom. They were gated at eight tiles to a
+     sample, which is exactly backwards: the further out you pull the less
+     else there is to steer by, and the moment the chart stops showing
+     individual streets a landmark is the only thing on it that is a place
+     rather than a texture. */
+  const lmOn = true;
   if (lmOn)
     for (const l of landmarks){
       const x = sx(l.x), y = sy(l.y);
@@ -17744,13 +18611,23 @@ function drawMapMode(m){
   if (qt && qt.name && onChart(qx, qy) && qx + 2 + qt.name.length < cols - 1 &&
       free(qx + 2, qy, qt.name.length))
     word(qx + 2, qy, qt.name, H_YEL);
-  // landmark names, while there is still a street under them to attach to
-  if (z <= 2){
-    for (const l of landmarks){
+  /* Landmark names, at every zoom, nearest the cursor first. The name is the
+     whole value of a landmark on a chart - a yellow star with no word on it
+     is somewhere, not a place - so they are laid down in the order you are
+     most likely to be looking for them and only a genuine collision drops
+     one. The mark under it is drawn regardless. */
+  {
+    const near = landmarks.slice().sort((a, b) =>
+      Math.hypot(a.x - m.cx, a.y - m.cy) - Math.hypot(b.x - m.cx, b.y - m.cy));
+    for (const l of near){
       const x = sx(l.x), y = sy(l.y);
-      if (!onChart(x, y) || x + 2 + l.name.length >= cols - 1) continue;
-      if (!free(x + 2, y, l.name.length)) continue;
-      word(x + 2, y, l.name, l.col !== undefined ? l.col : H_YEL);
+      if (!onChart(x, y)) continue;
+      const col = l.col !== undefined ? l.col : H_YEL;
+      // to the right if it fits, to the left if it does not
+      if (x + 2 + l.name.length < cols - 1 && free(x + 2, y, l.name.length))
+        word(x + 2, y, l.name, col);
+      else if (x - 2 - l.name.length > 0 && free(x - 1 - l.name.length, y, l.name.length))
+        word(x - 1 - l.name.length, y, l.name, col);
     }
   }
   // the named places, once one of them is bigger than the glass
@@ -17859,10 +18736,40 @@ function drawMapMode(m){
   hudStr(2, 0, ' CITY MAP  ' + scale + ' across  ' + (L.zi + 1) + '/' + L.nz + ' ', H_GRN);
   hudStr(cols - 8, 1, '[ + ]', H_GRN);
   hudStr(cols - 8, 3, '[ - ]', H_GRN);
-  const foot = mapFitLine(cols, [
-    'WASD pan   Q/E zoom   tap/ENTER set waypoint   X clear   M close',
-    'WASD pan  Q/E zoom  ENTER pin  X clear  M close',
-    'Q/E zoom  M close']);
+  hudStr(cols - 8, 5, '[ F ]', H_YEL);
+  // stepping through the marked places: back, and on
+  hudStr(cols - 16, 1, '[ < ]', H_YEL);
+  hudStr(cols - 16, 3, '[ > ]', H_YEL);
+  {
+    const marks = mapMarks(m);
+    const at = m.markI >= 0 && m.markI < marks.length ? marks[m.markI] : null;
+    const tag = at ? (m.markI + 1) + '/' + marks.length + ' ' + at.n
+                   : marks.length + ' marked';
+    hudStr(Math.max(1, cols - 17 - tag.length), 5, tag.slice(0, Math.max(0, cols - 20)), H_YEL);
+  }
+  /* The search box. It only exists while it is being typed into, and it says
+     how many things the letters so far match and which one ENTER would take
+     you to - so you can stop typing the moment it is unambiguous rather than
+     spelling out DISPENSARY to reach the only one on the block. */
+  if (m.find !== null){
+    const hit = mapFind(m, m.find);
+    const n = mapHits(m, m.find);
+    const line = 'FIND: ' + m.find + '_' +
+      (m.find ? '   ' + n + (n === 1 ? ' match' : ' matches') +
+                (hit ? '   ->  ' + hit.n : '   nothing') : '');
+    const w = Math.min(cols - 4, line.length + 2);
+    const x = (cols - w) >> 1;
+    hudPanel(x, rows - 4, w, 1);
+    hudStr(x + 1, rows - 4, line.slice(0, w - 2), hit || !m.find ? H_YEL : H_RED);
+  }
+  const foot = m.find !== null
+    ? mapFitLine(cols, ['type a name or a trade   ENTER go   ESC cancel',
+                        'ENTER go   ESC cancel'])
+    : mapFitLine(cols, [
+      'WASD pan   Q/E zoom   Z/C step marks   F find   ENTER pin   X clear   M close',
+      'WASD pan  Q/E zoom  Z/C marks  F find  ENTER pin  X clear  M close',
+      'Q/E zoom  Z/C marks  F find  M close',
+      'Q/E zoom  M close']);
   hudStr((cols - foot.length) >> 1, rows - 1, foot, H_DIM);
 }
 
@@ -18091,6 +18998,12 @@ function initRender(){
   gBuf = new Uint8Array(n); bBuf = new Uint8Array(n);
   lBuf = new Uint8Array(n); dBuf = new Float32Array(n);
   hGlyph = new Uint8Array(n); hCol = new Uint8Array(n);
+  // and the big HUD layer, on a coarser lattice of the same cells
+  bScale = hudScale();
+  bCols = Math.max(1, (R.cols / bScale) | 0);
+  bRows = Math.max(1, (R.rows / bScale) | 0);
+  bGlyph = new Uint8Array(bCols * bRows); bCol = new Uint8Array(bCols * bRows);
+  bAny = 0;
   refBuf = new Uint8Array(n);
   srcBuf = new Uint8Array(n);
   rayX = new Float32Array(R.cols); rayY = new Float32Array(R.cols);
@@ -20684,19 +21597,19 @@ function spritePass(){
       const sbUse = o.hitT > 0 ? HIT_SB : (o.windup > 0 ? WIND_SB : o.sb);
       // a body, turned the way it is walking - the legs are real posts
       const fy = Math.atan2(o.dy, o.dx) + Math.PI / 2;
-      if (o.sit){
-        drawModel(o.x, o.y, 0, 0.6, 1.15, ART.pedSit, sbUse, o.sd, 0, fy, 0.85, 0);
-      } else {
-        if (o.skate){
-          // a push reads for a moment after the kick, the way the player's
-          // own board does - otherwise she flickers between the two frames
-          const fr = o.pushT > 0 ? 1 : 0;
-          drawModel(o.x, o.y, 0, 0.84, 1.76, ART.pedSkate[fr], sbUse, o.sd, 0, fy, 0.85, 0);
-        } else {
-          const fr = o.moving && ((o.phase | 0) & 1) ? 1 : 0;
-          drawModel(o.x, o.y, 0, 0.62, 1.76, ART.ped[fr], sbUse, o.sd, 0, fy, 0.85, 0);
-        }
-      }
+      /* One body, one build, whichever pose they are in. Every case is the
+         same volume at the same size now - the seated and skating arts used
+         to carry their own metre heights and widths, which is what a flat
+         elevation forces on you and a volume does not. */
+      const bld = pedBuild(o);
+      const pose = o.sit ? 'sit'
+                 // a push reads for a moment after the kick, the way the
+                 // player's own board does, or she flickers between frames
+                 : o.skate ? 'skate' + (o.pushT > 0 ? 1 : 0)
+                 : o.moving ? 'walk' + ((o.phase | 0) & 1)
+                 : pedStand(o);
+      drawModel(o.x, o.y, 0, PED_W, PED_H, pedArt(bld, pose),
+                sbUse, o.sd, 0, fy, PED_DEP, 0);
     } else if (it.k === 4){
       drawPlayerBody();
     } else if (it.k === 5){
@@ -20714,6 +21627,7 @@ function spritePass(){
       let dyn = 0;
       if (o.k === PK_LAMP){
         dyn = o.dead ? C.tire : (o.lampC || LAMPC[lampColourIndex(o)]);
+        if (o.dead) def = stumpDef(PK_LAMP);   // the head and the arm are gone
       } else if (o.k === PK_STALL){
         /* A stall wears what it sells: stockStalls settles that when it lays
            the table, so a noodle cart really is the one breathing amber and
@@ -20738,6 +21652,7 @@ function spritePass(){
           : jamT > 0                            // jammed cams stutter in a panic
           ? (((worldTime * 7 + o.s * 3) % 1) < 0.3 ? C.nWhite : C.dataDk)
           : ((worldTime * 1.3 + o.s * 7) % 1) < 0.5 ? C.camRed : C.dataDk;
+        if (o.dead) def = stumpDef(PK_CAM);     // bracket, housing and lens off
       } else if (o.k === PK_ITEM){
         dyn = ITEMS[o.item].pcol;
         const idf = ITEM_DEF[o.item];
@@ -20813,7 +21728,16 @@ function signNow(sg){
   sg._chC = ch ? ch.c : null;
   sg._chD = ch ? ch.d : null;
   sg._chN = ch ? ch.n : 0;
-  sg._chOff = ch ? (worldTime * sg.spin) | 0 : 0;
+  sg._chOff = ch ? (worldTime * sg.spin * ch.dir) | 0 : 0;
+  /* A frame that breathes, worked out ONCE for the whole ring rather than per
+     cell - it is the same number everywhere on the border by definition, and
+     a sine in the inner loop would be a sine per character of frame per
+     frame for every sign on the street. */
+  sg._chP = ch && ch.pulse
+    ? 0.58 + 0.42 * (0.5 + 0.5 * Math.sin(worldTime * ch.pulse + sg.phase)) : 1;
+  sg._in  = ch && ch.inner ? 1 : 0;
+  sg._inC = sg._in ? ch.inner : 0;
+  sg._inD = sg._in ? ch.innerD : 0;
 }
 function drawSignPlane(sg){
   const cols = R.cols, rows = R.rows;
@@ -20847,6 +21771,7 @@ function drawSignPlane(sg){
     const tn = t / viewD, lvl = levelOf(tn), dm = densMul(tn);
     const axp = Math.min(aw - 1, (u * aw) | 0);
     const invH = 1 / Math.max(0.0001, rowB - rowT);
+    let ink = 0;                                 // which of the three inks a cell is
     // both of these are fixed for the whole of this screen column, so the
     // per-cell work below is a couple of compares and an array read
     const edge = (axp === 0 || axp === aw - 1);
@@ -20882,10 +21807,12 @@ function drawSignPlane(sg){
                        : axp === aw - 1 ? (aw - 1) + ay
                        : per2 + (ah - 1 - ay);
               let k = (pi - chO) % chN; if (k < 0) k += chN;
-              base = chC[k]; dens = chD[k];
+              base = chC[k]; dens = chD[k] * sg._chP;
             } else { base = sg.sb[2]; dens = sg.sd[2]; }
-          } else if (sx >= 0 && ay >= 2 && ay - 2 < th && tdat[(ay - 2) * tw + sx]){
-            base = sg.sb[3]; dens = sg.sd[3];
+          } else if (sg._in && (axp === 1 || axp === aw - 2 || ay === 1 || ay === ah - 2)){
+            base = sg._inC; dens = sg._inD;
+          } else if (sx >= 0 && ay >= 2 && ay - 2 < th && (ink = tdat[(ay - 2) * tw + sx])){
+            base = sg.sb[2 + ink]; dens = sg.sd[2 + ink];
           } else { base = sg.sb[1]; dens = sg.sd[1]; }
           const g0 = Math.round(clamp(dens * dm, 0, 1) * RMAX);
           const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
@@ -20914,10 +21841,14 @@ function drawSignPlane(sg){
                    : axp === aw - 1 ? (aw - 1) + ay
                    : per2 + (ah - 1 - ay);
           let k = (pi - chO) % chN; if (k < 0) k += chN;
-          base = chC[k]; dens = chD[k];
+          base = chC[k]; dens = chD[k] * sg._chP;
         } else { base = sg.sb[2]; dens = sg.sd[2]; }
-      } else if (sx >= 0 && ay >= 2 && ay - 2 < th && tdat[(ay - 2) * tw + sx]){
-        base = sg.sb[3]; dens = sg.sd[3];
+        // the hairline inside the frame: a bezel rather than a single rule
+      } else if (sg._in && (axp === 1 || axp === aw - 2 || ay === 1 || ay === ah - 2)){
+        base = sg._inC; dens = sg._inD;
+      } else if (sx >= 0 && ay >= 2 && ay - 2 < th && (ink = tdat[(ay - 2) * tw + sx])){
+        // 1 letter, 2 mark, 3 shouted - straight into the palette
+        base = sg.sb[2 + ink]; dens = sg.sd[2 + ink];
       } else { base = sg.sb[1]; dens = sg.sd[1]; }
       const g = Math.round(clamp(dens * dm, 0, 1) * RMAX);
       if (!g) continue;
@@ -21580,7 +22511,8 @@ function glUploadPalette(){
 function glResize(){
   const gl = GL.gl;
   glv.width = R.W; glv.height = R.H;
-  const n = R.cols * R.rows * 2 + 16;
+  // world, HUD, and the big HUD layer on its quarter-size lattice
+  const n = R.cols * R.rows * 2 + ((R.cols * R.rows) >> 2) + 16;
   GL.data = new ArrayBuffer(n * 16);
   GL.f32 = new Float32Array(GL.data);
   GL.u32 = new Uint32Array(GL.data);
@@ -23152,12 +24084,36 @@ function glPackHud(start){
   }
   return k - start;
 }
-function glDrawGlyphs(first, count){
+/* The big HUD layer, packed the same way, on its own lattice. Cell index is
+   into bCols x bRows, which is what the scaled uniforms in glDrawGlyphs
+   below expect - the shader takes the lattice as a uniform, so drawing the
+   same glyphs twice as large is two numbers rather than a second shader. */
+function glPackHudBig(start){
+  if (!bAny) return 0;
+  const f32 = GL.f32, u32 = GL.u32, pal = glPal, span = LV + 1;
+  const n = bCols * bRows;
+  let k = start;
+  for (let i = 0; i < n; i++){
+    const g = bGlyph[i];
+    if (!g) continue;
+    const o = k << 2;
+    f32[o] = i; f32[o + 1] = g; f32[o + 2] = LV;
+    u32[o + 3] = pal[(NBASE + bCol[i]) * span + LV];
+    k++;
+  }
+  return k - start;
+}
+function glDrawGlyphs(first, count, sc){
   if (!count) return;
   const gl = GL.gl;
   gl.useProgram(GL.pGlyph);
-  gl.uniform2f(GL.uG.uGrid, R.cols, R.rows);
-  gl.uniform2f(GL.uG.uCell, R.cellW, R.cellH);
+  if (sc > 1){
+    gl.uniform2f(GL.uG.uGrid, bCols, bRows);
+    gl.uniform2f(GL.uG.uCell, R.cellW * sc, R.cellH * sc);
+  } else {
+    gl.uniform2f(GL.uG.uGrid, R.cols, R.rows);
+    gl.uniform2f(GL.uG.uCell, R.cellW, R.cellH);
+  }
   gl.uniform2f(GL.uG.uOrigin, R.ox, R.oy);
   gl.uniform2f(GL.uG.uRes, R.W, R.H);
   gl.uniform2f(GL.uG.uAtlas, GL_COLS, LV + 1);
@@ -23193,9 +24149,10 @@ function glPresent(){
   const comp = GL.compOK && GPUC.on && !_cpuLitFrame;
   const nw = comp ? 0 : glPackWorld();
   const nh = glPackHud(nw);
+  const nb = glPackHudBig(nw + nh);
   gl.bindVertexArray(GL.vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, GL.ibuf);
-  gl.bufferSubData(gl.ARRAY_BUFFER, 0, GL.f32, 0, (nw + nh) * 4);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, GL.f32, 0, (nw + nh + nb) * 4);
 
   // --- scene into a texture so bloom has something to read ---
   gl.bindFramebuffer(gl.FRAMEBUFFER, GL.scene.f);
@@ -23219,7 +24176,7 @@ function glPresent(){
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.enable(gl.BLEND);
-  if (comp) glComposeWorld(); else glDrawGlyphs(0, nw);
+  if (comp) glComposeWorld(); else glDrawGlyphs(0, nw, 1);
 
   // --- to the screen, then bloom taps on top ---
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -23271,7 +24228,8 @@ function glPresent(){
            0.012, 0.023, 0.047, 1);
   for (let i = 0; i < hudRects.length; i += 4)
     glQuad(hudRects[i], hudRects[i + 1], hudRects[i + 2], hudRects[i + 3], 0.012, 0.023, 0.047, 0.60);
-  glDrawGlyphs(nw, nh);
+  glDrawGlyphs(nw, nh, 1);
+  glDrawGlyphs(nw + nh, nb, bScale);
 }
 
 /*-------------------------------- blit -------------------------------------*/
@@ -23342,8 +24300,73 @@ function hudPanel(x, y, w, h){
     const off = r * R.cols;
     for (let c = Math.max(0, x); c < x1; c++){ hGlyph[off + c] = 0; }
   }
+  /* and the big layer with it, or nothing ever covers a big message: a space
+     carries no glyph code, so writing over one leaves the character that was
+     underneath showing through the gaps between the words. */
+  if (bAny && bScale > 1){
+    const bx0 = Math.max(0, (x / bScale) | 0), by0 = Math.max(0, (y / bScale) | 0);
+    const bx1 = Math.min(bCols, Math.ceil((x + w) / bScale));
+    const by1 = Math.min(bRows, Math.ceil((y + h) / bScale));
+    for (let r = by0; r < by1; r++){
+      const off = r * bCols;
+      for (let c = bx0; c < bx1; c++) bGlyph[off + c] = 0;
+    }
+  }
   if (y < hudR0) hudR0 = Math.max(0, y);
   if (y1 - 1 > hudR1) hudR1 = y1 - 1;
+}
+/*========================= the HUD, at twice the size ======================
+  The two finest grids put a character in a box three or four pixels across.
+  The world wants exactly that - it is the whole reason those rungs exist -
+  and a MESSAGE does not. A toast at 3px is a grey smudge, and the prompt
+  telling you what the crosshair is about to do is unreadable at precisely
+  the moment it matters.
+
+  So the handful of things that must be read get a second layer, drawn from
+  the same glyph atlas onto a lattice of sc x sc cells. On the canvas that is
+  one drawImage with a bigger destination rectangle; on the GPU it is the
+  same shader with uGrid and uCell scaled, because that shader already took
+  the lattice as a uniform. Nothing else about the HUD changes, and on every
+  other grid the scale is 1 and this layer is never touched.
+
+  The scale is chosen to land a character back at about the size it is on the
+  default 7px grid - 8x14 real pixels at the 4px rung, 9x15 at the 3px one,
+  against 7x12 at the default - rather than at some arbitrary multiple.
+===========================================================================*/
+let bGlyph = null, bCol = null, bCols = 0, bRows = 0, bScale = 1, bAny = 0;
+function hudScale(){
+  const n = CFG.CELLW.length;
+  return CFG.resIdx >= n - 1 ? 3 : CFG.resIdx >= n - 2 ? 2 : 1;
+}
+function hudHD(){ return hudScale() > 1; }
+function hudBigCell(bx, by, ch, ci){
+  if (bx < 0 || bx >= bCols || by < 0 || by >= bRows) return;
+  const code = ch.charCodeAt(0) - 32;
+  if (code <= 0 || code > 94) return;
+  const i = by * bCols + bx;
+  bGlyph[i] = code; bCol[i] = ci; bAny = 1;
+}
+function hudBigStr(bx, by, s, ci){
+  for (let i = 0; i < s.length; i++) hudBigCell(bx + i, by, s[i], ci);
+}
+/* One centred line of HUD in its own panel, at whatever size this grid wants,
+   and it hands back the row it finished on - a big one is three fine rows
+   tall, so whatever stacks under it has to ask rather than assume. */
+function hudMsg(s, y, ci){
+  const cols = R.cols, sc = hudScale();
+  if (sc > 1){
+    const w = s.length + 2;                     // in BIG cells
+    if (w * sc <= cols - 2){
+      const bx = (bCols - w) >> 1, by = Math.round(y / sc);
+      hudPanel(bx * sc, by * sc, w * sc, sc);
+      hudBigStr(bx + 1, by, s, ci);
+      return (by + 1) * sc;
+    }
+  }
+  const x = Math.max(1, (cols - s.length - 2) >> 1);
+  hudPanel(x, y, s.length + 2, 1);
+  hudStr(x + 1, y, s, ci);
+  return y;
 }
 function hudBox(x, y, w, h, title){
   hudStr(x, y, '+' + '-'.repeat(Math.max(0, w - 2)) + '+', H_DIM);
@@ -23448,29 +24471,41 @@ function drawTree(m){
     hudStr(x + w - hint.length - 3, y + h - 2, hint, H_DIM);
   }
 }
+/* The corner map is 33 x 15 of its own cells whatever grid you are on, so on
+   the HD rungs it is a hundred pixels across and tells you nothing. `sc` is
+   how many character cells one map cell is drawn as - one everywhere else,
+   two or three up there - and every mark on it goes through `cell` so the
+   terrain, the traffic, the doors and your own arrow all agree. */
 const MW = 33, MH = 15;
-function drawMinimap(x0, y0){
-  hudPanel(x0, y0, MW + 2, MH + 2);
-  hudBox(x0, y0, MW + 2, MH + 2, 'MAP');
+function mmScale(){ return hudScale(); }
+function drawMinimap(x0, y0, sc){
+  sc = sc || 1;
+  const W = MW * sc, H = MH * sc;
+  hudPanel(x0, y0, W + 2, H + 2);
+  hudBox(x0, y0, W + 2, H + 2, 'MAP');
   const cxT = Math.round(cam.x), cyT = Math.round(cam.y);
   const hw = MW >> 1, hh = MH >> 1;
+  // one map cell, painted as an sc x sc block of character cells
+  const cell = (i, j, ch, col) => {
+    if (i < 0 || i >= MW || j < 0 || j >= MH) return;
+    const cx = x0 + 1 + i * sc, cy = y0 + 1 + j * sc;
+    for (let b = 0; b < sc; b++)
+      for (let a = 0; a < sc; a++) hudCell(cx + a, cy + b, ch, col);
+  };
   for (let j = 0; j < MH; j++){
-    let line = '';
     const ty = cyT + (j - hh) * 2;      // +y runs down-screen, same as the city map
     for (let i = 0; i < MW; i++){
       const tx = cxT + (i - hw);        // east right, like the world
-      if (!inMap(tx, ty)){ line += ' '; continue; }
+      if (!inMap(tx, ty)) continue;
       const t = tType[ty * MAP + tx];
-      line += t === T_BLD ? '#' : t === T_WATER ? '~' : t === T_BRIDGE ? '=' :
-              t === T_PATH ? ',' : t === T_WALK ? ':' : t === T_CROSS ? '+' :
-              t === T_LOT ? '"' : '.';
+      cell(i, j, t === T_BLD ? '#' : t === T_WATER ? '~' : t === T_BRIDGE ? '=' :
+                 t === T_PATH ? ',' : t === T_WALK ? ':' : t === T_CROSS ? '+' :
+                 t === T_LOT ? '"' : '.', H_GRY);
     }
-    hudStr(x0 + 1, y0 + 1 + j, line, H_GRY);
   }
   const plot = (wx, wy, ch, col) => {
     // east right, matching the tiles printed above and the view itself
-    const i = hw + Math.round(wx - cxT), j = hh + Math.round((wy - cyT) * 0.5);
-    if (i >= 0 && i < MW && j >= 0 && j < MH) hudStr(x0 + 1 + i, y0 + 1 + j, ch, col);
+    cell(hw + Math.round(wx - cxT), hh + Math.round((wy - cyT) * 0.5), ch, col);
   };
   for (const c of cars) if (Math.abs(c.x - cam.x) < hw && Math.abs(c.y - cam.y) < hh * 2) plot(c.x, c.y, 'o', H_YEL);
   for (const p of peds) if (Math.abs(p.x - cam.x) < hw && Math.abs(p.y - cam.y) < hh * 2) plot(p.x, p.y, ',', H_WHT);
@@ -23515,12 +24550,12 @@ function drawMinimap(x0, y0){
     const pulse = ((Date.now() / 300) | 0) & 1;
     const i = hw + Math.round(qm.x - cxT), j = hh + Math.round((qm.y - cyT) * 0.5);
     if (i >= 0 && i < MW && j >= 0 && j < MH)
-      hudStr(x0 + 1 + i, y0 + 1 + j, pulse ? '!' : '*', H_YEL);
+      cell(i, j, pulse ? '!' : '*', H_YEL);
     else {
       const ci = clamp(i, 0, MW - 1), cj = clamp(j, 0, MH - 1);
       const di = i - ci, dj = j - cj;
       const ch = Math.abs(di) >= Math.abs(dj) ? (di < 0 ? '<' : '>') : (dj < 0 ? '^' : 'v');
-      hudStr(x0 + 1 + ci, y0 + 1 + cj, pulse ? ch : '!', H_YEL);
+      cell(ci, cj, pulse ? ch : '!', H_YEL);
     }
   }
   if (waypoint) plot(waypoint.x, waypoint.y, 'O', H_RED);
@@ -23539,6 +24574,7 @@ function drawMinimap(x0, y0){
 let fps = 60;
 function hudPass(){
   hGlyph.fill(0);
+  if (bAny){ bGlyph.fill(0); bAny = 0; }
   hudRects.length = 0;
   hudSolids.length = 0;
   hudR0 = 1e9; hudR1 = -1;
@@ -23582,11 +24618,12 @@ function hudPass(){
   // player actually needs while walking lives under the map, the rest moved
   // to the pause menu (CONTROLS / DEBUG).
   const sceneOn = topMode() && topMode().name === 'scene';
-  const mapOn = showMap && cols >= MW + 30 && !sceneOn;
-  if (mapOn) drawMinimap(cols - MW - 3, 1);
+  const msc = mmScale(), MWs = MW * msc, MHs = MH * msc;
+  const mapOn = showMap && cols >= MWs + 30 && !sceneOn;
+  if (mapOn) drawMinimap(cols - MWs - 3, 1, msc);
   if (!sceneOn) {
-    const bw = MW + 2;
-    const bx = Math.max(1, cols - MW - 3), byT = mapOn ? MH + 3 : 1;
+    const bw = MWs + 2;
+    const bx = Math.max(1, cols - MWs - 3), byT = mapOn ? MHs + 3 : 1;
     const put = (row, txt, col) => {
       if (byT + row >= rows - 1) return;
       hudStr(bx + 1, byT + row, String(txt).slice(0, bw - 2), col);
@@ -23736,7 +24773,10 @@ function hudPass(){
       } else if (GUNS[weaponId()]){
         const gid = weaponId();
         const gart = VM_GUNS[gid] || VM_GUN;
-        const tr = Math.round(rows * 0.60);
+        // 0.42, not 0.60: see the note over VM_GUN_ARMS. The sight still lands
+        // on the crosshair, so nothing about aiming changes - there is simply
+        // a third more street under it.
+        const tr = Math.round(rows * 0.42);
         // work out where the front sight will actually land once the art is
         // grounded and scaled, then hang the gun so the post sits on the
         // crosshair instead of beside it
@@ -23759,8 +24799,17 @@ function hudPass(){
         const G2 = GUNS[gid];
         let hole = null;
         if (G2 && G2.scope){
-          hole = { cx: cols >> 1, cy: gy + Math.round(rows * 0.10),
-                   rad: Math.max(3.5, rows * 0.085) };
+          // the tube is mounted on the GUN, so it is measured against the
+          // gun's drawn height - a fraction of the screen stopped landing on
+          // the weapon the moment the weapon got smaller
+          // the tube is mounted on the GUN, so it is measured against the
+          // gun's drawn height - a fraction of the SCREEN stopped landing on
+          // the weapon the moment the weapon got smaller. It is also a
+          // smaller fraction than it was: on a 26-cell gun the old radius ate
+          // the receiver, both scope mounts and the ready lamps with it, and
+          // what was left read as a gun with a hole punched through it.
+          hole = { cx: cols >> 1, cy: gy + Math.round(tr * 0.20),
+                   rad: Math.max(2.5, tr * 0.13) };
         }
         drawViewArt(gart, gx, gy, tr, CM_GUN, true, hole);
         if (hole){
@@ -23840,18 +24889,15 @@ function hudPass(){
      the middle of whatever you are holding - with a pistol up, eight of the
      twenty-three characters of "[E] ACTIVATE" survived. The toast already
      knew to come last; these did not. ---- */
-  if (mNear && !(lookTarget && lookTarget.kind === 'metro') && !inside && !topMode()){
-    const msg = (TOUCH.on ? '[ACT]  METRO - ' : '[G]  METRO - ') + mNear.name;
-    const x = Math.max(1, (cols - msg.length - 2) >> 1);
-    hudPanel(x, (rows >> 1) + 3, msg.length + 2, 1);
-    hudStr(x + 1, (rows >> 1) + 3, msg, H_GRN);
-  }
-  if (!topMode() && lookTarget){
-    const msg = lookTarget.prompt;
-    const x = Math.max(1, (cols - msg.length - 2) >> 1);
-    hudPanel(x, (rows >> 1) + 5, msg.length + 2, 1);
-    hudStr(x + 1, (rows >> 1) + 5, msg, H_GRN);
-  }
+  /* Both prompts are centred lines under the reticle, and the second one has
+     to know how tall the first came out - on the HD grids a line of HUD is
+     two or three rows rather than one, so a fixed +5 would print the second
+     straight through the first. hudMsg hands back where it finished. */
+  let pRow = (rows >> 1) + 3;
+  if (mNear && !(lookTarget && lookTarget.kind === 'metro') && !inside && !topMode())
+    pRow = hudMsg((TOUCH.on ? '[ACT]  METRO - ' : '[G]  METRO - ') + mNear.name,
+                  pRow, H_GRN) + 2;
+  if (!topMode() && lookTarget) hudMsg(lookTarget.prompt, pRow, H_GRN);
   // ---- the run's clock: big, centre-top, counting down in your face ----
   if (RUN && !inside){
     const left = Math.max(0, RUN.t);
@@ -23865,12 +24911,13 @@ function hudPass(){
     hudStr(x + 1 + ((w - 2 - sub2.length) >> 1), 2, sub2, H_DIM);
   }
   // ---- transient message: drawn last, above the arms, so nothing hides it ----
-  if (toastT > 0 && toastMsg){
-    const x = Math.max(1, (cols - toastMsg.length - 2) >> 1);
-    const y = Math.max(1, rows - Math.round(rows * 0.46) - 2);
-    hudPanel(x, y, toastMsg.length + 2, 1);
-    hudStr(x + 1, y, toastMsg, H_YEL);
-  }
+  /* Above the arms, and clear of the prompt band. Those two rows are 30 and
+     33 on the default grid and cross over on a tall one - at 144 rows the
+     toast lands one row BELOW the prompt, which at three cells to a character
+     is the same line, printed through itself. Keep it a whole line clear. */
+  if (toastT > 0 && toastMsg)
+    hudMsg(toastMsg, Math.max(1, Math.min(rows - Math.round(rows * 0.46) - 2,
+                                          (rows >> 1) + 3 - 2 * hudScale())), H_YEL);
   // ---- blit ----
   if (GL) return;                    // the GPU path draws panels and glyphs itself
   if (hurtT > 0.01){
@@ -23890,6 +24937,19 @@ function hudPass(){
       const idx = off + x, g = hGlyph[idx];
       if (g === 0) continue;
       ctx.drawImage(hudAtlas, g * cw, hCol[idx] * ch, cw, ch, ox + x * cw, py, cw, ch);
+    }
+  }
+  // the big layer last, so a message is never printed through
+  if (bAny){
+    const bw = cw * bScale, bh = ch * bScale;
+    for (let r = 0; r < bRows; r++){
+      const py = oy + r * bh, off = r * bCols;
+      for (let x = 0; x < bCols; x++){
+        const g = bGlyph[off + x];
+        if (g === 0) continue;
+        ctx.drawImage(hudAtlas, g * cw, bCol[off + x] * ch, cw, ch,
+                      ox + x * bw, py, bw, bh);
+      }
     }
   }
 }
@@ -24037,12 +25097,15 @@ const NET_TIMEOUT = 6;              // seconds of silence before somebody is gon
 function netNow(){ return performance.now() / 1000; }
 /* what a body is doing, in one byte */
 const NF_MOVE = 1, NF_RUN = 2, NF_SKATE = 4, NF_SIT = 8, NF_AIM = 16,
-      NF_PUNCH = 32, NF_HURT = 64;
+      NF_PUNCH = 32, NF_HURT = 64, NF_AIR = 128, NF_PUSH = 256;
 function netFlags(p){
   return (p.moving ? NF_MOVE : 0) | (p.running ? NF_RUN : 0) |
          (p.skate ? NF_SKATE : 0) | (p.sit ? NF_SIT : 0) |
          (p.aiming ? NF_AIM : 0) | (p.punchT > 0 ? NF_PUNCH : 0) |
-         (p.hitT > 0 ? NF_HURT : 0);
+         (p.hitT > 0 ? NF_HURT : 0) |
+         // the board's two states that are not a stance: off the ground, and
+         // the back foot down on the road driving
+         (p.air ? NF_AIR : 0) | (p.pushT > 0 ? NF_PUSH : 0);
 }
 function netUnflag(p, f){
   p.moving = f & NF_MOVE ? 1 : 0;  p.running = f & NF_RUN ? 1 : 0;
@@ -24050,6 +25113,8 @@ function netUnflag(p, f){
   p.aiming = f & NF_AIM ? 1 : 0;
   p.punchT = f & NF_PUNCH ? 0.2 : 0;
   p.hitT   = f & NF_HURT ? 0.2 : 0;
+  p.air    = f & NF_AIR ? 1 : 0;
+  p.pushT  = f & NF_PUSH ? 0.2 : 0;
 }
 /* Our own body, read off the globals the first-person view already keeps.
    Speed decides the gait rather than a flag, so this needs to know nothing
@@ -24064,6 +25129,11 @@ function netSampleMe(dt){
   ME.running = sp > 2.7 ? 1 : 0;
   ME.phase   = cam.walkPhase || 0;
   ME.skate   = skating ? 1 : 0;
+  ME.air     = skating && airT > 0 ? 1 : 0;
+  ME.pushT   = pushArtT;
+  // the trick's BASE name, which is the only part of it the pose table
+  // keys on - the escalating chain title is a HUD string and stays local
+  ME.trick   = skating && skTrick && airT > 0 ? skTrick.base : null;
   ME.sit     = sitting || null;
   ME.punchT  = typeof punchT !== 'undefined' ? punchT : 0;
   ME.hitT    = typeof hurtT !== 'undefined' ? Math.min(hurtT, 0.3) : 0;
@@ -24423,6 +25493,7 @@ function netOnMsg(m){
       p.phase = m.ph || 0;
       p.weapon = m.w || 'fist';
       p.using = m.u || null;
+      p.trick = m.tk || null;
       netUnflag(p, m.fl | 0);
       if (m.s !== p.sceneId){
         peerSetScene(p, m.s);
@@ -24479,7 +25550,21 @@ function netEvent(m){
       // the crowd is the host's to scatter; a guest doing it too would only
       // be overwritten by the next snapshot
       if (!netGuest() && m.x !== undefined) panicHere(m.x, m.y, 90);
-      sfx('shot', { vol: 0.5 });
+      /* Somebody else's shot, placed. It used to arrive at a flat half
+         volume from no direction at all, so a firefight on the far side of
+         the city was as loud and as locatable as one behind your shoulder,
+         and neither told you which way to turn.
+
+         Cross-scene is silence rather than a guess. Every interior is
+         stamped at the same array origin, so a peer inside a room and you on
+         the street sit on nearly identical coordinates - the distance
+         between you is not small, it is meaningless, and playing a bang at
+         point-blank off it would be worse than playing nothing. */
+      const G3 = GUNS[m.w] || GUNS.pistol;
+      if (m.x === undefined) sfx('shot', { vol: 0.35, rate: G3.rate });
+      else if (m.s === undefined || m.s === netSceneId())
+        sfxAt('shot', m.x, m.y, { vol: G3.snd, far: GUN_FAR, roll: GUN_ROLL,
+                                  rate: G3.rate * (0.97 + Math.random() * 0.06) });
       return;
     }
     case 'ahit': {
@@ -24635,13 +25720,21 @@ function netHello(){
             skinC: player.skinC, shirtC: player.shirtC });
 }
 function netTick(dt){
+  /* ME is the body everything OUTSIDE your own eyes draws you as - the
+     camjack looking back down the street at you, and every other player in
+     the room. It was only ever sampled under netplay, so with multiplayer
+     off the third person showed a mannequin: never walking, never sitting,
+     never on the board, frozen in whatever it was spawned holding. Sampling
+     is local work reading local globals and owes the wire nothing, so it
+     happens whether or not anybody is listening; only the SENDING below is
+     gated. */
+  netSampleMe(dt);
   if (!NET.on) return;
   _netBeat = netNow();                           // frames are alive; stand down
   if (NET.role === 'guest' && NET.status !== 'joined'){
     NET.helloT = (NET.helloT || 0) - dt;
     if (NET.helloT <= 0){ NET.helloT = 2; netHello(); }
   }
-  netSampleMe(dt);
   // ease every peer toward where the wire last put them. A body that jumps
   // fifteen times a second reads as broken even when every packet is perfect.
   for (let i = 0; i < PLAYERS.length; i++){
@@ -24658,6 +25751,7 @@ function netTick(dt){
     if (p.punchT > 0) p.punchT -= dt;
     if (p.hitT > 0) p.hitT -= dt;
     if (p.fireT > 0) p.fireT -= dt;
+    if (p.pushT > 0) p.pushT -= dt;
   }
   // drop anybody who has stopped talking
   for (let i = PLAYERS.length - 1; i > 0; i--){
@@ -24678,7 +25772,7 @@ function netTick(dt){
   netSend({ t: 'me', x: +cam.x.toFixed(2), y: +cam.y.toFixed(2),
             a: +cam.ang.toFixed(3), s: netSceneId(), fl: netFlags(ME),
             ph: +(ME.phase || 0).toFixed(1), hp: player.hp,
-            w: ME.weapon, u: ME.using,
+            w: ME.weapon, u: ME.using, tk: ME.trick,
             name: NET.name, worn: player.worn, skinC: player.skinC,
             shirtC: player.shirtC });
 }
@@ -25611,6 +26705,12 @@ function frame(now){
   // stop you existing for everybody else, and their bodies should keep moving
   // on your screen while you read it.
   netTick(dt);
+  /* The city map takes the finest glyph grid while it is open. Its own `shut`
+     gives it back, and so does closeMenus - but the stack can also be emptied
+     outright from a couple of places that know nothing about it, and a grid
+     left switched is not a thing anybody should have to notice. One compare
+     a frame closes that off for good. */
+  if (mapResSave !== null && !(topMode() && topMode().name === 'map')) mapGiveRes();
   fade *= Math.pow(0.02, dt);
   muzzleT = Math.max(0, muzzleT - dt);
   shotCool = Math.max(0, shotCool - dt);

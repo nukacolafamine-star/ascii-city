@@ -130,14 +130,20 @@ The ground carries the rest: rain-slick tarmac catches sparse neon glints,
 kerbs are picked out along every crossing, and street lamps burn their own
 colour rather than a uniform sodium yellow.
 
-The street tree is **hand-drawn literal ASCII art** — a broad oak authored in
-a plain text file (`tree ascii.txt`), rendered with its exact characters:
-`#` foliage, branch strokes threading the canopy, a braced trunk. The
-`parseArtLit` loop makes this repeatable for any prop: draw art in a text
-file, paste the lines in, give each character class a colour; far distance
-levels fall back to density shading so literal art fades into the fog like
-everything else. Residential streets and the suburbs favour **cherry
-blossom** — pink sakura canopies over the walkways — and parks mix both. Street stalls come in three flavours weighted
+All three trees are **imported voxel models** — a broad street tree, an orchard
+apple and a cherry blossom, run through `tools/voxel-import.mjs` from the OBJs
+in `voxel models/`. They were hand-drawn front elevations that the voxeliser
+inflated into solids of revolution, which is right for a post and wrong for a
+canopy: the same silhouette came back from every angle, so a park of forty read
+as one tree stamped forty times. These turn as you walk round them. The apple
+tree's own file already separates its fruit, so the red apples are a role
+rather than a decoration added afterwards; the cherry arrived with one material
+and its trunk is *derived* — the run of levels standing on the ground that stay
+thin — the same way an awning's underside is. All three take a shaded underside
+under the canopy. Measured standing in the densest tree patch in the city, 44
+of them within 22 tiles: 2.85 ms of an 8.07 ms frame. Residential streets and
+the suburbs favour **cherry blossom** — pink sakura canopies over the walkways
+— and parks mix both. Street stalls come in three flavours weighted
 by district: ramen carts with hanging lanterns on the strip, produce stands
 in the neighbourhoods, tech benches stacked with screens downtown. Out past
 the suburbs the rural lots are **worked land**: crop rows with soil furrows
@@ -154,7 +160,15 @@ are still being built, a final pass prunes any that a later building or
 landmark ended up on top of. Parks are planted lightly rather than packed.
 Traffic signals are gone entirely, since nothing drives; the junctions they
 stood on now carry **surveillance cameras**, dense in the core and thinning
-outward, which is both better dressing and a better fit for the place. The sky is light-polluted — a thick
+outward, which is both better dressing and a better fit for the place. A
+hacksaw through either a camera or a street light **takes it down**: the model
+loses everything above the cut and what stands there afterwards is a stub you
+can walk round, with a saw-wandered edge a voxel or two off level. The stump is
+the same artwork with the top cleared, so it keeps the model's width, depth,
+anchor and metre height and lands on exactly the tile the post stood on — and
+because voxelize trims a solid to its own extent, a stump costs *less* to draw
+than the post did. The light goes with it: pool and shaft both, 696 lit cells
+to none. The sky is light-polluted — a thick
 magenta haze at the horizon and only a handful of stars.
 
 ### Signage
@@ -183,6 +197,30 @@ running down the wall. Some scroll, some blink on a failing transformer. The
 words come from the district: `ZAIBATSU` and `HOLDINGS` downtown, `RAMEN` and
 `PACHINKO` on the strip, `LAUNDRY` and `PHARMACY` in the suburbs, `DOCK 7` and
 `HAZMAT` in the industrial belt.
+
+A sign's ink is not one colour. A cell of the baked bitmap holds one of three
+values — an ordinary letter, a mark out of the sign painter's case, or the part
+of the copy that is doing the shouting (digits, currency, an exclamation) — and
+the panel paints each from its own palette entry. The **frame** keeps the
+tenant's colour for the whole cycle while the **lettering** changes with the
+phrase, which is what makes one panel handing itself between three shops read
+as three shops rather than as one shop that cannot make up its mind.
+
+The case of marks runs to 32, and half of them mean something: a steaming bowl
+over a noodle bar, a caduceus over a pharmacy, a crossed hammer over hardware,
+a moon over the places that only open after one. A shop's mark is fixed for
+its whole cycle rather than rerolled every three seconds.
+
+Borders come in twelve families — chases, comet tails with a bright head, static
+dashes, barber poles, beads — and any of them may carry a **second rule inside
+the first**, **breathe** on its own period, or run either way round or not at
+all. Every colour in a frame comes off the district's neon set, and that is the
+point rather than a coincidence: those are exactly the materials the renderer
+marks emissive, so a frame built this way is not a picture of lights but a row
+of sources. The harvest picks each one up, the volumetric pass puts its glow in
+the air over the shopfront and the wet road underneath reflects it. Measured on
+the red mile at night: 1,275 emissive cells in seven colours feeding 85
+harvested emitters.
 
 This is the one thing the medium gives away for free — the frame is already made
 of characters, so text costs nothing extra to draw.
@@ -321,6 +359,28 @@ the carriageway is *paved*. Same slabs as the sidewalk, the same walking cost in
 the navigation grid, no lane paint and no kerb; all that marks the old centre
 line is an inlaid strip running down the promenade spine. Crowds spread across
 the full ten tiles instead of filing along the edges.
+
+**Everyone in the crowd is a real volume.** A pedestrian used to be a six-by-ten
+front elevation inflated into a solid of revolution, and two things followed
+from that which you could see from any pavement. The head was two columns out
+of six — one character at forty metres, so a person read as a post with a shirt
+on. And a stride drawn in a *front* elevation can only move sideways: the legs
+scissored across the walk rather than along it, so from every angle but dead-on
+the crowd shuffled sideways down the street. No amount of redrawing a front
+elevation fixes that; it is a fact about the projection.
+
+They are volumes now, with the legs swinging along the **depth** axis and a
+head sized to be read across a road, in **three builds** — a stock frame for
+the crowd, a lighter one for the people who have names (Rook, Vance, the
+fixer), and a slender one for Vesper. Twelve voxels across is not much to
+separate three bodies in, so what separates them is *proportion*: slender is
+not "slim, but less", it is narrow shoulders over hips wider than its chest
+with the waist standing higher. Arms come in two pieces — a sleeve off the
+shoulder and a bare forearm under it — and idle in one of three stances keyed
+off the body's own identity, so a bus queue is not eight copies of one
+mannequin. Measured against the flat art it replaced, at the same size and
+distance: **1.12×** the time per body for eight times the voxels, because the
+march is paid for by screen area and not by grid resolution.
 
 **Pedestrians** A* over sidewalks, boulevards, park paths, parks and bridge
 decks. Roughly a third of trips target a **street stall**, where people linger
@@ -464,6 +524,27 @@ refuse you, and sniffer chips that ping loose loot on the minimap.
 Vandalism and theft still feed the corruption ledger — the city keeps
 count.
 
+**The guns take up less of the screen than they did.** The viewmodel was sixty
+percent of the frame, thirty characters across, and sixteen of its twenty-six
+rows were the player's own forearms — most of the lower half of the view spent
+on a grey shape you already know the shape of, over the street you are aiming
+into. Narrower arms, shorter models and **forty-two percent** of the height
+gives back a third of the screen with no loss of legibility, because what reads
+at this size was always the silhouette. What goes into the room the shrink made
+is flair: every weapon carries one light of its own in the city's own neon — an
+amber round counter, a blue heat vent between the bolt rails, a violet
+capacitor stack, a red-hot heat shield, a green lamp inside the glass.
+
+**And a body firing a gun now looks like one.** From outside — a hijacked
+camera, another player across a junction — a shot used to be a body holding a
+gun with a light in front of it. Every weapon has its own recoil instead: a
+holdout snaps, a revolver throws the wrist up, a shotgun drives the whole body
+back with the leading hand riding the pump, and a railgun does not recoil so
+much as brace, because what it does to the person holding it is soak. The
+specials get their own muzzle too — the railgun leaves a line of light standing
+in the air where the slug went, the arc gun throws two forks off the axis of
+the bore, the nailer barely lights at all.
+
 **Shops have trades now**: groceries and bodegas in the neighbourhoods,
 clothiers, jewelers, armories and tool shops on the strip, dispensaries
 glowing pink in the RED LIGHT quarter — each stocking what makes sense,
@@ -522,6 +603,16 @@ keyed to the walk cycle, and menu blips. Rain, thunder and wind sit on their
 own weather bus with its own volume slider. Music, ambience and weather duck
 to 30% while the world is paused; effects stay crisp.
 
+Gunfire carries. A shot heard from another player is placed rather than played
+flat: `sfxAt` takes its own reach and roll-off per sound, and a report gets
+three times the range on a fifth of the fall of an ordinary street noise —
+audible to 130 tiles, panned by bearing, with the last third of the range faded
+to nothing so the edge is a horizon rather than a circle you can hear yourself
+cross. The weapon goes on the wire with the position, so a railgun two streets
+over and a holdout at your elbow are not the same noise. Cross-scene is
+silence: every interior is stamped at the same array origin, so the distance
+between a peer in a room and you on the street is not small, it is meaningless.
+
 Two delivery tiers, picked automatically: served over http(s) the engine uses
 WebAudio (per-bus mixing, stereo panning, `sfxAt(name, x, y)` positional
 one-shots); opened via `file://` the browser blocks `fetch`, so it falls back
@@ -539,7 +630,7 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `W` (seated) | wait until the light changes |
 | `LMB` / `CTRL` | attack — bare knuckles, or the zip pistol once you own one |
 | `TAB` | inventory and stats |
-| `M` | the full city map — pan, zoom, intersection ids |
+| `M` | the full city map — pan, zoom, intersection ids, search |
 | `ESC` | pause menu — settings, volumes, save / load, new city |
 | `SHIFT` | run |
 | `Q` `E` | turn · `R` `F` look up/down |
@@ -550,6 +641,19 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `N` | new city |
 | `[` `]` | character grid resolution (takes manual control) |
 | `P` | pause |
+
+On the **map**, on top of `WASD` to pan and `Q`/`E` to zoom:
+
+| | |
+|---|---|
+| `Z` `C` | step back and on through the marked places, cursor and all |
+| `F` `/` | find — type any landmark, district or trade and `ENTER` snaps to the nearest |
+| `ENTER` | drop the waypoint at the cursor · `X` clear it |
+
+The map takes the **finest glyph grid** while it is open and gives it straight
+back on close: it is HUD, not geometry, so it has no business being drawn at the
+grid the world is tuned for. On the default rung that is 182 cells across
+against 426.
 
 ## Performance
 
