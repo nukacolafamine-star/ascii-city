@@ -64,8 +64,8 @@ const CFG = {
      changes for anyone who does not go looking, and auto-res still steps DOWN
      from wherever it starts. Picking a grid by hand sets manualRes, and that
      always wins: initRender breaks out of its budget loop immediately. */
-  CELLW:  [24, 19, 16, 13, 11, 9, 7, 6, 5],
-  resIdx:     6,   // 7px - the finest of the old ladder; 6 and 5 are opt-in
+  CELLW:  [24, 19, 16, 13, 11, 9, 7, 6, 5, 4, 3],
+  resIdx:     6,   // 7px - the finest of the old ladder; the rest are opt-in
   manualRes: false,   // set once you pick a grid with [ or ]
   CARS:      54,   // air traffic only - set dressing, never physical
   PEDS:     430,   // streamed: kept near the camera rather than spread thin
@@ -10668,6 +10668,10 @@ function openSettingsMenu(){
       { label: 'VOLUMETRIC LIGHT', value: () => LIGHTV.on ? 'ON' : 'OFF',
         hint: 'air around every light in the city, not just the street lamps',
         adj(){ LIGHTV.on = !LIGHTV.on; } },
+      { label: 'FOG SHAFTS', value: () => FOGV.on ? 'ON' : 'OFF',
+        hint: 'the air as a medium: thicker in rain and fog, and cut into ' +
+              'shafts by whatever is standing in the light',
+        adj(){ FOGV.on = !FOGV.on; } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
         hint: 'traced shadows and bounced colour. costs about half the frame; ' +
               'it settles while you stand still and starts over when you move',
@@ -18025,7 +18029,13 @@ function initRender(){
   const budget = GL ? 140000 : CELL_BUDGET;   // the GPU does not care about cell count
   let ri = CFG.resIdx, cw, ch;
   for (;;){
-    cw = CFG.CELLW[ri]; ch = Math.max(7, Math.round(cw / 0.56));
+    /* The floor used to be 7 rows, which is fine down to 4px wide and wrong
+       below it: a 3px cell forced into a 7-row box draws its glyph at 5.2px
+       inside a space nearly twice that tall, and the ramp collapses - counted
+       as distinguishable rungs, 3x7 resolves 11 of 26 where 3x5 resolves 16.
+       It was never the cell being too small, it was the aspect. Five rows
+       keeps cw/ch near the 0.56 the whole projection assumes. */
+    cw = CFG.CELLW[ri]; ch = Math.max(5, Math.round(cw / 0.56));
     if (CFG.manualRes || ri === 0) break;   // an explicit choice always wins
     if (Math.floor(R.W / cw) * Math.floor(R.H / ch) <= budget) break;
     ri--;                        // first run on a big display: start coarser
@@ -18981,6 +18991,128 @@ function pathTrace(){
     const o = hi * 3;
     hlR[hi] += giAcc[o] * k; hlG[hi] += giAcc[o + 1] * k; hlB[hi] += giAcc[o + 2] * k;
     hlA[hi] = 1 - aoK * giAO[hi];
+  }
+}
+/*=================== volumetric fog, and what cuts through it ===============
+  lampVolume answers one shape of shaft - a cone, analytically, because a
+  street lamp is a cone and the world keeps a list of them. emitVolume answers
+  a glow around a point. Neither is FOG: neither knows that the air itself is
+  a medium, that it gets thicker in bad weather and near the ground, or that a
+  building standing between you and a light carves a shadow out of the air.
+
+  That last one is the whole thing. A shaft is not light; it is the SHAPE OF
+  WHAT IS MISSING from light - the gap between two towers, the slot under an
+  awning. To draw it you need occlusion, and the depth buffer already holds
+  it: everything the renderer has decided is in front of everything else.
+
+  So this marches in screen space. From each cell, a short walk toward the
+  light's own position on screen, sampling a mask that is bright where an
+  emissive cell was drawn and black everywhere else. A walk that crosses a
+  building crosses black and comes back with nothing; a walk down an open
+  street stays in the light and comes back full. That difference, accumulated,
+  IS the shaft - and it costs a gather, not a ray march through the world.
+
+  Density scales with the weather the medium is actually made of, and again
+  toward the ground, where fog and spray actually sit.
+============================================================================*/
+const FOGV = {
+  on:      true,
+  steps:   10,     // samples along the walk toward the light
+  reach:   0.30,   // how far that walk goes, as a fraction of the screen
+  decay:   0.90,   // how fast a sample stops counting as it nears the source
+  lights:  26,     // the strongest this many emitters throw shafts
+  gain:    0.85,   // what a full shaft is worth, in 0-255 colour
+  damp:    0.16,   // how hard a very large source is held back
+  ground:  0.35,   // extra density below the horizon, where the murk sits
+  air:  [0.55, 1.00, 1.35, 2.20]   // clear, rain, storm, fog
+};
+let fogMask = null;                              // half-res, "how lit is this"
+/* The occlusion mask: emissive cells shine, everything else is a hole. Built
+   at half resolution because a shaft has no fine detail in it worth keeping. */
+function fogBuildMask(){
+  const w = hlW, h = hlH, cols = R.cols, rows = R.rows;
+  if (!fogMask || fogMask.length !== w * h) fogMask = new Float32Array(w * h);
+  fogMask.fill(0);
+  for (let hy = 0; hy < h; hy++){
+    const r = hy << 1;
+    if (r >= rows) break;
+    const rowOff = r * cols, mOff = hy * w;
+    for (let hx = 0; hx < w; hx++){
+      const c = hx << 1;
+      if (c >= cols) break;
+      const i = rowOff + c;
+      if (srcBuf[i] !== 2) continue;
+      const b = BASE[bBuf[i]];
+      if (!b) continue;
+      fogMask[mOff + hx] = (b[0] * 0.3 + b[1] * 0.59 + b[2] * 0.11) * (gBuf[i] / RMAX);
+    }
+  }
+}
+function fogShafts(){
+  if (inside || !EMIT || !EMIT.n) return;
+  const w = hlW, h = hlH, cols = R.cols, rows = R.rows;
+  const air = FOGV.air[weather] !== undefined ? FOGV.air[weather] : FOGV.air[0];
+  const dens = air * (1 + wetLevel * 0.25) * _lampNight;
+  if (dens < 0.05) return;
+  fogBuildMask();
+  const E = EMIT;
+  /* Only the strongest few are worth a walk. A shaft from a window is not a
+     thing anybody has ever seen. */
+  const order = [];
+  for (let k = 0; k < E.n; k++) order.push(E.idx[k]);
+  order.sort((a, b) => E.w[b] - E.w[a]);
+  const nL = Math.min(FOGV.lights, order.length);
+  const steps = FOGV.steps, decay = FOGV.decay;
+  const reach = FOGV.reach * w;
+  const hzH = horizon * 0.5;
+  for (let li = 0; li < nL; li++){
+    const bi = order[li];
+    const ox = E.x[bi] - cam.x, oy = E.y[bi] - cam.y;
+    const fwd = ox * dirX + oy * dirY;
+    if (fwd < 0.4) continue;                     // behind you throws nothing at you
+    const lat = (dirY * ox - dirX * oy) / planeLen;
+    const lc = cols * 0.5 * (1 - lat / fwd);     // where it sits on screen
+    const lr = horizon + (cam.z - E.z[bi]) * projRows / fwd;
+    const lx = lc * 0.5, ly = lr * 0.5;          // ...in half-res cells
+    /* A wall of lit windows harvests as one enormous bucket and, unchecked,
+       throws a single searchlight cone that owns the frame. Fog is not one
+       big shaft, it is many small ones, so a source is damped by its own
+       size: the big ones still win, but not by the margin they would. */
+    const dampK = 1 / (1 + E.w[bi] * FOGV.damp);
+    const cr = E.r[bi] * dampK, cg = E.g[bi] * dampK, cb = E.b[bi] * dampK;
+    // the box a shaft from this light could possibly touch
+    let c0 = Math.floor(lx - reach), c1 = Math.ceil(lx + reach);
+    let r0 = Math.floor(ly - reach), r1 = Math.ceil(ly + reach);
+    if (c0 < 0) c0 = 0; if (c1 > w - 1) c1 = w - 1;
+    if (r0 < 0) r0 = 0; if (r1 > h - 1) r1 = h - 1;
+    if (c1 < c0 || r1 < r0) continue;
+    for (let y = r0; y <= r1; y++){
+      const mOff = y * w;
+      // fog sits low: thicker under the horizon than above it
+      const gk = 1 + (y > hzH ? FOGV.ground : 0);
+      for (let x = c0; x <= c1; x++){
+        let dx = lx - x, dy = ly - y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > reach || dist < 0.5) continue;
+        const sx = dx / steps, sy = dy / steps;
+        let px = x, py = y, acc = 0, wgt = 1;
+        for (let st = 0; st < steps; st++){
+          px += sx; py += sy;
+          const ix = px | 0, iy = py | 0;
+          if (ix < 0 || iy < 0 || ix >= w || iy >= h) break;
+          acc += fogMask[iy * w + ix] * wgt;
+          wgt *= decay;
+        }
+        if (acc <= 0) continue;
+        // falls off with how far the light had to travel through the air
+        const f = acc / steps * dens * gk * (1 - dist / reach) * 0.0039215686;
+        if (f < 0.002) continue;
+        const idx = mOff + x;
+        hlR[idx] += cr * f * FOGV.gain * 0.02;
+        hlG[idx] += cg * f * FOGV.gain * 0.02;
+        hlB[idx] += cb * f * FOGV.gain * 0.02;
+      }
+    }
   }
 }
 function litRolloff(){
@@ -21009,7 +21141,7 @@ function glPackWorld(){
      neither the atlas nor the ramps had to grow a lighting dimension: the
      instance colour handed to the GPU is a plain 32-bit RGBA that happens to
      be looked up from a palette, so anything can be added to it on the way. */
-  const useLit = (LIGHTV.on || GIR.on) && litR && litR.length === n;
+  const useLit = (LIGHTV.on || GIR.on || FOGV.on) && litR && litR.length === n;
   let k = 0;
   for (let i = 0; i < n; i++){
     const g = gBuf[i];
@@ -23344,7 +23476,7 @@ function worldPasses(){
      have been resized since the last frame. */
   litAlloc();
   emitKind.fill(0);
-  if (LIGHTV.on || GIR.on){ litR.fill(0); litG.fill(0); litB.fill(0); }
+  if (LIGHTV.on || GIR.on || FOGV.on){ litR.fill(0); litG.fill(0); litB.fill(0); }
   if (inside) ceilingPass(); else skyPass();
   floorPass();
   wallPass();
@@ -23368,14 +23500,21 @@ function worldPasses(){
      which pass drew the cell it lands on. */
   /* The harvest is the light LIST, not the glow - the tracer needs it just as
      much, so it runs if either of them wants it. */
-  if (LIGHTV.on || GIR.on){
+  if (LIGHTV.on || GIR.on || FOGV.on){
     hlR.fill(0); hlG.fill(0); hlB.fill(0); hlA.fill(1);
     harvestEmitters();
     if (LIGHTV.on) emitVolume();
+    if (FOGV.on) fogShafts();
     if (GIR.on) pathTrace();
     litRolloff();
     litUpsample(GIR.on);
-  } else if (litA) litA.fill(1);
+  } else if (litR){
+    /* Everything off means NO light, not last frame's light. The clear used to
+       live inside the gate, so turning the passes off left whatever they had
+       written still sitting in the buffer and being spent at pack time - which
+       made an A/B against "all off" compare against a stale frame. */
+    litR.fill(0); litG.fill(0); litB.fill(0); litA.fill(1);
+  }
 }
 let _scG = null, _scB = null, _scL = null, _scD = null;
 function render(){
