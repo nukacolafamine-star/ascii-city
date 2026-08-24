@@ -21791,7 +21791,25 @@ function glLightPass(){
   and uploaded. What is left to drift is only the arithmetic between them.
 ============================================================================*/
 const GPUW = {
-  on:     true,
+  /* OFF, and it has to stay off until the readback goes.
+
+     The pass is correct - it is proved against the CPU passes to 0.028% of
+     cells - and at the finest grid, measured with this page NOT being
+     composited, it is a 14% win. Measured with the page on screen, which is
+     the only condition that counts, it is 4 to 15ms SLOWER at every grid the
+     game offers, because a readPixels round trip costs the same whether the
+     grid is 1,518 cells or 106,600 and the compositor contends with it.
+
+     That is worse than a wash. Auto-res drops the grid a step whenever a
+     frame stays over 14ms, the GPU path is over 14ms at nearly every grid,
+     and dropping the grid does not help because the cost is fixed - so it
+     walks the resolution all the way to the floor, one full initRender every
+     ninety frames, and that reads as the screen flickering black about once a
+     second while the world rebuilds itself coarser.
+
+     Turn it on from the settings menu to work on it. Do not default it on
+     again until glWorldPass no longer reads anything back. */
+  on:     false,
   stages: 7,     // bit 0 sky, bit 1 floor, bit 2 walls
   max:    7
 };

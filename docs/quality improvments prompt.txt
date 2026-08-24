@@ -14,3 +14,6 @@ make it so you can not exit the car when over the river
 
 improve the audio aspect of our engine so that in multiplayer other players guns shots have a range that gets softer and faded as it gets farther away
 
+implement the three new tree voxels in the voxels folder, asigning color or cleaning things up if needed
+
+scale up toast, interact prompts, and mini map when on the two largest resolutions to make them readable on high rez screens
