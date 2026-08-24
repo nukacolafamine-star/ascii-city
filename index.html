@@ -10232,6 +10232,20 @@ function openSettingsMenu(){
     items: [
       { label: 'BLOOM', value: () => bloomOn ? 'ON' : 'OFF',
         adj(){ bloomOn = !bloomOn; } },
+      { label: 'VOLUMETRIC LIGHT', value: () => LIGHTV.on ? 'ON' : 'OFF',
+        hint: 'air around every light in the city, not just the street lamps',
+        adj(){ LIGHTV.on = !LIGHTV.on; } },
+      { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
+        hint: 'traced shadows and bounced colour. costs about half the frame; ' +
+              'it settles while you stand still and starts over when you move',
+        adj(d){
+          // OFF -> DIRECT -> BOUNCE -> OFF
+          const step = d < 0 ? -1 : 1;
+          let m = !GIR.on ? 0 : GIR.bounces > 1 ? 2 : 1;
+          m = (m + step + 3) % 3;
+          GIR.on = m > 0; GIR.bounces = m > 1 ? 2 : 1;
+          giKey = '';
+        } },
       { label: 'CHARACTER GRID', value: () => R.cols + 'x' + R.rows,
         hint: 'finer costs more; setting it by hand turns auto-res off',
         adj(d){ if (!stepRes(d)) toast('grid: already at the limit'); } },
@@ -17797,6 +17811,439 @@ function lampVolume(){
      ever holds a sum if it also holds a max, so clearing on `mx > 0` clears
      everything that was written. */
 }
+/*==================== every light, and the air around it ====================
+  lampVolume answers one light source - the street standard - because a lamp
+  is a thing the world already keeps a list of, at a known height, pointing a
+  known way. Every OTHER light in the city was drawn and then forgotten: the
+  neon over a door, a lit window, a headlight, a stall's strip, the red eye of
+  a flock cam. They lit their own cells and nothing else.
+
+  There is already a list of them, though, and the renderer builds it every
+  frame without meaning to: srcBuf holds 2 on any cell drawn in an emissive
+  colour, wherever it came from and whatever pass drew it. Depth is in dBuf
+  and the ray through the cell is known, so each of those cells inverts
+  straight back to a world position. That is a light source, found without any
+  pass having to declare itself.
+
+  Thousands of cells is too many lights, and most of them are the same light -
+  one sign is fifty cells. Bucketing the screen collapses each run of them to
+  one emitter carrying the sum: position averaged, colour averaged, and a
+  count that stands in for how big the thing is. A window ends up worth a
+  little, a shopfront worth a lot, which is what they are.
+============================================================================*/
+const LIGHTV = {
+  on:    true,
+  block: 6,      // screen cells per bucket - how hard sources are collapsed
+  minW:  2,      // a bucket under this many cells is a stray pixel, not a light
+  winW:  0.22,   // a lit window counts for this much of a sign of the same size
+  keep:  110,    // and only the strongest this many are worth tracing air for
+  rad:   1.45,   // glow radius of a one-cell source, in tiles
+  grow:  0.42,   // how much bigger a source gets for each doubling of its size
+  dens:  0.16,   // how thick the air is around a source that is not a lamp
+  fall:  12.0,   // how fast that glow dies with distance from it
+  gain:  15,     // and what a unit of it is worth, in 0-255 colour
+  cap:   90,     // no single source may add more than this to a channel
+  roof:  105,    // nor may all of them together, once rolled off
+  area:  2000    // and none may sweep more of the screen than this, in cells
+};
+/* `keep` and `area` are not tuning, they are the difference between running
+   and not. The first cut bucketed at 3 and kept everything: 1040 emitters on
+   a downtown street, and because a glow sphere close to the eye subtends
+   almost the whole frame, each of them could sweep all 21706 cells. Twenty-two
+   million cell-visits a frame wedged the tab hard enough that the debugger
+   could not get a value out of it. Bucketing at 6 quarters the count, the
+   weight floor drops the strays, and the area clamp stops one lamp two feet
+   from your face from costing the same as the other two hundred together.
+
+   The numbers below are set for HEADROOM, not for what the frame can survive
+   alone. At keep 220 and area 9000 this pass ran 40ms on a downtown street -
+   playable on its own, and the whole budget gone before the path tracer has
+   traced a single ray. This is the cheap half of the lighting and has to stay
+   that way; GIR is the half that is allowed to cost something.
+
+   `roof` is the one that stops it being a white screen. `cap` bounds what ONE
+   source may add, which is no bound at all when a downtown street puts twenty
+   of them over the same cell: the first cut added them straight and blew the
+   entire frame to white. The sum is rolled off exponentially instead - fully
+   additive while it is dim, asymptotic to `roof` as sources pile up - so a
+   street of neon gets brighter and brighter without ever going flat.
+
+   `dens` looks far too small next to the beam pass's haze, and is not, because
+   tau here is normalised by the radius: a chord through the middle of a glow
+   is about 2*dens whatever size the sphere is. At 0.85 that pinned every cell
+   inside every sphere at the cap, which is a floodlight and not a glow. The
+   fall with distance is what gives it a shape, and it wants to be steep. */
+/* Which KIND of light a cell is. A lit window and a neon sign are both an
+   emissive cell and the palette cannot tell them apart - the windows borrow
+   the neon colours - but they are not the same light. A sign is a small
+   bright thing; a tower of windows is a large soft one, and there are
+   thousands of them. Harvested at equal weight they drown everything: the
+   building faces glowed all over and the street lost its contrast. Only the
+   wall pass sets this, so 1 means "a window" and 0 means everything else. */
+let emitKind = null;
+let EMIT = null;                              // {x,y,z,r,g,b,n} as typed arrays
+let litR = null, litG = null, litB = null;    // per-cell light, added at pack time
+function litAlloc(){
+  const n = R.cols * R.rows;
+  if (!litR || litR.length !== n){
+    litR = new Float32Array(n); litG = new Float32Array(n); litB = new Float32Array(n);
+    emitKind = new Uint8Array(n);
+  }
+  return n;
+}
+/* Collapse this frame's emissive cells into a short list of world lights. */
+function harvestEmitters(){
+  const cols = R.cols, rows = R.rows, B = LIGHTV.block;
+  const bw = Math.ceil(cols / B), bh = Math.ceil(rows / B), nb = bw * bh;
+  if (!EMIT || EMIT.nb !== nb){
+    EMIT = { nb, bw, bh, n: 0,
+             x: new Float32Array(nb), y: new Float32Array(nb), z: new Float32Array(nb),
+             r: new Float32Array(nb), g: new Float32Array(nb), b: new Float32Array(nb),
+             w: new Float32Array(nb), idx: new Int32Array(nb) };
+  }
+  const E = EMIT;
+  E.x.fill(0); E.y.fill(0); E.z.fill(0);
+  E.r.fill(0); E.g.fill(0); E.b.fill(0); E.w.fill(0);
+  for (let row = 0; row < rows; row++){
+    const off = row * cols, br = ((row / B) | 0) * bw;
+    const kk = (row + 0.5 - horizon) / projRows;
+    for (let c = 0; c < cols; c++){
+      const i = off + c;
+      if (srcBuf[i] !== 2) continue;
+      const t = dBuf[i];
+      if (!(t > 0.2) || t >= viewD) continue;
+      const col = BASE[bBuf[i]];
+      if (!col) continue;
+      const kw = emitKind[i] === 1 ? LIGHTV.winW : 1;
+      const bi = br + ((c / B) | 0);
+      E.x[bi] += (cam.x + rayX[c] * t) * kw;
+      E.y[bi] += (cam.y + rayY[c] * t) * kw;
+      E.z[bi] += (cam.z - kk * t) * kw;
+      E.r[bi] += col[0] * kw; E.g[bi] += col[1] * kw; E.b[bi] += col[2] * kw;
+      E.w[bi] += kw;
+    }
+  }
+  let n = 0;
+  const minW = LIGHTV.minW;
+  for (let bi = 0; bi < nb; bi++){
+    const w = E.w[bi];
+    if (w < minW) continue;
+    const inv = 1 / w;
+    E.x[bi] *= inv; E.y[bi] *= inv; E.z[bi] *= inv;
+    E.r[bi] *= inv; E.g[bi] *= inv; E.b[bi] *= inv;
+    E.idx[n++] = bi;
+  }
+  /* Too many still, on a street that is all shopfront. Keep the biggest -
+     brightness is what the eye follows, and a hundred one-window sources
+     read as the ambient the fog is already doing. */
+  if (n > LIGHTV.keep){
+    const w = E.w;
+    const arr = Array.prototype.slice.call(E.idx, 0, n);
+    arr.sort((a, b) => w[b] - w[a]);
+    for (let i = 0; i < LIGHTV.keep; i++) E.idx[i] = arr[i];
+    n = LIGHTV.keep;
+  }
+  E.n = n;
+  return n;
+}
+/* The air around each of them. Same shape as the beam pass - a chord through
+   a volume, weighted by where in it the chord was taken - but a sphere rather
+   than a cone, because a sign or a headlight throws light every way at once.
+   Written into an RGB buffer instead of the palette ramps: these are arbitrary
+   colours and there is no ramp to put them on. */
+function emitVolume(){
+  const E = EMIT;
+  if (!E || !E.n) return;
+  const cols = R.cols, rows = R.rows;
+  const dens = LIGHTV.dens, fall = LIGHTV.fall, gain = LIGHTV.gain, cap = LIGHTV.cap;
+  for (let k = 0; k < E.n; k++){
+    const bi = E.idx[k];
+    const ex = E.x[bi], ey = E.y[bi], ez = E.z[bi], w = E.w[bi];
+    // a bigger source reaches further, but well short of linearly
+    const rad = LIGHTV.rad * Math.pow(w, LIGHTV.grow);
+    const rad2 = rad * rad;
+    const ox = cam.x - ex, oy = cam.y - ey, oz = cam.z - ez;
+    const fwd = -ox * dirX - oy * dirY;
+    if (fwd < -rad || fwd - rad > viewD) continue;
+    const f = Math.max(0.35, fwd);
+    const lat = (dirY * -ox - dirX * -oy) / planeLen;
+    const half = cols * 0.5 * (rad / f) + 2;
+    let c0 = Math.floor(cols * 0.5 * (1 - lat / f) - half);
+    let c1 = Math.ceil(cols * 0.5 * (1 - lat / f) + half);
+    if (c1 < 0 || c0 > cols - 1) continue;
+    if (c0 < 0) c0 = 0;
+    if (c1 > cols - 1) c1 = cols - 1;
+    const rowC = horizon + (cam.z - ez) * projRows / f;
+    const halfR = rad * projRows / f + 2;
+    let r0 = Math.floor(rowC - halfR), r1 = Math.ceil(rowC + halfR);
+    if (r1 < 0 || r0 > rows - 1) continue;
+    if (r0 < 0) r0 = 0;
+    if (r1 > rows - 1) r1 = rows - 1;
+    /* Close enough and a glow sphere covers the frame. Shrink the box about
+       its own centre rather than paying for all of it - what is out at the
+       rim of a sphere you are standing inside is the faintest part anyway. */
+    const wCells = (c1 - c0 + 1) * (r1 - r0 + 1);
+    if (wCells > LIGHTV.area){
+      const k2 = Math.sqrt(LIGHTV.area / wCells);
+      const cc2 = (c0 + c1) * 0.5, rc2 = (r0 + r1) * 0.5;
+      const hw = (c1 - c0 + 1) * k2 * 0.5, hh = (r1 - r0 + 1) * k2 * 0.5;
+      c0 = Math.max(0, Math.floor(cc2 - hw)); c1 = Math.min(cols - 1, Math.ceil(cc2 + hw));
+      r0 = Math.max(0, Math.floor(rc2 - hh)); r1 = Math.min(rows - 1, Math.ceil(rc2 + hh));
+    }
+    const cr = E.r[bi], cg = E.g[bi], cb = E.b[bi];
+    for (let r = r0; r <= r1; r++){
+      const dz = -((r + 0.5 - horizon) / projRows);
+      const rowOff = r * cols;
+      for (let c = c0; c <= c1; c++){
+        const idx = rowOff + c;
+        const dx = rayX[c], dy = rayY[c];
+        const a = dx * dx + dy * dy + dz * dz;
+        const b = 2 * (ox * dx + oy * dy + oz * dz);
+        const cc = ox * ox + oy * oy + oz * oz - rad2;
+        const disc = b * b - 4 * a * cc;
+        if (disc <= 0) continue;
+        const sq = Math.sqrt(disc);
+        let t0 = (-b - sq) / (2 * a), t1 = (-b + sq) / (2 * a);
+        if (t0 < 0) t0 = 0;
+        const dLim = dBuf[idx];
+        if (t1 > dLim) t1 = dLim;
+        if (!(t1 > t0)) continue;
+        // where the chord sits inside the glow decides what it is worth
+        const tm = (t0 + t1) * 0.5;
+        const mx = ox + dx * tm, my = oy + dy * tm, mz = oz + dz * tm;
+        const q = (mx * mx + my * my + mz * mz) / rad2;
+        let tau = (t1 - t0) * dens / rad / (1 + fall * q);
+        if (tau < 0.004) continue;
+        if (tau > 1) tau = 1;
+        const s = tau * gain * 0.0039215686;   // colour is 0-255; bring it to 0-1
+        let ar = cr * s, ag = cg * s, ab = cb * s;
+        if (ar > cap) ar = cap;
+        if (ag > cap) ag = cap;
+        if (ab > cap) ab = cap;
+        litR[idx] += ar; litG[idx] += ag; litB[idx] += ab;
+      }
+    }
+  }
+}
+/* Path tracing lives below; declared here because worldPasses asks about it. */
+const GIR = {
+  on:        false,  // OFF by default - this is the one that costs
+  bounces:   2,      // 1 is direct light and shadows; 2 adds a bounce of colour
+  dist:      34,     // how far a shadow or bounce ray is worth following, tiles
+  falloff:   0.10,   // inverse-square, softened so a street does not go black
+  albedo:    0.55,   // how much of a ray survives a bounce off a wall
+  sky:       0.22,   // and what the open sky is worth to a ray that escapes
+  target:    13,     // mean traced light per channel, in 0-255 - see below
+  maxFrames: 400     // stop gathering once converged; what is gathered stays
+};
+/*========================== path tracing ====================================
+  Everything above is analytic: a chord through a cone, a chord through a
+  sphere, light that only ever travels straight from a source into the eye.
+  What none of it can answer is what a surface can SEE - whether the wall
+  across the street is in shadow, whether the red of a sign has landed on the
+  kerb under it, whether an alley is dark because it is far from a lamp or
+  because a building is standing in the way.
+
+  That is only answered by casting rays and letting them bounce, and the world
+  is already the right shape for it: tH is a heightfield, so a ray against the
+  city is the same DDA the wall pass walks plus a height test at each tile
+  boundary. The emitters harvested for the glow pass are the lights.
+
+  It is priced accordingly. One sample per cell per frame, a bounce ray and a
+  shadow ray each, is forty-odd thousand traces a frame. So it is PROGRESSIVE:
+  one sample a frame, averaged into an accumulator that lives as long as the
+  camera does not move and is thrown away when it does. Stand still and it
+  converges over a second or two into something clean. Walk, and it is a
+  single noisy sample - which is why it has an OFF, and why OFF is default.
+============================================================================*/
+let giAcc = null, giKey = '', giN = 0;
+let giSeed = 1;
+function giRnd(){                              // xorshift32, cheap and enough
+  giSeed ^= giSeed << 13; giSeed ^= giSeed >>> 17; giSeed ^= giSeed << 5;
+  return (giSeed >>> 0) / 4294967296;
+}
+/* Where a ray stops in the city. Out-parameters rather than a returned
+   object: this runs tens of thousands of times a frame and one allocation per
+   call is the entire budget. Returns 1 for a wall, 2 for the ground, 0 for
+   the open sky, leaving the surface normal in _giNx/_giNy/_giNz. */
+let _giT = 0, _giNx = 0, _giNy = 0, _giNz = 0;
+function giTrace(ox, oy, oz, dx, dy, dz, maxT){
+  let tGround = 1e30;
+  if (dz < -1e-6){
+    tGround = -oz / dz;
+    if (tGround < 0) tGround = 1e30;
+  }
+  let mapX = Math.floor(ox), mapY = Math.floor(oy);
+  const ddx = dx === 0 ? 1e30 : Math.abs(1 / dx);
+  const ddy = dy === 0 ? 1e30 : Math.abs(1 / dy);
+  let stepX, stepY, sdx, sdy;
+  if (dx < 0){ stepX = -1; sdx = (ox - mapX) * ddx; } else { stepX = 1; sdx = (mapX + 1 - ox) * ddx; }
+  if (dy < 0){ stepY = -1; sdy = (oy - mapY) * ddy; } else { stepY = 1; sdy = (mapY + 1 - oy) * ddy; }
+  for (let g = 0; g < 96; g++){
+    let tN, side;
+    if (sdx < sdy){ tN = sdx; sdx += ddx; mapX += stepX; side = 0; }
+    else          { tN = sdy; sdy += ddy; mapY += stepY; side = 1; }
+    if (tN > maxT) break;
+    if (tN > tGround) break;                   // the floor got there first
+    if (mapX < 0 || mapY < 0 || mapX >= MAP || mapY >= MAP) break;
+    const h = tH[mapY * MAP + mapX];
+    if (h > 0){
+      const z = oz + dz * tN;
+      if (z >= 0 && z <= h){                   // into the side of a column
+        _giT = tN;
+        _giNx = side === 0 ? -stepX : 0;
+        _giNy = side === 1 ? -stepY : 0;
+        _giNz = 0;
+        return 1;
+      }
+    }
+  }
+  if (tGround <= maxT){
+    _giT = tGround; _giNx = 0; _giNy = 0; _giNz = 1;
+    return 2;
+  }
+  return 0;
+}
+/* What a point can see of the lights, sampled. One emitter per call, chosen
+   at random and scaled back up by how many there were - over enough frames
+   that is the same as asking all of them, for a fraction of the work. */
+let _giLr = 0, _giLg = 0, _giLb = 0;
+function giDirect(px, py, pz, nx, ny, nz){
+  _giLr = 0; _giLg = 0; _giLb = 0;
+  const E = EMIT;
+  if (!E || !E.n) return;
+  const bi = E.idx[(giRnd() * E.n) | 0];
+  let lx = E.x[bi] - px, ly = E.y[bi] - py, lz = E.z[bi] - pz;
+  const d2 = lx * lx + ly * ly + lz * lz;
+  if (d2 < 1e-4 || d2 > GIR.dist * GIR.dist) return;
+  const d = Math.sqrt(d2), inv = 1 / d;
+  lx *= inv; ly *= inv; lz *= inv;
+  const ndl = nx * lx + ny * ly + nz * lz;
+  if (ndl <= 0) return;                        // the light is behind the surface
+  if (giTrace(px + nx * 0.02, py + ny * 0.02, pz + nz * 0.02, lx, ly, lz, d - 0.05)) return;
+  const w = E.w[bi] * E.n * ndl / (1 + d2 * GIR.falloff);
+  _giLr = E.r[bi] * w; _giLg = E.g[bi] * w; _giLb = E.b[bi] * w;
+}
+function pathTrace(){
+  /* giTrace walks tH, which is the CITY's heightfield. A room is its own
+     geometry in its own little coordinate space, so indoors every ray would
+     be tested against whatever street happens to lie under the room's
+     coordinates. Same reason lampVolume and lampPool bail. */
+  if (inside) return;
+  const cols = R.cols, rows = R.rows, n = cols * rows;
+  if (!giAcc || giAcc.length !== n * 3){ giAcc = new Float32Array(n * 3); giN = 0; }
+  /* Any change of view invalidates every sample, because a cell is no longer
+     looking at what it was looking at. Position, heading, pitch, grid. */
+  const key = cam.x.toFixed(2) + ',' + cam.y.toFixed(2) + ',' + cam.z.toFixed(2) +
+              ',' + cam.ang.toFixed(4) + ',' + cam.pitch + ',' + cols + 'x' + rows;
+  if (key !== giKey){ giKey = key; giN = 0; giAcc.fill(0); }
+  const T = curTime();
+  const skyR = T.sky[0] * GIR.sky, skyG = T.sky[1] * GIR.sky, skyB = T.sky[2] * GIR.sky;
+  if (giN < GIR.maxFrames){
+    giSeed = ((giSeed ^ (giN * 2654435761)) >>> 0) || 1;
+    const bounces = GIR.bounces;
+    for (let r = 0; r < rows; r++){
+      const kk = (r + 0.5 - horizon) / projRows;
+      const rowOff = r * cols;
+      for (let c = 0; c < cols; c++){
+        const i = rowOff + c;
+        if (!gBuf[i]) continue;
+        const t = dBuf[i];
+        if (!(t > 0.05) || t >= viewD) continue;
+        const dx = rayX[c], dy = rayY[c], dz = -kk;
+        const px = cam.x + dx * t, py = cam.y + dy * t, pz = cam.z + dz * t;
+        /* There is no normal buffer, so take it from the depths of the
+           neighbours - two screen tangents, crossed. Across a silhouette that
+           is nonsense, so a big jump in depth falls back to facing the eye,
+           which is wrong but never wild. */
+        let nx, ny, nz;
+        const cR = c + 1 < cols ? c + 1 : c - 1;
+        const rD = r + 1 < rows ? r + 1 : r - 1;
+        const tR = dBuf[rowOff + cR], tD = dBuf[rD * cols + c];
+        if (!(tR < viewD) || !(tD < viewD) ||
+            Math.abs(tR - t) > t * 0.25 || Math.abs(tD - t) > t * 0.25){
+          const l = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+          nx = -dx / l; ny = -dy / l; nz = -dz / l;
+        } else {
+          const kD = (rD + 0.5 - horizon) / projRows;
+          const ax = rayX[cR] * tR - dx * t, ay = rayY[cR] * tR - dy * t, az = -kk * tR + kk * t;
+          const bx = dx * tD - dx * t, by = dy * tD - dy * t, bz = -kD * tD + kk * t;
+          nx = ay * bz - az * by; ny = az * bx - ax * bz; nz = ax * by - ay * bx;
+          const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+          if (!(l > 1e-6)){ nx = 0; ny = 0; nz = 1; }
+          else {
+            nx /= l; ny /= l; nz /= l;
+            if (nx * dx + ny * dy + nz * dz > 0){ nx = -nx; ny = -ny; nz = -nz; }
+          }
+        }
+        let accR = 0, accG = 0, accB = 0;
+        let th = 1;                            // what is left of the ray
+        let bx2 = px, by2 = py, bz2 = pz, bnx = nx, bny = ny, bnz = nz;
+        for (let b = 0; b < bounces; b++){
+          giDirect(bx2, by2, bz2, bnx, bny, bnz);
+          accR += _giLr * th; accG += _giLg * th; accB += _giLb * th;
+          if (b + 1 >= bounces) break;
+          let ux = giRnd() * 2 - 1, uy = giRnd() * 2 - 1, uz = giRnd() * 2 - 1;
+          const ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1;
+          ux /= ul; uy /= ul; uz /= ul;
+          if (ux * bnx + uy * bny + uz * bnz < 0){ ux = -ux; uy = -uy; uz = -uz; }
+          const hit = giTrace(bx2 + bnx * 0.02, by2 + bny * 0.02, bz2 + bnz * 0.02,
+                              ux, uy, uz, GIR.dist);
+          if (!hit){                           // out into the open sky
+            accR += skyR * th; accG += skyG * th; accB += skyB * th;
+            break;
+          }
+          bx2 += ux * _giT; by2 += uy * _giT; bz2 += uz * _giT;
+          bnx = _giNx; bny = _giNy; bnz = _giNz;
+          th *= GIR.albedo;
+        }
+        const o = i * 3;
+        giAcc[o] += accR; giAcc[o + 1] += accG; giAcc[o + 2] += accB;
+      }
+    }
+    giN++;
+  }
+  if (giN > 0){
+    /* AUTO-EXPOSURE, not a constant. What a traced sample is worth in 0-255
+       depends entirely on how much light is in the shot, and that varies by an
+       order of magnitude across the map: a fixed gain tuned on a downtown
+       street - median 25 of 765 - put the red mile at 165 and washed the HUD
+       off the screen. Same failure as a fixed threshold on the beam, same
+       answer: let the scene set the scale. Measure the mean radiance actually
+       gathered and normalise it to `target`, so a quiet street and a wall of
+       neon both land where they are supposed to and the dial means something
+       everywhere. */
+    let sum = 0, cnt = 0;
+    for (let i = 0; i < n; i++){
+      if (!gBuf[i]) continue;
+      const o = i * 3;
+      sum += giAcc[o] + giAcc[o + 1] + giAcc[o + 2];
+      cnt++;
+    }
+    const mean = cnt > 0 ? sum / (cnt * 3 * giN) : 0;
+    if (mean > 1e-9){
+      const k = GIR.target / mean / giN;
+      for (let i = 0; i < n; i++){
+        if (!gBuf[i]) continue;
+        const o = i * 3;
+        litR[i] += giAcc[o] * k; litG[i] += giAcc[o + 1] * k; litB[i] += giAcc[o + 2] * k;
+      }
+    }
+  }
+}
+
+/* Light adds; brightness does not, or not for long. Roll the accumulated sum
+   toward a ceiling so twenty overlapping signs read brighter than two without
+   reading as white. Linear near zero, asymptotic at `roof`. */
+function litRolloff(){
+  const roof = LIGHTV.roof, inv = 1 / roof, n = litR.length;
+  for (let i = 0; i < n; i++){
+    const r = litR[i], g = litG[i], b = litB[i];
+    if (r > 0.5) litR[i] = roof * (1 - Math.exp(-r * inv));
+    if (g > 0.5) litG[i] = roof * (1 - Math.exp(-g * inv));
+    if (b > 0.5) litB[i] = roof * (1 - Math.exp(-b * inv));
+  }
+}
 function floorSample(wx, wy, ix, iy){
   const t = tType[iy * MAP + ix];
   // 1 = under water right now, 2 = always a mirror. Tarmac holds water in
@@ -18236,7 +18683,8 @@ function wallPass(){
           else g = Math.round(clamp(_wd * dm, 0, 1) * RMAX);
           gBuf[idx] = g; bBuf[idx] = _wb; lBuf[idx] = lvl; dBuf[idx] = d;
           refBuf[idx] = 0;
-          srcBuf[idx] = EMISSIVE[_wb] ? 2 : 0;
+          if (EMISSIVE[_wb]){ srcBuf[idx] = 2; emitKind[idx] = 1; }
+          else srcBuf[idx] = 0;
           statCells++;
         }
       }
@@ -19613,13 +20061,30 @@ function glQuad(x, y, w, h, r, g, b, a){
 function glPackWorld(){
   const f32 = GL.f32, u32 = GL.u32, pal = glPal, span = LV + 1;
   const n = R.cols * R.rows;
+  /* The palette decides what a thing IS; the light buffer decides what is
+     falling on it. This is the one place the two meet, and it is the reason
+     neither the atlas nor the ramps had to grow a lighting dimension: the
+     instance colour handed to the GPU is a plain 32-bit RGBA that happens to
+     be looked up from a palette, so anything can be added to it on the way. */
+  const useLit = (LIGHTV.on || GIR.on) && litR && litR.length === n;
   let k = 0;
   for (let i = 0; i < n; i++){
     const g = gBuf[i];
     if (!g) continue;
     const o = k << 2;
     f32[o] = i; f32[o + 1] = g; f32[o + 2] = lBuf[i];
-    u32[o + 3] = pal[bBuf[i] * span + lBuf[i]];
+    let px = pal[bBuf[i] * span + lBuf[i]];
+    if (useLit){
+      const ar = litR[i], ag = litG[i], ab = litB[i];
+      if (ar > 0.5 || ag > 0.5 || ab > 0.5){
+        let r = (px & 255) + ar, gg = ((px >> 8) & 255) + ag, b = ((px >> 16) & 255) + ab;
+        if (r > 255) r = 255;
+        if (gg > 255) gg = 255;
+        if (b > 255) b = 255;
+        px = (255 << 24) | ((b | 0) << 16) | ((gg | 0) << 8) | (r | 0);
+      }
+    }
+    u32[o + 3] = px;
     k++;
   }
   return k;
@@ -21925,6 +22390,11 @@ function worldPasses(){
   gBuf.fill(0); dBuf.fill(1e30);
   refBuf.fill(0);
   srcBuf.fill(0);
+  /* Before any pass runs, not after: wallPass writes emitKind and the grid can
+     have been resized since the last frame. */
+  litAlloc();
+  emitKind.fill(0);
+  if (LIGHTV.on || GIR.on){ litR.fill(0); litG.fill(0); litB.fill(0); }
   if (inside) ceilingPass(); else skyPass();
   floorPass();
   wallPass();
@@ -21935,6 +22405,15 @@ function worldPasses(){
     reflectPass();
     rainPass();
   }
+  /* Last, because it reads srcBuf and the signs are only in it by now. The
+     light it computes is RGB and is added at pack time, so it does not care
+     which pass drew the cell it lands on. */
+  /* The harvest is the light LIST, not the glow - the tracer needs it just as
+     much, so it runs if either of them wants it. */
+  if (LIGHTV.on || GIR.on) harvestEmitters();
+  if (LIGHTV.on) emitVolume();
+  if (GIR.on) pathTrace();
+  if (LIGHTV.on || GIR.on) litRolloff();
 }
 let _scG = null, _scB = null, _scL = null, _scD = null;
 function render(){
