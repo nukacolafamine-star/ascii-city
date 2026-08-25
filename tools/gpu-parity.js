@@ -242,7 +242,7 @@ const content = (S) => { let n = 0; for (let i = 0; i < S.g.length; i++) if (S.g
 
 const diff = (A, B) => {
   const n = A.g.length, o = { cells: n, g: 0, b: 0, l: 0, s: 0, r: 0, e: 0, d: 0, any: 0,
-                              surf: 0, mir: 0, dMaxRel: 0, first: null };
+                              surf: 0, mir: 0, vis: 0, hid: 0, dMaxRel: 0, first: null };
   for (let i = 0; i < n; i++){
     let bad = 0;
     if (A.g[i] !== B.g[i]){ o.g++; bad = 1; }
@@ -269,7 +269,16 @@ const diff = (A, B) => {
          disagrees" from "the reflection landed a row out", and the two have
          completely different causes. */
       if (A.s[i] !== 0 || B.s[i] !== 0) o.surf++; else o.mir++;
-      if (!o.first) o.first = { i, x: i % R.cols, y: (i / R.cols) | 0,
+      /* And a second split, which the tail made necessary. A cell with no
+         glyph on EITHER side is discarded by compose and cannot be seen -
+         bBuf and lBuf are never cleared, so a cell nobody draws keeps a
+         palette from some earlier frame, and the card seeding off the world's
+         own attachment does not reproduce that. Invisible, and it does not
+         propagate: everything that READS a palette reads it at a cell that has
+         a glyph. Counting it with the rest buries real regressions in it -
+         4,102 of 4,106 at one vantage - so it is counted apart. */
+      if (A.g[i] !== 0 || B.g[i] !== 0) o.vis++; else o.hid++;
+      if (!o.first && (A.g[i] !== 0 || B.g[i] !== 0)) o.first = { i, x: i % R.cols, y: (i / R.cols) | 0,
                                 A: [A.g[i], A.b[i], A.l[i], A.r[i], A.s[i], A.d[i]],
                                 B: [B.g[i], B.b[i], B.l[i], B.r[i], B.s[i], B.d[i]] };
     }
@@ -449,22 +458,26 @@ const parityRun = (stages, poses, what) => {
   const offRan = counter() - before - onRan;
   S.free(held);
   const rows = [];
-  let worst = null, tot = 0, cells = 0, empty = 0, surf = 0, mir = 0;
+  let worst = null, tot = 0, cells = 0, empty = 0, surf = 0, mir = 0, vis = 0, hid = 0;
   for (const p of poses){
     const o = GPUT.parityOne(p, stages, what);
     if (o.contentA < 200 || o.contentB < 200) empty++;
     tot += o.any; cells += o.cells; surf += o.surf; mir += o.mir;
-    if (!worst || o.any > worst.any) worst = o;
+    vis += o.vis; hid += o.hid;
+    if (!worst || o.vis > worst.vis) worst = o;
     rows.push({ pose: p.inside ? ['inside', +p.a.toFixed(2), p.pitch, +p.clock.toFixed(1), p.weather]
                                : [p.x | 0, p.y | 0, +p.a.toFixed(2), p.pitch, p.z,
                                   +p.clock.toFixed(1), p.weather, p.warm ? 'moving' : ''],
                 any: o.any, pct: o.pct, g: o.g, b: o.b, l: o.l, r: o.r, s: o.s, e: o.e, d: o.d,
-                surf: o.surf, mir: o.mir, dMaxRel: o.dMaxRel, content: o.contentA });
+                surf: o.surf, mir: o.mir, vis: o.vis, hid: o.hid,
+                dMaxRel: o.dMaxRel, content: o.contentA });
   }
   return { what, stages, switchProven: onRan === 1 && offRan === 0,
            poses: poses.length, emptyFrames: empty,
            totalDiff: tot, totalCells: cells, pct: +(100 * tot / cells).toFixed(5),
            surfaceDiff: surf, mirrorDiff: mir,
+           /* the headline: cells that can actually be SEEN */
+           visibleDiff: vis, visiblePct: +(100 * vis / cells).toFixed(5), hiddenDiff: hid,
            worst, rows };
 };
 

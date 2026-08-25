@@ -22940,9 +22940,12 @@ function glInit(){
     G.uTS = {};
     for (const k of ['uG','uB','uL','uS','uR','uD','uDFar'])
       G.uTS[k] = gl.getUniformLocation(G.pTSeed, k);
+    G.pTSeedW = mkProg(VS_FULL, FS_TSEEDW);
+    G.uTW = {};
+    for (const k of ['uWA','uWD','uDFar']) G.uTW[k] = gl.getUniformLocation(G.pTSeedW, k);
     G.pTSign = mkProg(VS_TSIGN, FS_TSIGN);
     G.uTG = {};
-    for (const k of ['uPt','uRw','uGrid','uDFar','uKind'])
+    for (const k of ['uPt','uRw','uGrid','uDFar','uKind','uRwPacked'])
       G.uTG[k] = gl.getUniformLocation(G.pTSign, k);
     G.pTSRef = mkProg(VS_FULL, FS_TSREF);
     G.uTX = {};
@@ -23385,6 +23388,61 @@ void main(){
 }`;
 
 
+/*----------- seeding the chain from the card instead of the CPU -------------
+  THE BUG THIS FIXES. The tail used to seed from gBuf/bBuf/lBuf/srcBuf/refBuf/
+  dBuf - the CPU's copies - which is fine while the readback is immediate and
+  catastrophic the moment it is not. With GPUH on those copies are two frames
+  old, so the whole COMPOSED FRAME was two frames old: one frame after a camera
+  jump the picture still matched the previous pose 44.5% and the new one 6.8%.
+  On a moving camera that is the world swimming behind you, with the light pass
+  - which uses the CURRENT camera - laid over stale geometry. Which is exactly
+  what it looked like: lighting that dims and flickers as you walk past a
+  building.
+
+  Stage 5b claimed the deferral cost "one frame of latency in the light list
+  and nothing else". That was wrong, and the harness could not catch it: parity
+  forces the immediate read, so the deferred path was never rendered under
+  test. Only play found it.
+
+  So when the card owns the world, the chain seeds from the world pass's own
+  attachments, which are always THIS frame. Attachment 0 packs glyph, palette,
+  level and a fourth byte of wetness | source << 2 | wrote << 4 - the same
+  byte glWorldRead unpacks. The CPU copies stop being on the display path
+  altogether and go back to being what stage 5b actually wanted them to be:
+  input for harvestEmitters, where two frames late is the measured and
+  intended approximation.
+
+  The `wrote` bit is not carried. The CPU keeps last frame's palette and level
+  where it is clear, and measured over five vantages there are ZERO cells with
+  the bit clear and a glyph to show - compose discards a glyph of nought, and
+  nothing downstream reads a palette it did not write.
+============================================================================*/
+const FS_TSEEDW = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+layout(location = 2) out vec4 oL;
+layout(location = 3) out vec4 oS;
+layout(location = 4) out vec4 oR;
+layout(location = 5) out vec4 oD;
+uniform sampler2D uWA, uWD;
+uniform float uDFar;
+void main(){
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  vec4 a = texelFetch(uWA, c, 0);
+  float f = floor(a.a * 255.0 + 0.5);
+  oG = vec4(a.r, 0.0, 0.0, 1.0);
+  oB = vec4(a.g, 0.0, 0.0, 1.0);
+  oL = vec4(a.b, 0.0, 0.0, 1.0);
+  oS = vec4(floor(mod(floor(f / 4.0), 4.0)) / 255.0, 0.0, 0.0, 1.0);
+  oR = vec4(floor(mod(f, 4.0)) / 255.0, 0.0, 0.0, 1.0);
+  float d = texelFetch(uWD, c, 0).r;
+  oD = vec4(d, 0.0, 0.0, 1.0);
+  float z = d / uDFar;
+  gl_FragDepth = z > 1.0 ? 1.0 : z;
+}`;
+
 /*------------------- the sign faces, as points on the card ------------------
   The CPU worked out every one of these cells; all this does is put them where
   they go, and answer the two questions the CPU can no longer ask. On-screen
@@ -23443,11 +23501,17 @@ layout(location = 4) out vec4 oR;
 layout(location = 5) out vec4 oD;
 uniform sampler2D uRw;
 uniform int uKind;
+/* 0: uRw is an R8 copy of refBuf. 1: it is the world pass's own attachment 0,
+   whose fourth byte is wetness | source << 2 | wrote << 4. Same question,
+   asked of whichever of the two is actually current. */
+uniform int uRwPacked;
 flat in vec4 vA;
 flat in vec4 vB;
 void main(){
   if (uKind == 0){
-    float rf = floor(texelFetch(uRw, ivec2(gl_FragCoord.xy), 0).r * 255.0 + 0.5);
+    vec4 rw = texelFetch(uRw, ivec2(gl_FragCoord.xy), 0);
+    float rf = uRwPacked == 1 ? floor(mod(floor(rw.a * 255.0 + 0.5), 4.0))
+                              : floor(rw.r * 255.0 + 0.5);
     if (rf < 0.5 || rf > 2.5) discard;    // reflects(): 1 or 2, nothing else
     oG = vec4(vA.z / 255.0, 0.0, 0.0, 1.0);
     oB = vec4(vA.w / 255.0, 0.0, 0.0, 1.0);
@@ -24008,10 +24072,15 @@ function glTailPass(stages){
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, rows, gl.RED, gl.UNSIGNED_BYTE, buf);
   };
-  up8(GL.cellG, gBuf); up8(GL.cellB, bBuf); up8(GL.cellL, lBuf);
-  up8(GL.cellS, srcBuf); up8(GL.cellR, refBuf);
-  gl.bindTexture(gl.TEXTURE_2D, GL.cellD);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, rows, gl.RED, gl.FLOAT, dBuf);
+  /* Skipped entirely when the chain seeds off the card: six texSubImage2D of
+     a whole grid each, uploading data that came OFF the card in the first
+     place. They are only needed when the CPU still owns the world. */
+  if (!GV.fromCard){
+    up8(GL.cellG, gBuf); up8(GL.cellB, bBuf); up8(GL.cellL, lBuf);
+    up8(GL.cellS, srcBuf); up8(GL.cellR, refBuf);
+    gl.bindTexture(gl.TEXTURE_2D, GL.cellD);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, rows, gl.RED, gl.FLOAT, dBuf);
+  }
   gl.bindTexture(gl.TEXTURE_2D, GL.vCol);
   gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, 1, gl.RGBA, gl.FLOAT, CO);
   gl.bindTexture(gl.TEXTURE_2D, GL.vRow);
@@ -24082,13 +24151,27 @@ function glTailPass(stages){
   const seedFrom = (dst, src) => {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.f);
     gl.drawBuffers(ALL);
-    gl.useProgram(GL.pTSeed);
-    gl.uniform1f(GL.uTS.uDFar, viewD);
-    const t = src ? [src.g, src.b, src.l, src.s, src.r, src.d]
-                  : [GL.cellG, GL.cellB, GL.cellL, GL.cellS, GL.cellR, GL.cellD];
-    for (let i = 0; i < 6; i++){
-      gl.uniform1i(GL.uTS[SNAME[i]], i);
-      gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]);
+    /* src null and the card owns the world: seed from the world pass's OWN
+       attachments, which are always this frame. The CPU's copies may be two
+       frames old - that is the whole point of GPUH - and putting them on the
+       display path is what made the picture swim. */
+    const fromCard = !src && GV.fromCard;
+    if (fromCard){
+      gl.useProgram(GL.pTSeedW);
+      gl.uniform1f(GL.uTW.uDFar, viewD);
+      gl.uniform1i(GL.uTW.uWA, 0);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.wT[0]);
+      gl.uniform1i(GL.uTW.uWD, 1);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.wT[2]);
+    } else {
+      gl.useProgram(GL.pTSeed);
+      gl.uniform1f(GL.uTS.uDFar, viewD);
+      const t = src ? [src.g, src.b, src.l, src.s, src.r, src.d]
+                    : [GL.cellG, GL.cellB, GL.cellL, GL.cellS, GL.cellR, GL.cellD];
+      for (let i = 0; i < 6; i++){
+        gl.uniform1i(GL.uTS[SNAME[i]], i);
+        gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]);
+      }
     }
     // and the world's distances into the DEPTH buffer, which is what lets the
     // sign pass do its occlusion test without ever reading dBuf
@@ -24106,7 +24189,9 @@ function glTailPass(stages){
     gl.uniform1f(GL.uTG.uDFar, viewD);
     gl.uniform1i(GL.uTG.uKind, 0);
     gl.uniform1i(GL.uTG.uRw, 0);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.cellR);
+    gl.uniform1i(GL.uTG.uRwPacked, GV.fromCard ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, GV.fromCard ? GL.wT[0] : GL.cellR);
     gl.uniform1i(GL.uTG.uPt, 1);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.tWmM);
     /* the sign mirror clears a source kind on the way past and this does not,
@@ -24141,7 +24226,9 @@ function glTailPass(stages){
     gl.uniform2f(GL.uTG.uGrid, cols, rows);
     gl.uniform1f(GL.uTG.uDFar, viewD);
     gl.uniform1i(GL.uTG.uRw, 0);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.cellR);
+    gl.uniform1i(GL.uTG.uRwPacked, GV.fromCard ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, GV.fromCard ? GL.wT[0] : GL.cellR);
     gl.uniform1i(GL.uTG.uPt, 1);
     gl.activeTexture(gl.TEXTURE1);
     /* The mirror first, then the faces - batched rather than interleaved,
@@ -25709,6 +25796,7 @@ function glWorldPass(defer){
   The sprite mirror read goes with it. applySpriteRefl is on the card now, so
   GS.rq32 has no reader at all and the collect is simply skipped. */
 function glWorldRead(defer){
+  GW.fresh = 1;
   if (!GW.pend) return 0;
   const stages = GW.pend; GW.pend = 0;
   const gl = GL.gl, cols = R.cols, rows = R.rows;
@@ -25763,6 +25851,7 @@ function glWorldRead(defer){
   // applySpriteRefl is on the card when we are deferring, so nothing reads it
   if (!defer) glSpriteRead();
   gl.enable(gl.BLEND);
+  GW.fresh = ready ? 1 : 0;
   if (!ready){ _T.read += performance.now() - _t0; _T.n++; return stages; }
   _T.read += performance.now() - _t0; _t0 = performance.now();
   const qa = GW.qa32, qb = GW.qb32;
@@ -29041,6 +29130,16 @@ function worldPasses(){
      the only reader left and one frame of light-list latency is the whole of
      what it costs. GV.dbgRead forces the wait back for the parity run. */
   glWorldRead(tm === TAIL_ALL && GPUV.on && !GV.dbgRead && GPUH.on);
+  /* Whether the chain may seed off the card rather than off the CPU's copies.
+     Two conditions, and the second one is not optional: the card must have
+     drawn the whole world this frame, AND the tail must own the WHOLE chain.
+     At any shorter suffix the CPU has already run the passes ahead of the
+     tail and written them into gBuf, and the card's attachment knows nothing
+     about them - seeding off it there throws that work away. Measured, with
+     the suffix condition missing: rain-only parity went from byte-identical
+     to 14.8% of cells wrong. */
+  GV.fromCard = (gw === 7) && tm === TAIL_ALL &&
+                !!(GL && GL.worldOK && GL.wT && GL.wT.length === 3);
   if (!(gw & 1)){ if (inside) ceilingPass(); else skyPass(); }
   if (!(gw & 2)) floorPass();
   /* wallMirror is the one part of the wall pass that stays on the CPU - it
@@ -29095,7 +29194,15 @@ function worldPasses(){
   _cpuLitFrame = false;
   if (gpuLit){
     litR.fill(0); litG.fill(0); litB.fill(0); litA.fill(1);
-    harvestEmitters();
+    /* THE SECOND HALF OF THE GPUH BUG. worldPasses clears srcBuf, dBuf and
+       emitKind at the top of every frame, and a deferred read that is not
+       ready yet returns without refilling them - so the harvest ran over an
+       all-zero srcBuf, found no sources at all, and the light list collapsed
+       to empty. On screen that is a building going dark and then flashing
+       back when a read finally lands. If the buffers are not this frame's,
+       keep the list we already have rather than rebuilding it out of a clear
+       screen. */
+    if (GW.fresh !== 0 || !EMIT) harvestEmitters();
   } else if (LIGHTV.on || GIR.on || FOGV.on){
     _cpuLitFrame = true;
     hlR.fill(0); hlG.fill(0); hlB.fill(0); hlA.fill(1);

@@ -629,6 +629,20 @@ hit on the mirrored solid and then found no source row rounding onto its cell �
 which is what turned "543 cells missing" into the table above. A percentage on
 its own would have told you none of it.
 
+### 4-bis. Visible cells and hidden ones
+
+`GPUT.diff` now splits every difference two ways, and the headline is
+`visibleDiff`. A cell with **no glyph on either side** is discarded by compose
+and cannot be seen: `bBuf` and `lBuf` are never cleared, so a cell nobody draws
+keeps a palette from some earlier frame, and the card - seeding off the world's
+own attachment - does not reproduce that. It does not propagate either;
+everything that reads a palette reads it at a cell that has a glyph, and it was
+measured at **zero** cells with the wrote-bit clear and a glyph to show.
+
+Counting those with the rest buries real regressions: at one vantage it is
+4,102 hidden against 4 visible. So they are counted apart, and the whole-chain
+number below is **visible** cells.
+
 ### 4a. The tail: 0.0016%, and it is two things
 
 **13 to 15 cells differ out of 4,792,320, and none of them is a surface.**
@@ -836,6 +850,50 @@ ready the harvest keeps the list it had.
   worldPasses   ~25ms   →   4.16ms
 ```
 
+### 5b-bis. What that got wrong, and what a player found
+
+**This section used to claim the deferral cost "one frame of latency in the
+light list and nothing else". That was false, and it shipped.** Two bugs came
+out of it, both reported from play, neither visible to the harness.
+
+**1. The whole picture lagged, not the light list.** The tail seeded from
+`gBuf`/`bBuf`/`lBuf`/`srcBuf`/`refBuf`/`dBuf` - the CPU's copies - which is
+fine while the read is immediate and wrong the moment it is not. Measured: one
+frame after a camera jump the composed output still matched the OLD pose 44.5%
+and the new one **6.8%**, against 100% with the deferral off. On a moving
+camera that is the world swimming behind you with current-camera lighting laid
+over stale geometry.
+
+Fixed by seeding the chain from **the world pass's own attachments**, which are
+always this frame. `GL.wT[0]` packs glyph, palette, level and the same fourth
+byte `glWorldRead` unpacks; `GL.wT[2]` is the distance. The CPU copies come off
+the display path entirely and go back to being what 5b meant them to be: input
+for the harvest. Six full-grid `texSubImage2D` a frame go with them.
+
+Two conditions on that, and the second is not optional: the card must have
+drawn the whole world this frame **and the tail must own the whole chain**. At
+any shorter suffix the CPU has already run the passes ahead of the tail and
+written them into `gBuf`, and the attachment knows nothing about them. Missing
+that took rain-only parity from byte-identical to **14.8% of cells wrong**.
+
+**2. The light list collapsed on every fence miss.** `worldPasses` clears
+`srcBuf`, `dBuf` and `emitKind` at the top of every frame, and a deferred read
+that is not ready returns *without refilling them* - so the harvest ran over an
+all-zero `srcBuf`, found no sources, and built an empty list. Measured: the
+list goes from 120 entries to **10** (just the appended off-screen lamps). On
+screen that is a building standing dark with no emission and flashing back the
+moment a read lands, which is exactly how it was reported.
+
+Fixed by not harvesting a clear screen: if the buffers are not this frame's,
+keep the list already built. With every single frame forced to miss, the list
+now holds at 120 and the picture stays 100% correct.
+
+**Why the harness could not see either.** `parityOne` sets `GV.dbgRead`, which
+forces the read back to immediate - so **the deferred path is never rendered
+under test**. That is not a gap that can be closed by adding poses; the pose
+set proves a frame in isolation and both of these are properties of a SEQUENCE
+of frames. §4 now measures what it can: `visibleDiff` versus `hiddenDiff`.
+
 **What it costs, measured, because it is the one thing in this port that is not
 parity.** Driving a brisk turn-and-walk (0.22 tiles and 0.03 radians a frame),
 a list one frame late sits **0.35 world tiles** from the fresh one with colours
@@ -867,8 +925,11 @@ that the ceiling probe had stale buffers making `harvestEmitters` cheaper than
 it is, and that `signPass` costs more in emit mode than it did.
 
 Parity across the whole chain, 39 poses, `GPUW` and `GPUS` held on both sides:
-**71 to 78 cells in 4,792,320 - 0.0015% - of which 2 are surfaces, and source
-kind, wetness and depth are byte-identical everywhere (s=0, r=0, d=0).** Every
+**80 VISIBLE cells in 4,792,320 - 0.00167% - of which 2 are surfaces, and
+source kind, wetness and depth are byte-identical everywhere (s=0, r=0, d=0).**
+The suffixes below it: 62 and 60 and 56 all at 42, 48 at 23, **32 at zero**.
+Hidden cells appear only at 63, which is the only suffix that seeds off the
+card - see §4-bis. Every
 grid in `CFG.CELLW` sweeps clean with the camera moving, and auto-res holds at
 true defaults over 954 frames.
 
@@ -1102,6 +1163,23 @@ between renders, and check `gl.getError()` at each one.
   half its blocks reading `0` and a median of zero. Start long runs detached,
   park the result on `window`, and **reload the page before retrying** rather
   than layering a second run on a first that is still alive.
+- **A DEFERRED READ DELAYS EVERY CONSUMER OF THOSE BUFFERS, NOT THE ONE YOU
+  WERE THINKING OF.** The intent was "the light list may lag". The effect was
+  that the whole composed frame lagged, because the tail was also seeding off
+  the same buffers - a consumer nobody had written down. Before deferring a
+  read, enumerate what reads it, and be suspicious of the answer.
+- **AND A CLEARED BUFFER IS NOT A STALE ONE.** `worldPasses` clears its buffers
+  at the top of every frame. A deferred read that is not ready leaves them
+  CLEARED, not holding last frame's data - so a consumer downstream gets an
+  empty screen rather than an old one, which is a much louder failure. If a
+  read may not deliver, the consumer has to be skipped, not fed.
+- **THE POSE PARITY CANNOT SEE A SEQUENCE BUG.** It renders one pose twice and
+  compares; anything that is a property of successive frames - staleness,
+  latency, a fence that sometimes misses - is invisible to it by construction,
+  and `GV.dbgRead` actively turns the deferred path off while it runs. Both
+  GPUH bugs went out clean through 39 poses and were found by playing. When a
+  change is about WHEN data arrives rather than what it contains, the harness
+  is not evidence.
 - **A DEFERRED READBACK IS NOT AN UNBLOCKED ONE.** Issuing into one pack
   buffer and collecting the other a frame later took `glWorldRead` from 21.9ms
   to 15.1ms and no further, because the CPU runs further ahead of the card than
