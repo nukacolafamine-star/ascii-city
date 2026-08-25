@@ -1145,6 +1145,69 @@ end of the street and a dark tower at the other.
 
 ---
 
+### 5f. Two refinements, and the defaults
+
+**Blown out white when rounding a corner.** `harvestEmitters` turns a screen
+cell back into a world position with `cam + ray * depth`. With a deferred read
+the depth is two frames old while `cam` and the rays are CURRENT, so every
+reconstruction is wrong by roughly depth times the angle turned. Standing still
+that is nothing; turning a corner it puts sources metres from where they are,
+and a source that lands near the eye has an attenuation of `1/(1+d²)` that goes
+straight up. Each outstanding read now carries the camera it was taken with
+(`GW.pbBasis`) and the harvest reconstructs against THAT - exact, because a lit
+window does not move.
+
+**Light decaying as you move around an area.** Not time, density. Measured
+walking a circle in one block: source CELLS swing from 9,899 to 29,517 as the
+view turns into and out of a dense frontage - up to ~7,400 buckets - and the
+list was clamped at 4,096. The clamp keeps the HEAVIEST buckets, so what gets
+dropped is every dim window, exactly when you turn to face more of them. It
+does not read as a limit being hit; it reads as the light draining away.
+`LIGHT_CAP` is 16,384 now and nothing is dropped.
+
+Retuned for the raised ceiling with a fast TURN as the test case, because a
+two-frame-old list holds the lights of the view you are leaving as well as the
+one you are entering: cells over 150 went 10.5% at gain 0.20 to **0% at gain
+0.15 / roof 150**.
+
+**The defaults are now the whole port.** `GPUC`, `GPUL`, `GPUW`, `GPUS`,
+`GPUV`, `GPUH` and `GPUE` all on, at the **4px grid** (`resIdx` 9). Measured
+there: **5.79ms against 25.51ms on the CPU path - 173fps against 39.** Auto-res
+holds; its guard checks for a BLOCKING read, and there is not one any more.
+
+**A harness note that follows from that.** `GPUT.parity(7)` flips `GPUW` only,
+so with `GPUS` now on by default the "off" side falls back to CPU sprites too
+and the number measures BOTH passes - 3,727 cells, which is the documented
+sprite figure, not a world-pass regression. **Turn `GPUS` off to measure the
+world pass alone** (it reads 43).
+
+### 5g. Path tracing does not currently coexist with any of this
+
+Stated plainly because it is a real conflict, not an oversight to work around.
+`worldPasses` gates them as `if (gpuLit) { harvest } else if (GIR.on) { …
+pathTrace() }`. Path tracing runs **zero times** while the card owns the
+lighting, and turning `GPUL` off to reach it sets `_cpuLitFrame`, which
+disables compose and therefore the entire tail. Measured at 4px:
+
+```
+  GPU light branch                     2.72ms
+  CPU light branch (what GIR needs)   38.8ms
+  pathTrace itself                     4.01ms
+  the rest of the CPU light chain     10.5ms   (litUpsample 6.13 is the bulk)
+```
+
+So GIR is not expensive - the BRANCH is. And they are not layers: `bounces 1`
+is "direct light and shadows", which is what `FS_LIGHT` already computes, so
+adding them double-counts the direct term.
+
+Making them coexist is a real piece of work with a real design question in it
+(isolate the bounce, or scale the whole thing), and the cheap version is
+better than it looks: `pathTrace` runs at HALF resolution, so uploading the
+half-res buffer and letting a linear sampler do the upsample skips
+`litUpsample` entirely - about +4.9ms rather than +14.5.
+
+---
+
 ## 6. Measurement traps that have already cost time
 
 - **A dead property in the harness is worth thirty times the thing you are

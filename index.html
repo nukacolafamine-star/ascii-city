@@ -65,7 +65,8 @@ const CFG = {
      from wherever it starts. Picking a grid by hand sets manualRes, and that
      always wins: initRender breaks out of its budget loop immediately. */
   CELLW:  [24, 19, 16, 13, 11, 9, 7, 6, 5, 4, 3],
-  resIdx:     6,   // 7px - the finest of the old ladder; the rest are opt-in
+  resIdx:     9,   // 4px. The port pays for it: measured 2.26ms a frame with
+                   // the whole chain on, against 7.25 on the CPU path at 7px
   manualRes: false,   // set once you pick a grid with [ or ]
   CARS:      54,   // air traffic only - set dressing, never physical
   PEDS:     430,   // streamed: kept near the camera rather than spread thin
@@ -19943,21 +19944,28 @@ function harvestEmitters(){
   const E = EMIT;
   E.x.fill(0); E.y.fill(0); E.z.fill(0);
   E.r.fill(0); E.g.fill(0); E.b.fill(0); E.w.fill(0);
+  /* The camera these buffers were DRAWN with, which is not the current one
+     when the read is deferred. See the note by GW.pbBasis. */
+  const BS = GW.basis;
+  const hCx = BS ? BS.cx : cam.x, hCy = BS ? BS.cy : cam.y, hCz = BS ? BS.cz : cam.z;
+  const hHz = BS ? BS.hz : horizon, hPr = BS ? BS.pr : projRows;
+  const hVd = BS ? BS.vd : viewD;
+  const hRx = BS ? BS.rx : rayX, hRy = BS ? BS.ry : rayY;
   for (let row = 0; row < rows; row++){
     const off = row * cols, br = ((row / B) | 0) * bw;
-    const kk = (row + 0.5 - horizon) / projRows;
+    const kk = (row + 0.5 - hHz) / hPr;
     for (let c = 0; c < cols; c++){
       const i = off + c;
       if (srcBuf[i] !== 2) continue;
       const t = dBuf[i];
-      if (!(t > 0.2) || t >= viewD) continue;
+      if (!(t > 0.2) || t >= hVd) continue;
       const col = BASE[bBuf[i]];
       if (!col) continue;
       const kw = emitKind[i] === 1 ? (DEN ? GPUE.winW : LIGHTV.winW) : 1;
       const bi = br + ((c / B) | 0);
-      E.x[bi] += (cam.x + rayX[c] * t) * kw;
-      E.y[bi] += (cam.y + rayY[c] * t) * kw;
-      E.z[bi] += (cam.z - kk * t) * kw;
+      E.x[bi] += (hCx + hRx[c] * t) * kw;
+      E.y[bi] += (hCy + hRy[c] * t) * kw;
+      E.z[bi] += (hCz - kk * t) * kw;
       E.r[bi] += col[0] * kw; E.g[bi] += col[1] * kw; E.b[bi] += col[2] * kw;
       E.w[bi] += kw;
     }
@@ -22846,7 +22854,7 @@ void main(){
      sources affordable is not this bound - it is that a light whose glow this
      ray misses is rejected in a handful of instructions, and measured, thirty
      sources and two hundred and twenty cost the same frame. */
-  for (int i = 0; i < 4096; i++){
+  for (int i = 0; i < 16384; i++){
     if (i >= uNE) break;
     vec4 A = texelFetch(uEmit, ivec2(i, 0), 0);
     vec4 B = texelFetch(uEmit, ivec2(i, 1), 0);
@@ -23258,8 +23266,17 @@ function glResize(){
   city is built and is what the shadow test reads to turn a glow into a shaft.
 ============================================================================*/
 /* The emitter texture's width and the shader's loop ceiling, in one place
-   because they have to agree. GPUE.max may not exceed it. */
-const LIGHT_CAP = 4096;
+   because they have to agree. GPUE.max may not exceed it.
+
+   4096 was not enough and the way it failed is worth writing down, because it
+   does not look like a ceiling. Measured while walking a circle in one block:
+   source CELLS swing from 9,899 to 29,517 as the view turns into and out of a
+   dense frontage, which is up to ~7,400 buckets - and the list was clamped at
+   4,096. The clamp keeps the HEAVIEST buckets, so what gets dropped is every
+   dim window, and it gets dropped exactly when you turn to face more of them.
+   On screen that reads as the light DECAYING as you move around an area
+   rather than as a hard limit being hit. */
+const LIGHT_CAP = 16384;
 const GPUL = {
   on:     true,
   max:    256,    // the old path's ceiling; GPUE.max is the dense one
@@ -23305,8 +23322,10 @@ const GPUE = {
   block:  2,      // screen cells per source. 1 is per-cell and mostly noise
   winW:   1.0,    // a lit window is a light, not a fifth of one
   minW:   1,      // and one cell of it is enough to be one
-  keep:   4096,
-  max:    4096,   // the hard ceiling: the loop bound and the texture width
+  /* Both above any bucket count a real view produces, so nothing is dropped
+     and the sort never runs. A clamp here is not a budget, it is a flicker. */
+  keep:   16384,
+  max:    16384,
   /* Tuned against the light pass's own output rather than by eye - mean and
      peak and lit fraction read straight off GL.lightF - because at four
      thousand sources the two knobs pull in different directions and guessing
@@ -23328,10 +23347,19 @@ const GPUE = {
 
   The canyon goes from barely lit to six times lit, which is the whole point:
   those windows were always there and were never allowed to be lights. */
+  /* Retuned once the ceiling came off. More sources reach the shader now
+     (5,300 to 7,300 where it used to clamp at 4,096), so the same gain is a
+     brighter street - and the case that exposes it is a FAST TURN, where a
+     two-frame-old list holds the lights of the view you are leaving as well
+     as the one you are entering. Cells over 150, worst over a spin:
+
+       gain 0.20 roof 165   10.5%   blows out rounding a corner
+       gain 0.15 roof 150    0%     <- here
+       gain 0.10 roof 130    0%     timid  */
   rad:    2.80,
   grow:   0.33,
-  gain:   0.20,
-  roof:   165,
+  gain:   0.15,
+  roof:   150,
   shaft:  3.00,   // the air is what this was all for: lean on the chord
   dens:   0.42,
   /* And a gentler ambient floor. Occlusion is now weighted by how much each
@@ -23407,11 +23435,11 @@ let _cpuLitFrame = false;
 /* The last thing standing between the port and the readback. On, the world's
    buffers come back a frame late and only harvestEmitters ever looks at them;
    off, they come back in the frame that drew them and the CPU waits. */
-const GPUH = { on: false };
+const GPUH = { on: true };
 const TAIL_WMIR = 1, TAIL_SREF = 2, TAIL_SIGN = 4;
 const TAIL_REFL = 8, TAIL_LAMP = 16, TAIL_RAIN = 32;
 const TAIL_ALL = 63;
-const GPUV = { on: false, stages: 63, max: 63 };
+const GPUV = { on: true, stages: 63, max: 63 };
 const GV = { t: null, ran: 0, used: 0, rainN: 0, rainBuf: null, col: null, row: null,
              /* the harness compares CPU buffers, and the whole point of the
                 full suffix is that the answer never becomes one - so parity
@@ -24628,9 +24656,12 @@ const GPUW = {
      ninety frames, and that reads as the screen flickering black about once a
      second while the world rebuilds itself coarser.
 
-     Turn it on from the settings menu to work on it. Do not default it on
-     again until glWorldPass no longer reads anything back. */
-  on:     false,
+     That is all HISTORY now. glWorldPass's readback no longer blocks - it is
+     fenced and collected whenever the card has finished it (GPUH) - and the
+     auto-res guard checks for a BLOCKING read rather than for this switch, so
+     the grid is free to move again exactly as it is on the CPU path. On by
+     default since the whole chain landed. */
+  on:     true,
   stages: 7,     // bit 0 sky, bit 1 floor, bit 2 walls
   max:    7
 };
@@ -25497,6 +25528,17 @@ function glWorldTargets(){
   }
   for (const f of (GW.pbFence || [])) if (f) gl.deleteSync(f);
   GW.pbSet = 0; GW.pbLive = 0; GW.pbFence = [null, null, null]; GW.pbMiss = 0;
+  /* Each outstanding read carries the camera it was taken with. harvestEmitters
+     turns a screen cell back into a world position with cam + ray * depth, and
+     with a deferred read the depth is two frames old while cam and the rays are
+     current - so every reconstruction is wrong by roughly depth times the angle
+     turned. Standing still that is nothing. TURNING A CORNER it puts sources
+     metres from where they are, and a source that lands near the eye has an
+     attenuation of 1/(1+d^2) that goes straight up: the frame blows out white.
+     Reconstructed against its OWN camera it is exact instead, because a lit
+     window does not move. */
+  GW.pbBasis = [null, null, null];
+  GW.basis = null;
   gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   GW.colD = new Float32Array(W * 8);       // two rows of RGBA
   GW.rowD = new Float32Array(H * 8);
@@ -25916,6 +25958,8 @@ function glWorldPass(defer){
   GS.rq32 has no reader at all and the collect is simply skipped. */
 function glWorldRead(defer){
   GW.fresh = 1;
+  if (!defer) GW.basis = null;             // live buffers, live camera
+
   if (!GW.pend) return 0;
   const stages = GW.pend; GW.pend = 0;
   const gl = GL.gl, cols = R.cols, rows = R.rows;
@@ -25941,6 +25985,12 @@ function glWorldRead(defer){
   if (defer){
     if (GW.pbFence[slot]) gl.deleteSync(GW.pbFence[slot]);
     GW.pbFence[slot] = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    let bs = GW.pbBasis[slot];
+    if (!bs || bs.rx.length !== cols)
+      bs = GW.pbBasis[slot] = { rx: new Float32Array(cols), ry: new Float32Array(cols) };
+    bs.cx = cam.x; bs.cy = cam.y; bs.cz = cam.z;
+    bs.hz = horizon; bs.pr = projRows; bs.vd = viewD;
+    bs.rx.set(rayX.subarray(0, cols)); bs.ry.set(rayY.subarray(0, cols));
     gl.flush();                       // or the fence is never submitted
     GW.pbSet = (slot + 1) % 3;
     /* the oldest outstanding read - two frames back - and it is collected
@@ -25952,6 +26002,7 @@ function glWorldRead(defer){
       const st = gl.clientWaitSync(GW.pbFence[old], 0, 0);
       if (st === gl.ALREADY_SIGNALED || st === gl.CONDITION_SATISFIED){
         ready = true; get = old * 3;
+        GW.basis = GW.pbBasis[old];        // the camera these bytes belong to
         gl.deleteSync(GW.pbFence[old]); GW.pbFence[old] = null;
       } else GW.pbMiss++;
     }
@@ -26016,10 +26067,10 @@ function glWorldRead(defer){
      written to. Gather, not scatter, and the same picture.
 ============================================================================*/
 const GPUS = {
-  /* Off, and gated on the world pass being fully on: the solids test against
-     a depth buffer the world pass fills, and indoors the world pass does not
-     run at all. Bit 0 is the solids, bit 1 is their reflections. */
-  on:     false,
+  /* Gated on the world pass being fully on: the solids test against a depth
+     buffer the world pass fills, and indoors the world pass does not run at
+     all. Bit 0 is the solids, bit 1 is their reflections. */
+  on:     true,
   stages: 3,
   max:    3
 };
