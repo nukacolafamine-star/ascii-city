@@ -888,6 +888,30 @@ Fixed by not harvesting a clear screen: if the buffers are not this frame's,
 keep the list already built. With every single frame forced to miss, the list
 now holds at 120 and the picture stays 100% correct.
 
+**3. And the harvest lost every SIGN as a light source.** This one is not a
+GPUH bug at all - it was in stage 5 from the day it landed, and GPUH only made
+it easier to notice. `signPass` marks a sign face `srcBuf = EMISSIVE ? 2 : 1`,
+and once the card owns signPass the CPU's `signPass()` is skipped. At any
+suffix short of the whole chain `glTailRead` runs and reads the source byte
+back, so nothing shows; at **TAIL_ALL it does not run at all**, and the CPU's
+`srcBuf` never learns the signs exist. Measured at one vantage, non-window
+sources: **3,913 at suffix 56 and 60, and 871 at 63.** That is every shopfront
+dropping out of the light list - the street dims, and what is left redistributes
+as you turn, which reads as the window lights flickering off.
+
+Fixed by having `drawSignPlane` keep its CPU writes in emit mode as well as
+emitting the point - depth tested, because the card applies the same test to
+the point and the copy has to agree with what lands. It costs a handful of
+stores on cells the pass already walks.
+
+`signPass` is the ONLY tail pass whose `srcBuf` writes matter here, and that is
+measured rather than assumed: `reflectPass` and `applySpriteRefl` were both
+counted clearing a live source **zero** times, `lampVolume` skips sources by
+construction, `wallMirror` does not touch the byte, and rain keeps its clears on
+the CPU already. With the world frozen, all six configurations from all-CPU to
+tail 63 with harvest on now agree exactly: 20,137 sources, 15,781 of them
+windows, 4,356 not.
+
 **Why the harness could not see either.** `parityOne` sets `GV.dbgRead`, which
 forces the read back to immediate - so **the deferred path is never rendered
 under test**. That is not a gap that can be closed by adding poses; the pose

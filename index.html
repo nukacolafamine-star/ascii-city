@@ -22351,7 +22351,25 @@ function drawSignPlane(sg){
       } else { base = sg.sb[1]; dens = sg.sd[1]; }
       const g = Math.round(clamp(dens * dm, 0, 1) * RMAX);
       if (!g) continue;
-      if (_sigE){ sigEmit(1, x, r, g, base, lvl, EMISSIVE[base] ? 2 : 1, t); statCells++; continue; }
+      if (_sigE){
+        sigEmit(1, x, r, g, base, lvl, EMISSIVE[base] ? 2 : 1, t); statCells++;
+        /* AND the CPU keeps its own copy. harvestEmitters is the last thing
+           reading these buffers and a sign face is a LIGHT SOURCE - at the
+           full suffix nothing reads the chain back, so without this the
+           harvest never learns the signs exist. Measured at one vantage:
+           non-window sources 3,913 -> 871, which is the shopfronts going out
+           of the light list and the street dimming as you turn.
+
+           Depth tested here even though the emit is not, because the card
+           applies the same test to the point and this copy has to agree with
+           what actually lands. */
+        if (!(dBuf[idx] < t - 0.02)){
+          gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
+          refBuf[idx] = 0;
+          srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
+        }
+        continue;
+      }
       gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
       refBuf[idx] = 0;
       srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
