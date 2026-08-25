@@ -11400,6 +11400,12 @@ function openSettingsMenu(){
           GPUV.on = m > 0; GPUV.stages = seq[m] || GPUV.max;
           if (GPUV.on && !GPUC.on) toast('gpu tail: needs gpu compose on');
         } },
+      { label: 'CITY LIGHT', value: () => !(GL && GL.lightOK) ? 'N/A' : !GPUE.on ? 'SPARSE' : 'EVERY WINDOW',
+        hint: 'every lit window, sign, stall and lamp is its own light source ' +
+              'casting a glow and a shaft through the air, instead of a few ' +
+              'hundred blocks of them averaged together. SPARSE is the old ' +
+              'list: 6x6 cells collapsed to one, windows at a fifth weight',
+        adj(){ GPUE.on = !GPUE.on; } },
       { label: 'GPU HARVEST', value: () => !(GL && GL.tailOK) ? 'N/A' : GPUH.on ? 'ON' : 'OFF',
         hint: 'stop waiting for the world to come back. with GPU TAIL fully ' +
               'on nothing reads those buffers but the emitter harvest, so ' +
@@ -19923,7 +19929,9 @@ function litUpsample(blur){
 }
 /* Collapse this frame's emissive cells into a short list of world lights. */
 function harvestEmitters(){
-  const cols = R.cols, rows = R.rows, B = LIGHTV.block;
+  const cols = R.cols, rows = R.rows;
+  const DEN = GPUE.on && GL && GL.lightOK && GPUL.on;
+  const B = DEN ? GPUE.block : LIGHTV.block;
   const bw = Math.ceil(cols / B), bh = Math.ceil(rows / B), nb = bw * bh;
   if (!EMIT || EMIT.nb !== nb){
     const cap = nb + LIGHTV.offN;             // buckets, then the off-screen lamps
@@ -19945,7 +19953,7 @@ function harvestEmitters(){
       if (!(t > 0.2) || t >= viewD) continue;
       const col = BASE[bBuf[i]];
       if (!col) continue;
-      const kw = emitKind[i] === 1 ? LIGHTV.winW : 1;
+      const kw = emitKind[i] === 1 ? (DEN ? GPUE.winW : LIGHTV.winW) : 1;
       const bi = br + ((c / B) | 0);
       E.x[bi] += (cam.x + rayX[c] * t) * kw;
       E.y[bi] += (cam.y + rayY[c] * t) * kw;
@@ -19955,7 +19963,7 @@ function harvestEmitters(){
     }
   }
   let n = 0;
-  const minW = LIGHTV.minW;
+  const minW = DEN ? GPUE.minW : LIGHTV.minW;
   for (let bi = 0; bi < nb; bi++){
     const w = E.w[bi];
     if (w < minW) continue;
@@ -19967,12 +19975,13 @@ function harvestEmitters(){
   /* Too many still, on a street that is all shopfront. Keep the biggest -
      brightness is what the eye follows, and a hundred one-window sources
      read as the ambient the fog is already doing. */
-  if (n > LIGHTV.keep){
+  if (n > (DEN ? GPUE.keep : LIGHTV.keep)){
     const w = E.w;
     const arr = Array.prototype.slice.call(E.idx, 0, n);
     arr.sort((a, b) => w[b] - w[a]);
-    for (let i = 0; i < LIGHTV.keep; i++) E.idx[i] = arr[i];
-    n = LIGHTV.keep;
+    const kp = DEN ? GPUE.keep : LIGHTV.keep;
+    for (let i = 0; i < kp; i++) E.idx[i] = arr[i];
+    n = kp;
   }
   /* Everything above came off the screen, which means everything above is in
      front of you. That is fine for a glow - you cannot see the air around a
@@ -22794,6 +22803,7 @@ uniform vec3  uCam;
 uniform vec2  uDir, uPlane;
 uniform float uProjRows, uHorizon, uViewD, uMap;
 uniform int   uNE;
+uniform float uCap;           // the emitter texture's width
 uniform vec4  uTune;          // dens, fall, gain, roof
 uniform vec4  uTune2;         // shaftK, shadowSteps, aoK, night
 
@@ -22832,7 +22842,11 @@ void main(){
   vec3 acc = vec3(0.0);
   float occ = 0.0, occW = 0.0;
 
-  for (int i = 0; i < 256; i++){
+  /* The ceiling is the texture's width now, not 256. What makes thousands of
+     sources affordable is not this bound - it is that a light whose glow this
+     ray misses is rejected in a handful of instructions, and measured, thirty
+     sources and two hundred and twenty cost the same frame. */
+  for (int i = 0; i < 4096; i++){
     if (i >= uNE) break;
     vec4 A = texelFetch(uEmit, ivec2(i, 0), 0);
     vec4 B = texelFetch(uEmit, ivec2(i, 1), 0);
@@ -22863,7 +22877,13 @@ void main(){
       float att = ew / (1.0 + d2 * 0.5);
       float sh = sSteps > 0 ? shadow(surf + vec3(0.0, 0.0, 0.05), ep, sSteps) : 1.0;
       acc += ec * att * sh * 0.06 * night;
-      occ += 1.0 - sh; occW += 1.0;
+      /* Weighted by how much this light actually reaches the surface, not one
+         vote per light. Unweighted it was fine for a hundred hand-picked
+         sources and wrong for four thousand: nearly all of them are occluded
+         from any given cell, occ/occW pinned at 1, and the ambient term went
+         to its floor everywhere - the whole street darkened by half while the
+         one shopfront in front of you blew out. */
+      occ += (1.0 - sh) * att; occW += att;
     }
   }
   // many lights add, brightness does not: roll the sum toward a ceiling
@@ -22933,7 +22953,7 @@ function glInit(){
     gl.getExtension('OES_texture_float_linear');
     G.pLight = mkProg(VS_FULL, FS_LIGHT);
     G.uL = {};
-    for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane',
+    for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane','uCap',
                      'uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2'])
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
@@ -23214,7 +23234,7 @@ function glResize(){
     if (!GL.emitT){
       GL.emitT = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, GPUL.max, 2, 0, gl.RGBA, gl.FLOAT, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, LIGHT_CAP, 2, 0, gl.RGBA, gl.FLOAT, null);
       for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
         gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
       for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
@@ -23237,9 +23257,12 @@ function glResize(){
   upload for the whole session: the heightfield, which never changes after the
   city is built and is what the shadow test reads to turn a glow into a shaft.
 ============================================================================*/
+/* The emitter texture's width and the shader's loop ceiling, in one place
+   because they have to agree. GPUE.max may not exceed it. */
+const LIGHT_CAP = 4096;
 const GPUL = {
   on:     true,
-  max:    256,    // the shader's loop is bounded; this is the hard ceiling
+  max:    256,    // the old path's ceiling; GPUE.max is the dense one
   lights: 220,    // and this is how many are actually sent
   dens:   0.30,   // optical density of the air inside a glow
   fall:   3.20,   // how fast that glow dies with distance from the source
@@ -23253,6 +23276,69 @@ const GPUL = {
    buffer. The pack path applies the CPU light buffers as it copies, and the
    compose path has no way to see them, so a frame that used them has to pack:
    _cpuLitFrame is worldPasses' honest answer to "did I write any". */
+/*===================== every window is a light ==============================
+  What the whole port was for. The light pass has always been able to do this
+  - FS_LIGHT already solves a glow sphere per source, takes the chord this
+  view ray cuts through it, shadows that chord against the city's heightfield
+  and lays it into the air - and it was never the shader that was the limit.
+  It was the LIST.
+
+  `LIGHTV.block` collapsed six cells by six into one source, `winW` counted a
+  lit window as 0.22 of a sign the same size, and `keep` threw away everything
+  past the brightest 110. Three separate ways of saying "we cannot afford
+  this", all of them written when the whole frame was 27ms of CPU rasterising.
+
+  Measured now: thirty sources and two hundred and twenty cost the same 4.6ms
+  frame. The per-light cost is in the noise, because the shader rejects a
+  light its ray misses in a few instructions and the card has thousands of
+  those to spare. So the list opens up:
+
+      block  6 -> 2     a window is its own light, not a sixth of a block
+      winW   0.22 -> 1  and it counts for what it is
+      keep   110 -> 4096
+
+  `max` is the shader's loop ceiling and the emitter texture's width, and it
+  is the one number that still has to be a number.
+============================================================================*/
+const GPUE = {
+  on:     true,
+  block:  2,      // screen cells per source. 1 is per-cell and mostly noise
+  winW:   1.0,    // a lit window is a light, not a fifth of one
+  minW:   1,      // and one cell of it is enough to be one
+  keep:   4096,
+  max:    4096,   // the hard ceiling: the loop bound and the texture width
+  /* Tuned against the light pass's own output rather than by eye - mean and
+     peak and lit fraction read straight off GL.lightF - because at four
+     thousand sources the two knobs pull in different directions and guessing
+     gets you a white blob at one end of the street and a dark tower at the
+     other. RADIUS is reach and GAIN is brightness: the first run had both
+     high and blew out the shopfront while the tower behind it went dim.
+     Wide and faint is the setting that lights everything.
+
+  And tuned against TWO vantages, not one, because they disagree: an open
+  street and a canyon of close windows want different numbers, and a setting
+  fitted to the first blows the second out. Mean light, and the fraction of
+  cells over 150 - the point where colour is lost to white:
+
+                            open street      canyon of windows
+       sparse baseline      31.3  hot 0%      12.9  hot 0%
+       gain 0.26 roof 205   62.7  hot 4.7%   108.4  hot 18.1%   blown
+       gain 0.20 roof 165   49.0  hot 0%      84.9  hot 0%      <- here
+       gain 0.13 roof 140   34.6  hot 0%      60.8  hot 0%      timid
+
+  The canyon goes from barely lit to six times lit, which is the whole point:
+  those windows were always there and were never allowed to be lights. */
+  rad:    2.80,
+  grow:   0.33,
+  gain:   0.20,
+  roof:   165,
+  shaft:  3.00,   // the air is what this was all for: lean on the chord
+  dens:   0.42,
+  /* And a gentler ambient floor. Occlusion is now weighted by how much each
+     light actually reaches the surface - see FS_LIGHT - because one vote per
+     light was fine for a hundred and wrong for four thousand. */
+  ao:     0.30
+};
 const GPUC = { on: true };
 let _cpuLitFrame = false;
 
@@ -24431,26 +24517,38 @@ function glLightPass(){
   if (!_heightUp) glUploadHeight();          // the city may post-date glInit
   const gl = GL.gl, E = EMIT;
   if (!E || !E.n) return false;
-  const n = Math.min(E.n, GPUL.lights, GPUL.max);
-  if (!_emitTex || _emitTex.length !== GPUL.max * 8) _emitTex = new Float32Array(GPUL.max * 8);
+  const DEN = GPUE.on;
+  const n = Math.min(E.n, DEN ? GPUE.max : Math.min(GPUL.lights, GPUL.max), LIGHT_CAP);
+  if (!_emitTex || _emitTex.length !== LIGHT_CAP * 8) _emitTex = new Float32Array(LIGHT_CAP * 8);
   const T = _emitTex;
+  const eRad = DEN ? GPUE.rad : LIGHTV.rad, eGrow = DEN ? GPUE.grow : LIGHTV.grow;
   for (let k = 0; k < n; k++){
-    const bi = E.idx[k], o0 = k * 4, o1 = GPUL.max * 4 + k * 4;
+    const bi = E.idx[k], o0 = k * 4, o1 = LIGHT_CAP * 4 + k * 4;
     T[o0]     = E.x[bi]; T[o0 + 1] = E.y[bi]; T[o0 + 2] = E.z[bi];
     T[o0 + 3] = Math.min(4, 0.35 + E.w[bi] * 0.10);          // weight, damped
     T[o1]     = E.r[bi] / 255; T[o1 + 1] = E.g[bi] / 255; T[o1 + 2] = E.b[bi] / 255;
-    T[o1 + 3] = LIGHTV.rad * Math.pow(Math.max(1, E.w[bi]), LIGHTV.grow) * 1.6;
+    T[o1 + 3] = eRad * Math.pow(Math.max(1, E.w[bi]), eGrow) * 1.6;
   }
   gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, GPUL.max, 2, gl.RGBA, gl.FLOAT, T);
-  gl.bindTexture(gl.TEXTURE_2D, GL.depthT);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.FLOAT, dBuf);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIGHT_CAP, 2, gl.RGBA, gl.FLOAT, T);
+  /* The depth this pass needs is already on the card whenever the tail owns
+     the frame, and taking it from there is not just one upload saved - it is
+     the difference between working and not. worldPasses clears dBuf to 1e30
+     at the top of every frame, and a deferred read that is not ready leaves
+     it cleared, so uploading it hands the shader a depth of 1e30 everywhere
+     and `depth > uViewD` rejects the whole screen. Measured: lit cells fell
+     from 93.8% to 8% on exactly those frames. */
+  const dTex = (GV.used && GV.cur) ? GV.cur.d : null;
+  if (!dTex){
+    gl.bindTexture(gl.TEXTURE_2D, GL.depthT);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.FLOAT, dBuf);
+  }
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, GL.lightF);
   gl.viewport(0, 0, R.cols, R.rows);
   gl.disable(gl.BLEND);
   gl.useProgram(GL.pLight);
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.depthT);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, dTex || GL.depthT);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, GL.heightT);
   gl.uniform1i(GL.uL.uDepth, 0); gl.uniform1i(GL.uL.uEmit, 1); gl.uniform1i(GL.uL.uHeight, 2);
@@ -24463,8 +24561,11 @@ function glLightPass(){
   gl.uniform1f(GL.uL.uViewD, viewD);
   gl.uniform1f(GL.uL.uMap, MAP);
   gl.uniform1i(GL.uL.uNE, n);
-  gl.uniform4f(GL.uL.uTune, GPUL.dens, GPUL.fall, GPUL.gain, GPUL.roof);
-  gl.uniform4f(GL.uL.uTune2, GPUL.shaft, GPUL.shadow, GPUL.ao, _lampNight);
+  gl.uniform4f(GL.uL.uTune, DEN ? GPUE.dens : GPUL.dens, GPUL.fall,
+                            DEN ? GPUE.gain : GPUL.gain, DEN ? GPUE.roof : GPUL.roof);
+  gl.uniform4f(GL.uL.uTune2, DEN ? GPUE.shaft : GPUL.shaft, GPUL.shadow,
+                             DEN ? GPUE.ao : GPUL.ao, _lampNight);
+  gl.uniform1f(GL.uL.uCap, LIGHT_CAP);
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);

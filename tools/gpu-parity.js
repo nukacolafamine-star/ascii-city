@@ -83,7 +83,7 @@ GPUT.pause = (v) => { if (GPUT._drv) GPUT._drv.paused = v; return !!(GPUT._drv &
 const PASSES = ['skyPass','ceilingPass','floorPass','wallPass','wallMirror','spritePass',
                 'signPass','reflectPass','lampVolume','rainPass','harvestEmitters','hizBuild',
                 'glWorldPass','glWorldRead','glSpritePass','applySpriteRefl','spriteReplay',
-                'glTailPass','glTailRead',
+                'glTailPass','glTailRead','glLightPass','emitBin',
                 'worldPasses'];
 GPUT.prof = () => {
   if (GPUT._prof) return GPUT._prof;

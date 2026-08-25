@@ -1083,6 +1083,68 @@ between renders, and check `gl.getError()` at each one.
 
 ---
 
+## 5e. What the port was FOR: every window is a light
+
+The optimisation was never the point. This is.
+
+`FS_LIGHT` could always do this - it solves a glow sphere per source, takes the
+chord this view ray cuts through it, shadows that chord against the city's
+heightfield and lays the result into the air. It was never the shader that was
+the limit. **It was the LIST**, and the list was three separate apologies for
+not being able to afford anything, all written when the frame was 27ms of CPU
+rasterising:
+
+```
+  LIGHTV.block  6      six cells by six collapsed into one source
+  LIGHTV.winW   0.22   a lit window counted as a fifth of a sign its size
+  LIGHTV.keep   110    and everything past the brightest hundred thrown away
+```
+
+Measured now: **thirty sources and two hundred and twenty cost the same 4.6ms
+frame.** The per-light cost is in the noise, because a light whose glow the ray
+misses is rejected in a handful of instructions. So `GPUE` opens the list up -
+block 2, windows at full weight, ceiling 4096 - and the count goes from
+**120 sources to 4,106**. Every lit window, every sign face, every stall, every
+lamp, each with its own glow and its own shaft through the air.
+
+**Two things had to be fixed for it to look like anything.**
+
+*The ambient term was voting per light.* `occ += 1 - sh; occW += 1;` is fine
+for a hundred hand-picked sources and wrong for four thousand: from any given
+cell nearly all of them are occluded, `occ/occW` pins at 1, and the ambient
+floor bottoms out everywhere. The whole street darkened by half while the one
+shopfront in front of you blew out. It is weighted by how much each light
+actually reaches the surface now.
+
+*And the tuning had to be fitted to two vantages, not one.* An open street and
+a canyon of close windows want different numbers, and a setting fitted to the
+first blows the second out. Mean light, and the fraction of cells over 150 -
+where colour is lost to white:
+
+```
+                          open street        canyon of windows
+  sparse baseline         31.3  hot 0%        12.9  hot 0%
+  gain 0.26 roof 205      62.7  hot 4.7%     108.4  hot 18.1%   blown
+  gain 0.20 roof 165      49.0  hot 0%        84.9  hot 0%      <- shipped
+  gain 0.13 roof 140      34.6  hot 0%        60.8  hot 0%      timid
+```
+
+The canyon goes from barely lit to six times lit. Those windows were always
+there; they were never allowed to be lights.
+
+**What it costs.** At the default grid, **+0.14ms** - 7.25ms against 7.39ms,
+with the port switched off entirely. At the finest grid the samples straddle
+the machine's own drift (4.68 -> 6.02 in one run, 5.12 -> 3.50 in the next), so
+call it a millisecond either way. `CITY LIGHT` in the settings menu switches
+between EVERY WINDOW and the old SPARSE list.
+
+**And it is tuned by measurement, not by eye.** Mean, peak and lit fraction
+read straight off `GL.lightF`. Two knobs that pull in opposite directions -
+radius is reach, gain is brightness - and guessing gets you a white blob at one
+end of the street and a dark tower at the other.
+
+---
+
 ## 6. Measurement traps that have already cost time
 
 - **A dead property in the harness is worth thirty times the thing you are
@@ -1187,6 +1249,13 @@ between renders, and check `gl.getError()` at each one.
   half its blocks reading `0` and a median of zero. Start long runs detached,
   park the result on `window`, and **reload the page before retrying** rather
   than layering a second run on a first that is still alive.
+- **TUNING WITH `GPUH` ON AND THE DRIVER PAUSED MEASURES NOTHING.** The fence
+  needs the card to finish work between frames; a paused driver rendering
+  synchronously never gives it the chance, so the read never lands, the harvest
+  is skipped and the light list is whatever it was. It cost three separate
+  runs of nonsense numbers - a vantage reading zero light, a sweep where the
+  emitter count never changed - before the pattern was obvious. **Turn `GPUH`
+  off to tune anything about light.**
 - **A DEFERRED READ DELAYS EVERY CONSUMER OF THOSE BUFFERS, NOT THE ONE YOU
   WERE THINKING OF.** The intent was "the light list may lag". The effect was
   that the whole composed frame lagged, because the tail was also seeding off
