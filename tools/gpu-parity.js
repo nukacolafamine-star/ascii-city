@@ -83,6 +83,7 @@ GPUT.pause = (v) => { if (GPUT._drv) GPUT._drv.paused = v; return !!(GPUT._drv &
 const PASSES = ['skyPass','ceilingPass','floorPass','wallPass','wallMirror','spritePass',
                 'signPass','reflectPass','lampVolume','rainPass','harvestEmitters','hizBuild',
                 'glWorldPass','glWorldRead','glSpritePass','applySpriteRefl','spriteReplay',
+                'glTailPass','glTailRead',
                 'worldPasses'];
 GPUT.prof = () => {
   if (GPUT._prof) return GPUT._prof;
@@ -134,6 +135,21 @@ const SWITCH = {
     // the world pass is the sprites' depth buffer; it stays on for both sides
     hold(){ const s = { on: GPUW.on, st: GPUW.stages }; GPUW.on = true; GPUW.stages = 7; return s; },
     free(s){ if (s){ GPUW.on = s.on; GPUW.stages = s.st; } }
+  },
+  /* The tail. It works off the CPU buffers whatever drew them, so unlike the
+     sprites it holds nothing on underneath - but it DOES need compose, which
+     is what carries its answer to the screen, and a run with compose off
+     would compare two frames the tail never reached. */
+  tail: {
+    set(on){ GPUV.on = on; },
+    get(){ return GPUV.on; },
+    /* Compose carries this block's answer to the screen, so a run with
+       compose off would compare two frames the tail never reached. And at the
+       full suffix the answer never comes back to the CPU at all, which is the
+       point of it - so the harness turns the trip back on for both sides and
+       the switch is still the only thing that differs. */
+    hold(){ const s = { c: GPUC.on }; GPUC.on = true; return s; },
+    free(s){ if (s) GPUC.on = s.c; }
   }
 };
 
@@ -377,14 +393,24 @@ GPUT.parityOne = (p, stages, what) => {
   what = what || 'world';
   const S = SWITCH[what];
   const wasOn = S.get(), wasSt = GPUW.stages, wasSSt = GPUS.stages, wasWet = wetLevel;
+  const wasVSt = GPUV.stages;
   const wasClock = clock, wasWx = weather;
   const held = S.hold();
+  /* The tail's whole point is that its answer never becomes a CPU buffer, and
+     snap() reads CPU buffers - so parity, and ONLY parity, forces the trip
+     back. It must not live in hold(): blockAB calls hold() as well, and a
+     readback on both sides of a timing run measures the harness. */
+  const wasDbg = GV.dbgRead;
+  if (what === 'tail') GV.dbgRead = true;
   S.set(false); runPose(p); const B = snap();
   S.set(true);
-  if (what === 'world') GPUW.stages = stages; else GPUS.stages = stages;
+  if (what === 'world') GPUW.stages = stages;
+  else if (what === 'tail') GPUV.stages = stages;
+  else GPUS.stages = stages;
   runPose(p); const A = snap();
   S.set(wasOn); S.free(held);
-  GPUW.stages = wasSt; GPUS.stages = wasSSt;
+  GV.dbgRead = wasDbg;
+  GPUW.stages = wasSt; GPUS.stages = wasSSt; GPUV.stages = wasVSt;
   wetLevel = wasWet; clock = wasClock; weather = wasWx;
   const o = diff(A, B);
   o.contentA = content(A); o.contentB = content(B);
@@ -394,7 +420,7 @@ GPUT.parityOne = (p, stages, what) => {
 
 GPUT.parity = (stages, poses, what) => {
   what = what || 'world';
-  if (stages === undefined) stages = what === 'world' ? GPUW.stages : GPUS.stages;
+  if (stages === undefined) stages = what === 'world' ? GPUW.stages : what === 'tail' ? GPUV.stages : GPUS.stages;
   poses = poses || GPUT.poses();
   GPUT.pause(true);
   try { return parityRun(stages, poses, what); }
@@ -402,15 +428,21 @@ GPUT.parity = (stages, poses, what) => {
 };
 // the sprites, with the world pass held on underneath both sides
 GPUT.parityS = (stages, poses) => GPUT.parity(stages === undefined ? 3 : stages, poses, 'sprite');
+/* The tail, with compose held on underneath both sides. stages 1 is the
+   reflections and reads its own answer back so there is something in gBuf to
+   compare - which is exactly why it is a bisect step and not a shipping one. */
+GPUT.parityV = (stages, poses) => GPUT.parity(stages === undefined ? GPUV.max : stages, poses, 'tail');
 
 const parityRun = (stages, poses, what) => {
   const S = SWITCH[what];
   const held = S.hold();
   // prove the switch switches: a flag being ignored produces perfect parity
-  const counter = () => what === 'world' ? GW.ran : GS.ran;
+  const counter = () => what === 'world' ? GW.ran : what === 'tail' ? GV.ran : GS.ran;
   const before = counter();
   S.set(true);
-  if (what === 'world') GPUW.stages = stages; else GPUS.stages = stages;
+  if (what === 'world') GPUW.stages = stages;
+  else if (what === 'tail') GPUV.stages = stages;
+  else GPUS.stages = stages;
   render();
   const onRan = counter() - before;
   S.set(false); render();
@@ -445,5 +477,5 @@ GPUT.boot = (w, h) => {
            worldOK: !!(GL && GL.worldOK), spriteOK: !!(GL && GL.spriteOK) };
 };
 
-console.log('GPUT ready: boot(), measure(ms), blockAB(ms,blocks,what), parity(stages), parityS(stages)');
+console.log('GPUT ready: boot(), measure(ms), blockAB(ms,blocks,what), parity(stages), parityS(stages), parityV(stages)');
 })();

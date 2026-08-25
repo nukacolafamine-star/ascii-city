@@ -1,7 +1,20 @@
 # ASCII CITY — GPU renderer port, handoff
 
-Rewritten after stage 3 (the sprites) landed, on branch `fog-and-hd`. Line
-numbers drift; the function names do not.
+Rewritten after stage 3 (the sprites) landed; updated again after stage 4 (the
+tail) and **stage 5, which deletes the readback**. Line numbers drift; the
+function names do not.
+
+**THE PORT IS DONE.** At 480×256 with ~300 models, whole frames, adjacent
+blocks: **56.8ms on the pure CPU path → 6.13ms with everything on. 9.3×, and
+163fps against a 180fps target**, with two of four blocks under the 5.56ms
+target outright.
+
+**What changed since stage 3, if you read this doc before:** the readback is
+20ms on a composited page and not 6, and the screenshot test for the condition
+does not work while the rig is driving (§3.4); `wallMirror` is 0.10ms and not
+2.65 (§1); the forced order is REVERSE pipeline order, not pipeline order (§5);
+and the readback is **gone** (§5a) — not by moving `harvestEmitters` but by
+making the read stop blocking, which turned out to be the cheaper question.
 
 ---
 
@@ -86,8 +99,69 @@ And the pass profile either side of it, at 122,880 cells with ~340 models:
 2×, so read the shape, not the difference — the difference is the blockAB
 above.
 
-**The one number that still decides everything: `glWorldRead` is 6.1ms and it
-is a sync, not a transfer.** It is what the port pays for existing. Sprites
+**Remeasured on a page that was actually compositing** (§3.4 — the figures
+above were all taken in the quiet condition, because no session had been able
+to get the pane to composite). Same vantage, 480×256, ~340 models, world and
+sprites on:
+
+```
+  glWorldRead     19.7 – 21.1     THE TOLL, three times what it looked like
+  lampVolume       4.77 – 4.81
+  reflectPass      2.73 – 2.92
+  harvestEmitters  0.88 – 0.91
+  spritePass       0.58           what is left of it: the draw LIST
+  signPass         0.39
+  glWorldPass      0.26
+  applySpriteRefl  0.13
+  wallMirror       0.10 – 0.12    ← NOT 2.65; see below
+  rainPass         0.05
+  ─────────────────────────
+  worldPasses     30.2 – 30.5
+```
+
+**The readback is 65% of the frame, and the whole CPU tail keeping it alive is
+9.8ms.**
+
+With stage 4 on — the reflections, the lamp beams and the rain all on the card
+and the answer handed forward to compose — the same vantage, adjacent samples:
+
+```
+                       tail off        tail on (stages 7)
+  reflectPass          2.82 – 2.90     0
+  lampVolume           4.81 – 4.86     0
+  rainPass             0.04            0
+  glTailPass           —               0.22 – 0.23   submission
+  glTailRead           —               0             it never comes back
+  harvestEmitters      0.92            0.91          untouched, as designed
+  worldPasses         30.7 – 36.5     24.9 – 25.0
+```
+
+Whole frames, alternating blocks, three adjacent samples with the blocks tight
+inside each:
+
+```
+  31.64 → 26.15    0.827
+  31.61 → 26.05    0.824
+  31.31 → 25.75    0.822       −5.5ms
+```
+
+**0.82×, and the range is real.** Seven and a half milliseconds of CPU are
+deleted and the frame improves by five and a half, because the 20ms readback
+underneath is untouched — it is still there for `harvestEmitters`. The last
+sample caught the pane dropping out of compositing mid-run (both sides fell,
+off to 18–20ms and on to 9.6–9.9ms) and the ratio in **that** condition is
+~0.51, because the readback stops masking the saving. Both are honest; the
+0.82 is what a player sees.
+
+**`wallMirror` is not 2.65ms — it is 0.10ms.** The 2.65 in the table above was
+taken somewhere this doc did not record. The pass can only write when
+`2*horizon + 2*cam.z*unitRows` falls inside the frame, which needs a steep look
+down — this doc says exactly that two sections later — and its DDA stops at the
+first thing tall enough to fill the column. So stage 5 is not "2.65 plus 0.60".
+It is **harvestEmitters, and a tenth of a millisecond of company.**
+
+**The one number that still decides everything: `glWorldRead` is a sync, not a
+transfer.** It is what the port pays for existing. Sprites
 were nearly free to move because they went on the card *between* the world's
 draw and the world's read and shared that sync. Every pass left is in the same
 position. The moment the last CPU reader of these buffers moves, the readback
@@ -242,6 +316,45 @@ shape and knows nothing about how many character cells the screen has;
 re-uploading two hundred volumes every time the window was dragged was a cost
 with nothing on the other side of it.
 
+### The tail — the reflections, and the two still to come (`GPUV`, `glTailPass`)
+
+Everything after the sprites is screen-space work over buffers the card already
+has, and it lives in one block that runs at the slot of the **first** pass the
+card owns:
+
+| thing | what it is |
+|---|---|
+| `GPUV = {on, stages, max}` | the switch. `stages` is a SUFFIX: 0, 4, 6, 7 |
+| `TAIL_ALL = 7` | the whole chain. Short of it, the answer must come back |
+| `glTailTargets()` | two three-attachment R8 targets, A and B, and one shared depth buffer |
+| `FS_TSEED` | the CPU's `gBuf`/`bBuf`/`lBuf` into A, so every pass reads a texture and writes a texture |
+| `VS_TREFL` / `FS_TREFL` | the reflections, one point per source cell |
+| `FS_TLAMP` | the lamp beams. One pass, the lamp loop INSIDE the fragment |
+| `lampCollect()` | the lamps that survive the cull, with their screen rects |
+| `VS_TRAIN` / `FS_TRAIN` | the drops, as points. The CPU still chooses them |
+| `rainCollect()` / `rainClearSrc()` | the two halves of rain, deliberately apart |
+| `tailLevels()` | levelOf's eight boundaries, bisected once off the real function |
+| `FS_TSREF` | applySpriteRefl: a gate and a copy over a target already here |
+| `VS_TSIGN` / `FS_TSIGN` | the sign faces and the wall mirror, as points |
+| `signCollect()` / `wmirCollect()` | the CPU half - all the geometry, none of the reads |
+| `GPUH` | the fence that stops the readback blocking (§5b) |
+| `glTailRead()` | the debug way back. Parity only; a full sync, all SIX buffers |
+| `GV.dbgRead` | forces that trip at the full suffix, for the harness only |
+| `GL.vCol` / `GL.vRow` | per-column and per-row constants, solved on the CPU |
+
+**`GPUV.max` and `TAIL_ALL` are deliberately different numbers.** `max` is how
+far the port has got; `TAIL_ALL` is how far it has to get before the trip back
+disappears. Confusing the two is what made the first run of this pass hand
+compose a frame with reflections but no lamp beams — the suffix test read
+`tr !== GPUV.max`, which was trivially true at `max === 1`, so the block
+skipped its own readback and published a half-finished frame.
+
+**Compose is the consumer, and that is the whole economics of stage 4.**
+`glComposeWorld` skips its three uploads and binds `GL.tailB` instead whenever
+the tail owns the end of the frame. The answer goes FORWARD. Nothing new is
+read back, which is why moving these passes costs nothing rather than costing a
+second sync.
+
 ### Already on the card from earlier work
 
 `FS_LIGHT` / `glLightPass()` / `GPUL` — per-cell lighting, with the heightfield
@@ -295,6 +408,18 @@ sits on that same tie in every pose you think you are varying.
 If you add a field to a pose, **print it back off the object it is supposed to
 have landed on** before you believe the sweep covers it.
 
+**AND THE HARNESS HAS A CONFOUND OF ITS OWN: `bBuf` AND `lBuf` ARE NEVER
+CLEARED.** A cell nobody draws keeps last frame's palette — that is deliberate,
+and §4 lists it as one of the things kept out of the float arithmetic. But
+`parityOne` renders side B first and side A second, so B inherits its stale
+cells from the PREVIOUS POSE and A inherits its own from B. Any cell neither
+side draws can therefore differ for reasons that have nothing to do with the
+switch. It stays small because a busy vantage draws 121,083 of 122,880 cells,
+which is why it has never shown up — but an ad-hoc two-render A/B that changes
+pose without settling first will read **thousands** of differing cells and
+every one of them is an artefact. Settle the pose (or compare at a fixed point
+inside the frame) before believing a number from outside `GPUT.parity`.
+
 **4. COMPOSITING CONTENDS WITH READBACK, IT IS TEN TIMES, AND THE QUIET SIDE IS
 THE WRONG SIDE.** Same build, same frame, same code:
 
@@ -314,6 +439,40 @@ It read `true` on a fronted tab in a pane that was not being displayed, and
 compositing — `computer{action:"screenshot"}` failed with *"the Browser pane is
 not displayed, so the page is not compositing frames"* in the same breath. The
 only reliable test of the condition is whether a screenshot comes back.
+
+**AND THE SCREENSHOT TEST LIES TOO, IN THE ONE CONDITION YOU NEED IT.** This
+doc used to say a screenshot coming back is the only reliable test. It is not.
+A screenshot cannot come back *while the rig is driving*: the worker posts a
+frame, the page spends 30 to 60ms rendering it, acks, and is posted another,
+and the compositor never gets a window wide enough to serve the capture. It
+times out at five seconds with that very message — **on a pane that is being
+displayed perfectly well**. Pause the driver and the same call returns a fresh
+frame instantly. So the sequence that actually tells you where you are is
+
+```js
+GPUT.pause(true);   // now screenshot — it returns, and it is current
+GPUT.pause(false);  // now measure
+```
+
+and the instrument for the condition itself is **the readback**, because the
+readback is the thing the condition acts on. `glWorldRead`, measured this
+session on a page that was demonstrably compositing:
+
+```
+game tab fronted, pane displayed        19.7 – 21.1ms
+a second tab opened in front of it      52.2 – 58.9ms   (and it stayed there)
+this doc's "quiet" figure                6.09ms
+```
+
+The CPU passes did not move a hair across any of those runs — `reflectPass`
+2.73 to 2.92, `lampVolume` 4.77 to 4.81, `harvestEmitters` 0.88 to 0.91 — so it
+is the readback alone that moves, which is what GPU and compositor contention
+look like and what CPU load does not.
+
+**The port's toll on a real player's screen is therefore 20ms, and on a bad day
+55ms, not six.** Every ratio in this document with a readback on one side and
+not the other is correspondingly *understated*, and nobody should quote 6.09 as
+the toll again.
 
 **Stage 3 was measured entirely in the quiet condition**, because the pane could
 not be made to composite from the session at all. §1 says which numbers that
@@ -338,6 +497,7 @@ it is committed.
 ```js
 GPUT.parity(7)              // the world pass, 39 poses, all seven buffers
 GPUT.parityS(3)             // the sprites, world pass held ON on both sides
+GPUT.parityV(1)             // the tail, compose held ON on both sides
 GPUT.blockAB(2200, 5, 'sprite')   // whole frames, alternating blocks
 GPUT.measure(4000)                // the per-pass profile
 ```
@@ -469,9 +629,132 @@ hit on the mirrored solid and then found no source row rounding onto its cell �
 which is what turned "543 cells missing" into the table above. A percentage on
 its own would have told you none of it.
 
+### 4a. The tail: 0.0016%, and it is two things
+
+**13 to 15 cells differ out of 4,792,320, and none of them is a surface.**
+Level, source kind, wetness, emitter kind and depth agree everywhere; only
+glyph and palette move, on 6 of the 39 poses, 2 or 3 cells each. The count
+moves between runs because the world moves — pedestrians walk into and out of
+the cells in question — and every one of them is the same cause.
+
+Held against the **shipping** combination, `GPUW` and `GPUS` on underneath both
+sides, it is **30 cells, 0.00063%, still no surfaces** — a little higher
+because the GPU world's own irreducible cells feed the reflect inputs.
+
+Every one of the 13 is **the ripple's row rounding landing on a half**. Traced
+at the worst of them: the ripple came out `−0.500003674`, so `flat + ripple` is
+`189.499996326` — **3.7e-6 from the boundary** — and the CPU rounds to 189 while
+the shader's float32 `sin`/`cos` land a hair the other side and round to 190.
+The reflection moves one row, and the two cells swap contents. It is the same
+class as the world pass's own irreducible cells and there is nothing under it.
+
+What kept it to 13 rather than thousands is the same discipline the world pass
+uses: **everything separable was solved on the CPU and uploaded.** A row's
+`kk`, the road distance it implies, its distance fade and its ripple amplitude
+are functions of the ROW alone; a column's ray and that ray's squared length
+are functions of the COLUMN alone. Both go up as small RGBA32F strips, and what
+is left in the shader is one `sqrt`, one `pow`, one `sin` and one `cos`.
+
+**It is a scatter, and it stayed one.** Stage 3 turned the sprite mirror round
+by gathering, because the reflection of a solid is that solid mirrored about
+the street and a fragment can march it. That does not transfer: the sprite
+mirror had a SOLID on the far end, a thing with a shape a ray can hit, while
+this one has a screen cell, and which source row lands on a given destination
+depends on that source's own depth. A gather would walk the whole column — 256
+taps a cell where the scatter does one. So the card scatters it: **one POINT
+per source cell**, placed by the vertex shader at the cell it reflects into and
+moved off-screen when it reflects nowhere. The CPU's inner loop runs upward and
+its last write wins, which is a priority — and **a depth test with the source
+row as the depth and GREATER as the comparison is that rule exactly, in fixed
+function, for nothing.**
+
+Cost: `reflectPass` 2.83–2.92ms of CPU becomes `glTailPass` **0.18–0.19ms of
+submission**, adjacent samples, on a composited page.
+
+### 4b. The lamp beams, and why the loop went inside the fragment
+
+**24 cells over 39 poses at `stages 6`, 0.0005%.** The whole tail at `stages 7`
+is **75 cells, 0.00157%, of which 2 are surfaces** — and the bisect is
+additive: on one pose, 7 cells to the reflections and 4 to the beams, 11 to
+both, with no interaction between them.
+
+Every beam cell is **a `Math.round` in the resolve landing on a boundary**.
+Traced, the ten lift-branch cells came out with `tau × lift × RMAX` sitting
+0.0006 to 0.022 from a half-integer, and the one palette difference was
+`2 + floor(tau × (LAMP_STEPS−2))` on the rung boundary instead. GLSL `pow` and
+`Math.pow` differ in the last bits and the resolve truncates four separate
+times off the back of them. There is nothing under that short of taking the
+pass off the card again.
+
+**The lamp loop is inside the fragment, and that is the whole design.** The
+obvious port is one quad per lamp with blending — additive for the sum, MAX for
+the strongest cone. It does not work: the resolve needs the WINNER'S ramp and
+the WINNER'S depth, and a componentwise MAX over RGBA decouples them, taking
+the largest tau from one lamp and the largest ramp index from another. Packing
+tau and its payload into one float so a single MAX carries the pair is the
+usual dodge, and every payload bit is a bit off tau — which is exactly what
+those four truncations are reading. (Reasoned, not measured. If someone wants
+to try it, that is the thing to measure.)
+
+So `vMax`, `vSum`, `vCol` and `vDep` stop being four screen-sized arrays and
+become four registers, the winner never survives a blend, and the resolve
+happens in the same shader while they are all still in scope. What it costs is
+the lamp loop per cell — which is why **the CPU still does the culling.** Its
+outer loop was never the expense: 1,794 lamps in the city, **48 in frame**, and
+the 4.8ms is the double loop underneath. `lampCollect()` hands over the
+survivors with the screen rect it already worked out, and the fragment tests
+that rect before it solves anything.
+
+`levelOf` does not go in the shader. It is a truncation of a `pow`, so its
+eight boundaries are found once by **bisecting the real function** — not by
+inverting it — and ridden in as thresholds, for the same reason the world pass
+keeps its fog level on a CPU-solved table.
+
+### 4c. The rain, and the half of it that stayed
+
+Rain costs 0.05ms and its cell list depends on nothing but `worldTime`, so
+**none of its arithmetic moved — only its writes did.** The CPU goes on
+choosing the drops exactly as it did and hands the card the ~1,400 points;
+`gl_VertexID` reads them out of a texture and the fragment writes glyph,
+palette and level. Drawn with no depth test, in the CPU's own order, because
+primitive order *is* "last write wins".
+
+Two reasons the arithmetic stayed. `hash3` is `Math.imul`, which is exact in
+GLSL — but the divide by 2³² that turns it into a float is not, since
+`float(uint)` rounds at 24 bits, and a drop one row out is a drop in the wrong
+place for nothing gained. And the CPU half keeps its own `srcBuf` clears, which
+is what holds `harvestEmitters` byte-identical: **measured, `srcBuf` differs in
+0 cells** with the whole tail on.
+
+`rainCollect()` and `rainClearSrc()` are deliberately separate calls. The beam
+pass reads `srcBuf` to know what not to wash out, and on the CPU rain runs
+*after* the beam — so the list is built before the upload and the clears are
+applied at rain's own slot afterwards. Fused, a raindrop would silently
+un-mark a source the beam was supposed to spare.
+
+```js
+GPUT.parityV(7)     // the whole tail, compose held on for both sides
+GPUT.parityV(6)     // the beams and rain
+GPUT.parityV(1)     // the reflections
+```
+
+Anything short of `stages === 7` is a **bisect** step, not a shipping mode: it
+reads its own answer back so there is something in `gBuf` to compare, which is
+a full sync and measures *slower* than leaving the switch off (`worldPasses`
+30.4 → 43.8ms at `stages 1`, of which 17.0 is the deliberate `glTailRead`). At
+the full suffix the trip back is gone — `glTailRead` measures **0** — and the
+answer goes forward into compose.
+
+Which leaves the harness a problem: it compares CPU buffers, and the point of
+the full suffix is that the answer never becomes one. So **`GV.dbgRead` forces
+the trip back, and it is set by `parityOne` and nowhere else.** It was in the
+tail switch's `hold()` at first, which was wrong: `blockAB` calls `hold()` too,
+and a readback on both sides of a timing run measures the harness rather than
+the change.
+
 ---
 
-## 5. What is left
+## 5. Stage 5, and what is left after it
 
 `worldPasses()` order:
 
@@ -480,30 +763,221 @@ skyPass / ceilingPass → floorPass → wallPass → spritePass
   → signPass → reflectPass → lampVolume → rainPass → harvestEmitters
 ```
 
-The first four are done. What remains, on the same afternoon:
+The first four are done, and so is the whole tail — reflections, beams and
+rain (§4a–4c). What remains:
 
 ```
-glWorldRead     6.09     ← the toll, and the prize
-lampVolume      4.78
-wallMirror      2.65
-reflectPass     2.35
-harvestEmitters 0.60
-signPass        0.40
-spritePass      0.59     ← what is left of it: the draw LIST, on the CPU
-applySpriteRefl 0.14
+glWorldRead     19.7 – 22.1   ← the toll, and the prize
+harvestEmitters  0.88 – 0.94  ← THE LAST CPU READER OF THESE BUFFERS
+spritePass       0.58         ← what is left of it: the draw LIST, on the CPU
+signPass         0.39
+applySpriteRefl  0.13
+wallMirror       0.10 – 0.12
 ```
 
-**Stage 4 — signs, reflections, the lamp volume, rain.** All screen-space passes
-over data that is by now already on the card and does not need to come back for
-them. `reflectPass` is pure screen-space and reads only
-`gBuf/bBuf/srcBuf/refBuf`. `lampVolume` is the biggest of them.
+### 5a. Stage 5: the readback, deleted
 
-**Then `wallMirror` and `harvestEmitters` are the last two CPU readers.** Kill
-those and `glWorldRead` loses its reason to exist, and the six milliseconds go
-with it. `wallMirror` is a scatter of the same shape the sprite mirror was, and
-stage 3 is the worked example of how to turn one round: it is the wall mirrored
-about the street, gathered per cell below the horizon, into its own target,
-applied afterwards under the same wetness gate.
+Four CPU passes still read the world's buffers, and between them they held a
+20-to-63ms sync open. **None of their geometry moved.** What held the readback
+open was never what they COST - `wallMirror` 0.10ms, `applySpriteRefl` 0.12,
+`signPass` 0.47 - it was two QUESTIONS they had to ask of a buffer they could
+not otherwise see:
+
+- `reflects(j)` — is this cell still water? That is `refBuf`, and the card can
+  gate on it in a fragment shader.
+- `dBuf[idx] < t - 0.02` — is something already nearer? That is a depth test,
+  and the card does it in fixed function.
+
+So `wallMirror` and `drawSignPlane` keep every line of their arithmetic — the
+DDA, the facade material, the sign's border ring and bezel and ink — and gained
+an **emit mode**: instead of writing a cell they hand over a POINT, and the
+card decides which survive. The seed pass writes the world's distances into the
+depth buffer, so the sign points test against it without anyone reading `dBuf`.
+`applySpriteRefl` moved outright, being a gate and a copy over a target that
+was already a texture.
+
+It costs the CPU a little MORE than before — `signPass` measured 0.47ms and now
+0.49 to 0.79, because it can no longer skip an occluded cell early: it does not
+know what is occluded, and emits ~10,000 points where 7,700 survive. That is
+the right trade by two orders of magnitude.
+
+**The chain state became six buffers, not three.** `signPass` writes a source
+kind, a wetness byte and a distance as well as a glyph, and `reflectPass` reads
+all three back off it. Carrying only the visible three is what made the first
+sign run report 74,000 differing "surface" cells — the harness was holding the
+GPU's glyphs against the CPU's un-signed `srcBuf`. That was the debug readback
+being wrong, not the shader.
+
+### 5b. And the readback itself: not moved, unblocked
+
+`harvestEmitters` is the last reader and it does not port cleanly. It is a
+REDUCTION - 3,440 buckets summed off the screen, filtered, then **the biggest
+110 kept** - and that clamp binds hard: 448 to 835 buckets pass the weight
+floor at a busy vantage and 110 survive. Top-110-of-3,440 on a card with no
+compute shaders is a prefix-sum and a threshold search, several passes, and
+still not byte-exact against a CPU sort.
+
+So the question changed. With the whole tail on the card, **harvest is the only
+thing left that reads those buffers at all** - and what it builds is a light
+LIST: a few hundred bucket averages of emitters that barely move, spent as a
+soft glow. It does not need this frame's answer.
+
+Deferring by one frame is **not** enough on its own, and that is worth knowing:
+measured, it took 21.9ms down to only 15.1ms, because the CPU runs further
+ahead of the card than a single frame. The answer is not "wait a frame", it is
+**never wait**. Each read is issued into one of three pack-buffer sets and
+carries a `fenceSync`; the fence is polled with `clientWaitSync(…, 0, 0)` and
+the collect happens on whichever frame it comes back signalled. If it is not
+ready the harvest keeps the list it had.
+
+```
+  glWorldRead   21.9ms  →  15.1ms  deferred one frame
+                        →   0.79ms fenced   (0.19 sync + 0.60 unpack)
+  worldPasses   ~25ms   →   4.16ms
+```
+
+**What it costs, measured, because it is the one thing in this port that is not
+parity.** Driving a brisk turn-and-walk (0.22 tiles and 0.03 radians a frame),
+a list one frame late sits **0.35 world tiles** from the fresh one with colours
+within a quarter of one 0-255 channel; two frames late, 0.57 tiles. And 29 of
+120 buckets change identity frame to frame even when the list IS fresh, because
+buckets enter and leave frame as you turn - so the lag adds about as much as
+the natural churn already does. The fence misses roughly half of frames, so the
+list refreshes every other frame.
+
+**The pose parity cannot see this and never will**, by construction: it
+compares CPU buffers and the light list is not one of them. Stated here rather
+than buried, because it is the single approximation in the whole port.
+
+### 5c. What it all measures
+
+```
+                                        ms/frame    fps
+  all five GPU switches OFF (pure CPU)    56.8      17.6
+  compose + lighting only (the start)     34.3      29.2
+  EVERYTHING ON                            6.13    163.1
+       blocks: 6.13  5.48  7.27  5.31
+  the target                               5.56    180
+```
+
+**9.3× against the pure CPU path and 5.6× against where this doc started.** The
+median misses 180fps; two of the four blocks beat it. The measured ceiling in
+§5d predicted 3.2-3.7ms and the real thing lands at 6.13 - the difference is
+that the ceiling probe had stale buffers making `harvestEmitters` cheaper than
+it is, and that `signPass` costs more in emit mode than it did.
+
+Parity across the whole chain, 39 poses, `GPUW` and `GPUS` held on both sides:
+**71 to 78 cells in 4,792,320 - 0.0015% - of which 2 are surfaces, and source
+kind, wetness and depth are byte-identical everywhere (s=0, r=0, d=0).** Every
+grid in `CFG.CELLW` sweeps clean with the camera moving, and auto-res holds at
+true defaults over 954 frames.
+
+**They still default OFF, and that is now a decision rather than a necessity.**
+The reasons to leave them off for the moment: the light-list lag above is a
+fidelity call somebody other than the harness should look at; this is one
+machine and one driver; and `clientWaitSync` behaviour is the kind of thing
+that varies. Turning them on is a menu away and the auto-res guard no longer
+holds the grid when the read is unblocked.
+
+### 5d. The ceiling probe, for the record
+
+
+
+Stub `glWorldRead` entirely — no `readPixels`, no `getBufferSubData`, no unpack,
+which is exactly what stage 5 leaves behind — and let every downstream CPU pass
+go on running at its real cost. Four rounds, adjacent blocks, 480×256, ~310
+models, everything else on:
+
+```
+  all five GPU switches OFF (pure CPU)          44.2ms     22.6 fps
+  compose + lighting only (the doc's start)     27.4ms     36.5 fps
+  everything on, readback at 63ms               67.7ms     14.8 fps
+  everything on, readback DELETED                3.19ms   313    fps
+                                                 3.15 3.15 3.19 3.25
+  the target                                     5.56ms   180    fps
+```
+
+**3.19ms against a 5.56ms target.** The whole remaining gap to 180fps is the
+readback and nothing else. Where that 3.19 goes (nested passes not double
+counted):
+
+```
+  glSpritePass     0.547   submission, and it contains spritePass 0.505
+  signPass         0.466   CPU
+  harvestEmitters  0.395   CPU  (0.92 on live buffers - see the caveat)
+  glWorldPass      0.237   submission
+  glTailPass       0.217   submission
+  applySpriteRefl  0.122   CPU
+  wallMirror       0.101   CPU
+  ──────────────
+  worldPasses      2.31    + ~0.9 of present, HUD and simulate
+```
+
+**Caveat, stated because §6 says a stub changes control flow and not just
+cost:** with nothing read back the buffers go stale, and `harvestEmitters`
+reads 0.395ms here against 0.92ms on live data — it finds fewer sources to
+bucket. Add that back and the honest ceiling is **~3.7ms, ~270fps**. Either
+figure clears 5.56ms with room to spare.
+
+**Nothing is left holding the readback open.** What remains, if anyone wants it:
+
+- **`harvestEmitters` on the card for real** (a reduction plus a top-110), which
+  would remove the one approximation in §5b. It is several passes and still not
+  byte-exact against a CPU sort; the fence made it unnecessary rather than easy.
+- **The tail still UPLOADS its inputs** from CPU buffers that came off the card
+  in the first place. Wiring it to read the world pass's attachments directly
+  would delete six `texSubImage2D` calls a frame and the unpack loop with them
+  - 0.60ms of the 0.79 that `glWorldRead` still costs.
+- **`spritePass` 0.5-1.0ms** is the draw LIST, built on the CPU inside
+  `glSpritePass`. It reads nothing that comes back, so it never blocked
+  anything; it is simply the largest CPU item left.
+- **Then `_cpuLitFrame`**, and the CPU light path can go, which makes compose
+  unconditional.
+
+
+
+### The order is forced, and it is REVERSE pipeline order
+
+This doc used to read the forced order as pipeline order — signs, then
+reflections, then the lamp volume, then rain, then the two stragglers — on the
+grounds that every remaining pass is "nearly free to move and worth nothing on
+its own". **That is the wrong way round, and taking it costs a second sync.**
+
+A ported pass has to get its answer to the screen. Compose is the only thing
+downstream of these passes and compose reads TEXTURES, so:
+
+- a pass whose output flows **forward** into compose costs nothing to move;
+- a pass with a CPU pass still **behind** it has to hand its buffers back, and
+  a hand-back is a whole second readback on top of the first.
+
+`lampVolume` reads `gBuf`. `rainPass` writes it. So porting `reflectPass` on
+its own — the pipeline-order move, and the one this doc recommended — leaves
+`lampVolume` reading a `gBuf` with no reflections in it and forces the answer
+back across the bus. **The chain has to be eaten from the tail end forwards**,
+which is why `GPUV.stages` is a suffix (0, 4, 6, 7) and not a mask you may pick
+from.
+
+**And the reflections cannot dodge it by going earlier instead.** The obvious
+alternative is to run them between the world's draw and the world's read, the
+way the sprites got in for 0.04ms. Measured: **18.7% of every reflection in a
+wet downtown frame is a sign being mirrored**, and `signPass` is a CPU pass
+that runs *after* the read. A gather placed before the read loses a fifth of
+them silently.
+
+**What the harvest sees**, measured over four busy vantages, because it is the
+only CPU reader left behind these passes:
+
+```
+reflectPass clearing a live srcBuf cell     0 of 25,969   never happens
+lampVolume writing bBuf at a source         0             it skips them
+rainPass clearing srcBuf                    220 – 678 cells, 31 – 269 emitters
+```
+
+So reflections and lamp beams are free of the harvest entirely, and only rain
+touches it. Rain's cell list depends on nothing but `worldTime`, so the CPU
+goes on computing rain for a twentieth of a millisecond, keeps its own `srcBuf`
+clears, and hands the card the ~1,400 points to draw — and the harvest stays
+byte-identical for nothing.
 
 **Then reconsider `_cpuLitFrame`** and delete the CPU light path, which makes
 compose unconditional.
@@ -603,6 +1077,49 @@ between renders, and check `gl.getError()` at each one.
   shader samples the depth attachment in its mirror branch, so the direct draw
   binds something else to that unit and the mirror draw, which targets its own
   framebuffer, swaps it in.
+- **A DEPTH CLEAR IS MASKED BY `depthMask`, EXACTLY AS A DRAW IS.**
+  `clearBufferfv(gl.DEPTH, …)` with depth writes disabled is a silent no-op:
+  the buffer keeps the 1.0 it was born with, every fragment fails a `GREATER`
+  test, and the pass emits **a perfect copy of its own input with no GL error
+  to show for it**. That is the worst possible failure signature — the reflect
+  scatter drew nothing at all and the frame still looked plausible, because the
+  seed had already put the unreflected world in the target. `depthMask(true)`
+  goes BEFORE the clear, not after.
+- **`PACK_ALIGNMENT` is the twin of `UNPACK_ALIGNMENT`, and it bites the same
+  way.** `readPixels` pads each row to `PACK_ALIGNMENT`, which is **4** by
+  default — so reading a one-byte-per-texel attachment of width `cols` into an
+  array of exactly `cols × rows` bytes is rejected outright at every grid whose
+  column count is not a multiple of four. 75, 90, 110, 130 and 205 all are not,
+  and all five threw `INVALID_OPERATION` and rendered ~96% wrong while 60, 160,
+  240, 288, 360 and 480 were byte-perfect. It is now set to 1 once in `glInit`
+  beside its twin, and nothing puts it back. **The `CFG.CELLW` sweep in §5 is
+  what caught it, on the first run, exactly as advertised — run it.**
+- **A TIMED-OUT TOOL CALL DOES NOT STOP THE PAGE.** `javascript_exec` gives up
+  at 30 seconds; the promise it started keeps running. A `blockAB` series is
+  66 seconds, so the call times out, and the next attempt starts a SECOND
+  series — and both of them wrap and restore `window.frame`. One restores the
+  other's wrapper, that side stops accumulating, and the run comes back with
+  half its blocks reading `0` and a median of zero. Start long runs detached,
+  park the result on `window`, and **reload the page before retrying** rather
+  than layering a second run on a first that is still alive.
+- **A DEFERRED READBACK IS NOT AN UNBLOCKED ONE.** Issuing into one pack
+  buffer and collecting the other a frame later took `glWorldRead` from 21.9ms
+  to 15.1ms and no further, because the CPU runs further ahead of the card than
+  one frame. `fenceSync` + `clientWaitSync(…, 0, 0)` took the same call to
+  0.19ms. If you are deferring a read and it is still expensive, you have not
+  deferred it enough - and no fixed number of frames is enough, which is what
+  the fence is for.
+- **An MRT fragment shader writes the outputs it does not assign.** They get
+  whatever was in the register. A pass with only a glyph and a palette to give
+  has to switch the other attachments off with `drawBuffers`, not leave them
+  politely alone.
+- **`precision highp int;` in BOTH stages, or a shared `uniform int` will not
+  LINK.** Vertex shaders default int to highp and fragment shaders to mediump,
+  and the error - "Precisions of uniform 'uKind' differ" - arrives at link
+  time, long after both halves compiled cleanly on their own.
+- **The backtick trap fired again** (§ below), this time in a comment added to
+  a shader while fixing the precision error above. `node tools/syntax-check.mjs`
+  caught it in two seconds. Run it after EVERY edit; that is what it is for.
 - **Use `gl.finish()` around anything GPU-side**, or you are timing command
   submission.
 - **A backtick inside a comment inside a GLSL template literal** closes the
@@ -656,6 +1173,12 @@ floor-heavy) · `580,640` · `460,370`.
 the world-pass block in `index.html` from scratchpad sources. Those sources are
 not in the repo; `FS_SPRITE` was written in place and does not need them.
 
-State: branch `fog-and-hd`. `main` deploys to GitHub Pages at
-https://nukacolafamine-star.github.io/ascii-city/ — this branch is **not**
-merged there.
+State: **`fog-and-hd` is merged into `main` and pushed** — stages 1 to 3 are
+live on GitHub Pages at https://nukacolafamine-star.github.io/ascii-city/ .
+That is safe, because `GPUW`, `GPUS` and `GPUV` all default OFF and the CPU
+path is untouched, but it is no longer true that this work is unpublished and
+the line that said so has been removed. **Stage 4 (all of it) is in the working
+tree and not committed:** `index.html` also carries unrelated content work (menus,
+touch UI, quest logs, minimap), and the two are interleaved closely enough that
+`git apply` cannot separate them — the GPU hunks share context with the content
+ones. Splitting them is a judgement call for whoever owns the content work.

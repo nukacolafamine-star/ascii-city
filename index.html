@@ -7480,31 +7480,53 @@ function moveCam(dx, dy){                     // slide along whichever axis is f
 const keys = Object.create(null);
 addEventListener('keydown', e => {
   audioUnlock();                                        // any gesture arms sound
+  /* ESC is not a key like the others. It is the one gesture that means "out
+     of here", it has a length that means two different things, and what it
+     lands on depends on what is open - so it is routed centrally, and neither
+     the road it arrived down nor key repeat can change what it means. */
+  if (e.code === 'Escape'){
+    e.preventDefault();
+    if (e.repeat) escRepeatKey(); else escBegin(true);
+    return;
+  }
+  // a key pressed with the city in front of you is a gesture the browser will
+  // honour, so it is the cheapest moment to take back a lock that an alt-tab
+  // or a refused request left lying somewhere - and to ask for the full screen
+  // that stops the browser taking it in the first place
+  if (wantPointer() && document.pointerLockElement !== view) grabPointer();
   if (e.repeat && e.code === 'Backquote') return;       // held tilde must not toggle
   if (!e.repeat || modeStack.length) onPress(e.code, e.key);  // menus want key repeat
   keys[e.code] = 1;
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].indexOf(e.code) >= 0) e.preventDefault();
 });
-addEventListener('keyup', e => { keys[e.code] = 0; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
+addEventListener('keyup', e => {
+  keys[e.code] = 0;
+  if (e.code === 'Escape') escEnd();          // the press is over, and how long it was
+});
+addEventListener('blur', () => { for (const k in keys) keys[k] = 0; escCancel(); });
 function onCanvasClick(e){
   // a FINGER's taps belong to the touch layer; a mouse still needs this, or
   // on a hybrid it can never take the pointer lock and so can never attack
   if (TOUCH.on && lastPointerTouch) return;
   audioUnlock();
   const m = topMode();
-  if (m && m.name === 'map' && e && e.target && !document.pointerLockElement){
-    // the cursor is visible, so the click means a place
-    const r = e.target.getBoundingClientRect();
-    const px = (e.clientX - r.left) * (e.target.width / r.width);
-    const py = (e.clientY - r.top) * (e.target.height / r.height);
-    m.tap(((px - R.ox) / R.cellW) | 0, ((py - R.oy) / R.cellH) | 0);
-    return;
+  if (m && m.name === 'map'){
+    // the chart is the one card that ever wanted a cursor. Under the lock
+    // there is none to read, so a click means the crosshair it is already
+    // centred on; loose - on a hybrid, or after an ESC - it means a place
+    if (document.pointerLockElement === view){ m.onKey('Enter'); return; }
+    if (e && e.target){
+      const r = e.target.getBoundingClientRect();
+      const px = (e.clientX - r.left) * (e.target.width / r.width);
+      const py = (e.clientY - r.top) * (e.target.height / r.height);
+      m.tap(((px - R.ox) / R.cellW) | 0, ((py - R.oy) / R.cellH) | 0);
+      return;
+    }
   }
-  if (m && m.name === 'pause') modeStack.length = 0;    // click through the pause card
-  lockTries = 0;                             // a click is a fresh gesture
-  try { window.focus(); } catch (e){}        // and it claims the keyboard back
-  if (!document.pointerLockElement && !topMode()) tryPointerLock();
+  // clicking the pause card is what resuming from it means; clicking the city
+  // behind any other card just takes the mouse back and leaves the card up
+  if (m && m.name === 'pause'){ closeMenus(); return; }
+  grabPointer();                             // a click is a fresh gesture
 }
 cv.addEventListener('click', onCanvasClick);
 glv.addEventListener('click', onCanvasClick);
@@ -7531,10 +7553,16 @@ addEventListener('contextmenu', e => {
   if (document.pointerLockElement === view || TOUCH.on) e.preventDefault();
 });
 addEventListener('mousemove', e => {
-  if (document.pointerLockElement === view && !topMode()){
+  if (document.pointerLockElement !== view) return;
+  const m = topMode();
+  if (!m){
     cam.ang += e.movementX * 0.0026;
     aimBy(-e.movementY * 0.10);
+    return;
   }
+  // a card keeps the mouse now instead of handing it back, so the one card
+  // that ever had a use for it keeps that use: the chart slides under it
+  if (m.name === 'map' && m.drag) m.drag(-e.movementX, -e.movementY);
 });
 function onPress(code, key){
   const m = topMode();                          // an open mode owns the keyboard
@@ -7547,7 +7575,7 @@ function onPress(code, key){
   }
   switch (code){
     case 'Backquote': openDevConsole(); break;
-    case 'Escape': openPauseMenu(); break;
+    case 'Escape': escAct(); break;          // both roads meet in there
     case 'Space':
       if (sitting){ standUp(); break; }
       // on the deck: rolling or grinding it is an ollie, stopped at
@@ -8333,60 +8361,202 @@ function endGrind(clean){
 ============================================================================*/
 const modeStack = [];
 function topMode(){ return modeStack.length ? modeStack[modeStack.length - 1] : null; }
-/* Mouselook holds the pointer; a menu needs it back. Talking to somebody or
-   opening a shop used to leave the lock on, which is why the map's
-   click-to-mark did nothing while a menu was up, and why pressing ESC in a
-   dialog seemed to do nothing at all - the browser was eating that ESC to
-   release the lock, the dialog stayed open, and by the time you got out of
-   it mouselook was gone with no way back but a click on the canvas.
+/*--------------------------- who owns the pointer ---------------------------
+   One rule holds this section up: while you are in the city the game owns the
+   mouse, and the only thing that hands it back is ESC HELD DOWN on the pause
+   card. A menu, the inventory, a shop, a conversation, the chart - none of
+   them cost you the pointer, and neither does a tap of ESC on any of them, so
+   backing out of one drops you straight into mouselook instead of into a
+   loose cursor you then have to spend a click on the canvas to put away
+   again. Letting go is a thing you say deliberately, the way the browser
+   makes you hold ESC to leave full screen. See "ESC is a press" below.
 
-   So: leaving play hands the pointer back, and returning to play takes it
-   again. Every menu, dialog, shop and scene closes through popMode, and
-   RESUME closes through closeMenus, so both ends are covered by these two. */
+   The browser makes that harder than it sounds. ESC under pointer lock is
+   normally eaten where it lands: the browser releases the lock and the key
+   never reaches the page at all, and Chrome then refuses to re-lock for about
+   a second afterwards. So ESC arrives down two roads - a real keydown, and a
+   pointerlockchange nobody asked for - and both begin the SAME press, whose
+   length then decides what it meant. A tap ends with the pointer asked for
+   again, repeatedly, across that cooldown.
+
+   Full screen removes the problem outright: keyboard lock hands the page the
+   ESC key itself and the lock is never dropped, so a tap costs nothing at all
+   and the hold is the only thing that exits. That is what FULLSCREEN in the
+   settings buys. Everywhere else the release road covers the same ground, one
+   re-lock behind. */
+let lockLetGo = false;                 // we let go on purpose; do not chase it
+let lockPumpT = 0, lockPumpEnd = 0;
+function haveFocus(){
+  return !document.hidden && (!document.hasFocus || document.hasFocus());
+}
+function wantPointer(){                // is the pointer ours to be holding?
+  return !TOUCH.on && !lockLetGo && !escDown && haveFocus();
+}
+// Asking before the player has touched the page at all is refused by every
+// browser and logged by some, and the first-run dialog opens on a timer.
+function userEngaged(){
+  const ua = navigator.userActivation;
+  return ua ? !!ua.hasBeenActive : true;
+}
+function tryPointerLock(){
+  if (TOUCH.on) return;                      // no mouse to capture on glass
+  if (!userEngaged()) return;
+  // Taking it back mid-press would only hand the rest of the press to the
+  // browser to eat, which is how a held ESC used to read as press after press
+  if (escDown) return;
+  if (document.pointerLockElement === view) return;
+  try {
+    const p = view.requestPointerLock && view.requestPointerLock();
+    if (p && p.catch) p.catch(() => {});     // refused: the pump asks again
+  } catch (e){}
+}
+/* A refusal is normal and temporary - the browser holds the lock shut for
+   about a second after an ESC exit - so one ask is never enough. Ask fast at
+   first, so the pointer comes back the instant that second is up rather than
+   a quarter-second later, then back off so a context that will never grant it
+   is not hammered. And keep asking for the whole window even after one
+   succeeds, because the release that ESC caused can still be in flight behind
+   the request that beat it there. */
+function pumpPointerLock(ms){
+  lockPumpEnd = Math.max(lockPumpEnd, performance.now() + (ms || 3000));
+  if (lockPumpT) return;
+  let gap = 50;
+  const tick = () => {
+    lockPumpT = 0;
+    if (performance.now() >= lockPumpEnd) return;
+    if (!wantPointer()) return;
+    if (document.pointerLockElement !== view){
+      tryPointerLock();
+      gap = Math.min(400, gap * 1.35);
+    } else gap = 250;
+    lockPumpT = setTimeout(tick, gap);
+  };
+  tick();
+}
+function grabPointer(){                // the game wants it back, and keeps it
+  lockLetGo = false;
+  // keys are listened for on the window, so the window has to be the one
+  // holding the keyboard - in a frame that is not a given
+  try { window.focus(); } catch (e){}
+  if (TOUCH.on) return;
+  maybeFullscreen();                   // where it is offered, this is the real fix
+  tryPointerLock();
+  pumpPointerLock(3000);
+}
+function freePointer(){                // the one place in the game that lets go
+  if (TOUCH.on) return;                // nothing was captured; nothing to give back
+  lockLetGo = true;
+  lockPumpEnd = 0;
+  if (lockPumpT){ clearTimeout(lockPumpT); lockPumpT = 0; }
+  if (document.pointerLockElement){ try { document.exitPointerLock(); } catch (e){} }
+}
+/*------------------------ ESC is a press, not an event ----------------------
+   A TAP closes whatever is open, or raises the pause card when nothing is,
+   and it never costs you the mouse. Only a HELD ESC does that, and only with
+   the pause card in front of you - the same bargain the browser strikes for
+   leaving full screen, and for the same reason: letting go should take saying
+   so, twice.
+
+   Key repeat is not a second press. Every action below fires once per
+   physical press, which is what stops a leaned-on ESC from flapping the pause
+   card open and shut three times a second.
+
+   The pause card is the one place where the press has to WAIT for the release
+   before acting on it: popping the card on the way down would leave the hold
+   with nothing left to let go of. Everywhere else the tap acts at once and
+   the hold, finding no pause card, does nothing at all. */
+const ESC_HOLD = 750;                  // ms a press must last to mean "let go"
+let escDown = false;                   // a press is live right now
+let escDownT = 0, escRepT = -1e9, escEndT = -1e9;
+let escSawKey = false;                 // we got the real keydown, so keyup is coming
+let escSpent = false;                  // this press already went out as a hold
+let escWaiting = false;                // the pause card, waiting on the release
+let escHoldT = 0, escFallT = 0;
+function escAct(){
+  const m = topMode();
+  // the card itself decides what backing out of it means: the chart's search
+  // box clears instead of closing, a conversation walks away mid-sentence,
+  // a list menu pops one level and no further
+  if (m){ if (m.onKey) m.onKey('Escape'); return; }
+  openPauseMenu();
+}
+/* Two roads reach here for one press - the keydown, and the pointer-lock
+   release the browser makes of it when it eats that keydown - so the first
+   one to arrive owns the press and the other is absorbed. */
+function escBegin(sawKey){
+  if (escDown){ if (sawKey) escSawKey = true; return; }
+  if (performance.now() - escEndT < 40) return;
+  escDown = true; escDownT = performance.now(); escSawKey = !!sawKey;
+  escSpent = false; escRepT = -1e9;
+  const m = topMode();
+  escWaiting = !!(m && m.name === 'pause');
+  if (!escWaiting) escAct();
+  clearTimeout(escHoldT); escHoldT = setTimeout(escHoldCheck, ESC_HOLD);
+  clearTimeout(escFallT); escFallT = setTimeout(escFallback, ESC_HOLD + 350);
+}
+function escRepeatKey(){               // proof, arriving every few ms, that it is still down
+  if (!escDown) return;
+  escRepT = performance.now();
+  escHoldCheck();
+}
+function escHoldCheck(){
+  if (!escDown || escSpent) return;
+  if (performance.now() - escDownT < ESC_HOLD) return;
+  /* A press we never saw the keydown for is a press whose keyup may never
+     arrive either, and a hold fired off a timer that nothing can cancel would
+     take the mouse away from a tap. Such a press has to prove it is still
+     down, and key repeat is the proof. */
+  if (!escSawKey && performance.now() - escRepT > 700) return;
+  const m = topMode();
+  if (!(m && m.name === 'pause')) return;   // held anywhere else means nothing
+  escSpent = true; escWaiting = false;
+  freePointer();
+  toast('mouse released - click the city to take it back');
+}
+// the release we never heard: resolve the press on the clock instead
+function escFallback(){
+  escFallT = 0;
+  if (!escDown) return;
+  if (performance.now() - escRepT < 700){    // still hearing it: wait it out
+    escFallT = setTimeout(escFallback, 400);
+    return;
+  }
+  escEnd();
+}
+function escEnd(){
+  if (!escDown) return;
+  clearTimeout(escHoldT); escHoldT = 0;
+  clearTimeout(escFallT); escFallT = 0;
+  escDown = false; escEndT = performance.now();
+  if (escWaiting && !escSpent) escAct();     // a tap after all: close the card
+  escWaiting = false;
+  if (!lockLetGo) grabPointer();             // and a tap never costs you the mouse
+}
+function escCancel(){                  // the window went away mid-press
+  clearTimeout(escHoldT); escHoldT = 0;
+  clearTimeout(escFallT); escFallT = 0;
+  escDown = false; escWaiting = false; escSpent = false; escEndT = performance.now();
+}
+// a touch button has no press length to read, so it is always a tap
+function escapePressed(){ escAct(); }
 /* A mode may carry `open` and `shut` - things it has to do to the world on
    the way in and undo on the way out. The city map is the one that needs it:
    it changes the glyph grid under itself, and nothing may leave that changed
    behind however the card is closed. */
 function pushMode(m){
   m.openedT = performance.now();
-  const wasPlaying = !modeStack.length;
   modeStack.push(m);
-  if (wasPlaying && document.pointerLockElement === view){
-    try { document.exitPointerLock(); } catch (e){}
-  }
   if (m.open) m.open();
+  // opening a card is not letting go of the mouse - and if something else
+  // already had, this is as good a moment as any to take it back
+  if (!lockLetGo) grabPointer();
 }
 function popMode(){
   const m = modeStack.pop();
   if (m && m.shut) m.shut();
   if (!modeStack.length) resumePlay();       // back in the world, back to the controls
 }
-// keys are listened for on the window, so the window has to be the one
-// holding the keyboard - in a frame that is not a given
-function resumePlay(){
-  try { window.focus(); } catch (e){}
-  tryPointerLock();
-}
-// Refusal (browser cooldown after an ESC exit, or a context with no lock at
-// all) just means the player clicks the canvas as before - but come back for
-// it once or twice first, so the cooldown alone never costs you mouselook.
-let lockRetryT = 0, lockTries = 0;
-function retryPointerLock(){
-  if (lockRetryT || lockTries >= 2) return;
-  lockTries++;
-  lockRetryT = setTimeout(() => {
-    lockRetryT = 0;
-    if (!TOUCH.on && !modeStack.length && !document.pointerLockElement) tryPointerLock();
-  }, 1400);
-}
-function tryPointerLock(){
-  if (TOUCH.on) return;                      // no mouse to capture on glass
-  if (document.pointerLockElement === view) return;
-  try {
-    const p = view.requestPointerLock && view.requestPointerLock();
-    if (p && p.catch) p.catch(() => retryPointerLock());
-  } catch (e){ retryPointerLock(); }
-}
+function resumePlay(){ grabPointer(); }
 function closeMenus(){
   // every card gets its `shut`, however abruptly the stack is emptied
   for (let i = modeStack.length - 1; i >= 0; i--)
@@ -8394,6 +8564,84 @@ function closeMenus(){
   modeStack.length = 0;
   resumePlay();              // back to the game means back to the controls
 }
+/*-------------------- full screen is the fix, not a luxury ------------------
+   Everything above fights a losing battle windowed, and it is worth being
+   plain about why. Windowed, the browser owns ESC: it eats the key, drops the
+   pointer, and then refuses to give it back for about a second. Nothing a
+   page can do changes that - the pump above only shortens the gap; it cannot
+   close it. A tap of ESC therefore costs you the mouse for a second, which is
+   exactly the thing that feels broken, and it is not the game doing it.
+
+   navigator.keyboard.lock(['Escape']) is the one way out, and it only bites
+   while the document is full screen. With it, ESC is delivered to the page as
+   an ordinary keydown, the pointer is NEVER dropped, and the tap costs
+   nothing at all. So the game asks for full screen on the same gesture that
+   takes the pointer - the first click on the city - on the browsers where
+   that buys something (Chrome and Edge today).
+
+   Leave full screen and the game takes the hint and stops asking; the choice
+   is remembered. FULLSCREEN in the settings turns it back on. */
+function isFullscreen(){
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+function kbLockable(){ return !!(navigator.keyboard && navigator.keyboard.lock); }
+// hasBeenActive says the page has been touched at all; isActive says we are
+// inside a gesture right now, which is what full screen actually demands
+function userActive(){
+  const ua = navigator.userActivation;
+  return ua ? !!ua.isActive : true;
+}
+let fsWant = true, fsSaid = false, fsWeLeft = false;
+try { fsWant = localStorage.getItem('asciiCityFS') !== '0'; } catch (e){}
+function saveFS(){ try { localStorage.setItem('asciiCityFS', fsWant ? '1' : '0'); } catch (e){} }
+function keyboardLockOn(){
+  const kb = navigator.keyboard;
+  if (!kb || !kb.lock) return;
+  try { const p = kb.lock(['Escape']); if (p && p.catch) p.catch(() => {}); } catch (e){}
+}
+function keyboardLockOff(){
+  const kb = navigator.keyboard;
+  if (kb && kb.unlock){ try { kb.unlock(); } catch (e){} }
+}
+function enterFullscreen(){
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!req){ toast('this browser has no full screen'); return; }
+  try {
+    const p = req.call(el, { navigationUI: 'hide' });
+    if (p && p.catch) p.catch(() => {});     // refused (no gesture): ask again later
+  } catch (e){}
+}
+function leaveFullscreen(){
+  fsWeLeft = true;
+  const ex = document.exitFullscreen || document.webkitExitFullscreen;
+  if (ex){ try { const p = ex.call(document); if (p && p.catch) p.catch(() => {}); } catch (e){} }
+}
+// asked for on the way into play, and only where it buys the ESC key
+function maybeFullscreen(){
+  if (!fsWant || TOUCH.on || isFullscreen() || !kbLockable() || !userActive()) return;
+  enterFullscreen();
+}
+function toggleFullscreen(){
+  fsWant = !isFullscreen();
+  saveFS();
+  if (fsWant) enterFullscreen(); else leaveFullscreen();
+}
+document.addEventListener('fullscreenchange', () => {
+  if (isFullscreen()){
+    keyboardLockOn();
+    if (!fsSaid && kbLockable()){
+      fsSaid = true;
+      toast('full screen: ESC belongs to the game now - hold it to free the mouse');
+    }
+  } else {
+    keyboardLockOff();
+    // they left on their own, so stop dragging them back in
+    if (!fsWeLeft){ fsWant = false; saveFS(); }
+    fsWeLeft = false;
+  }
+  if (!lockLetGo) pumpPointerLock(2000);     // the transition itself can drop it
+});
 function worldFrozen(){
   const m = topMode();
   return paused || !!(m && m.pausesWorld);
@@ -10915,7 +11163,8 @@ function openPauseMenu(){
     name: 'pause', title: 'PAUSED',
     onBack(){ closeMenus(); },
     items: [
-      { label: 'RESUME', hint: 'ESC or a click on the canvas also resumes',
+      { label: 'RESUME', hint: 'ESC or a click on the city also resumes - ' +
+              'and HOLDING esc here is what lets the mouse go',
         act(){ closeMenus(); } },
       { sep: true },
       { label: 'INVENTORY', hint: 'TAB opens it any time; credits live in here',
@@ -10955,7 +11204,7 @@ function openControlsMenu(){
     name: 'controls', title: 'CONTROLS',
     items: [
       { info: 'WASD            move (arrows: fwd/back + strafe)' },
-      { info: 'mouse           look (click the canvas first)' },
+      { info: 'mouse           look (click the city once to take it)' },
       { info: 'SHIFT           run' },
       { info: 'SPACE           jump / ollie   E   interact' },
       { info: 'CTRL or LMB     swing / fire' },
@@ -10964,6 +11213,10 @@ function openControlsMenu(){
       { info: 'C               hide       G        metro' },
       { info: 'M               city map   B        bloom' },
       { info: 'Q / E mid-air   flip tricks on the deck' },
+      { info: 'ESC             close a card, or open this one. A tap never' },
+      { info: '                costs you the mouse' },
+      { info: 'hold ESC        on this card, to let the mouse go. It is the' },
+      { info: '                only thing that ever does' },
       { sep: true },
       { label: 'BACK', act(){ popMode(); } }
     ]
@@ -11127,6 +11380,34 @@ function openSettingsMenu(){
           if (GPUS.on && !(GPUW.on && (GPUW.stages & 7) === 7))
             toast('gpu solids: needs gpu world set to ON');
         } },
+      { label: 'GPU TAIL', value: () => !(GL && GL.tailOK) ? 'N/A' : !GPUV.on ? 'OFF'
+                 : GPUV.stages === TAIL_RAIN ? 'RAIN'
+                 : GPUV.stages === 48 ? 'LAMP+RAIN'
+                 : GPUV.stages === 56 ? 'REFL+' : GPUV.stages === 60 ? 'SIGN+'
+                 : GPUV.stages === 62 ? 'SPRREF+' : 'ON',
+        hint: 'everything after the sprites on the card - the mirrors, the ' +
+              'signs, the reflections, the beams, the rain - handed forward ' +
+              'to compose instead of back to the CPU. anything short of ON ' +
+              'reads the answer back to check it, which is a full sync and ' +
+              'SLOWER than leaving it off',
+        adj(d){
+          /* OFF -> REFL+ (the stage-4 suffix, which still reads its answer
+             back and is SLOWER) -> ON. The finer suffixes are bisect steps
+             and are set by hand, not cycled through here. */
+          const seq = [0, 56, GPUV.max];
+          let m = !GPUV.on ? 0 : Math.max(0, seq.indexOf(GPUV.stages & GPUV.max));
+          m = (m + (d < 0 ? -1 : 1) + seq.length) % seq.length;
+          GPUV.on = m > 0; GPUV.stages = seq[m] || GPUV.max;
+          if (GPUV.on && !GPUC.on) toast('gpu tail: needs gpu compose on');
+        } },
+      { label: 'GPU HARVEST', value: () => !(GL && GL.tailOK) ? 'N/A' : GPUH.on ? 'ON' : 'OFF',
+        hint: 'stop waiting for the world to come back. with GPU TAIL fully ' +
+              'on nothing reads those buffers but the emitter harvest, so ' +
+              'they arrive a frame late instead and the readback stops ' +
+              'costing anything. the light list lags one frame',
+        adj(){ GPUH.on = !GPUH.on;
+               if (GPUH.on && !(GPUV.on && (GPUV.stages & GPUV.max) === TAIL_ALL))
+                 toast('gpu harvest: needs gpu tail set to ON'); } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
         hint: 'traced shadows and bounced colour. costs about half the frame; ' +
               'it settles while you stand still and starts over when you move',
@@ -11149,6 +11430,11 @@ function openSettingsMenu(){
           autoPath = !autoPath;
           if (autoPath){ autoPathKey = ''; autoPathTick(); }
         } },
+      { label: 'FULLSCREEN', value: () => isFullscreen() ? 'ON' : 'OFF',
+        hint: 'the game only truly owns ESC in full screen. windowed, the ' +
+              'browser takes the mouse for a second every time you press it ' +
+              'and there is nothing the game can do about that',
+        adj(){ toggleFullscreen(); } },
       { label: 'TOUCH CONTROLS', value: () => TOUCH.on ? 'ON' : 'OFF',
         hint: 'stick to move (rim = sprint), drag to look, tap menus directly',
         adj(){
@@ -11221,14 +11507,25 @@ function openDebugMenu(){
     ]
   }));
 }
-// ESC under pointer lock never reaches the page - the browser consumes it as
-// it releases the lock - so losing the lock during play IS the pause gesture.
+/* The second road ESC arrives down. Under pointer lock the key never reaches
+   the page - the browser consumes it as it releases the lock - so a release
+   nobody asked for IS that keypress. Unless the window itself went away,
+   which is not a keypress at all and must not close somebody's card for them. */
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement === view){ lockTries = 0; return; }
-  if (!document.pointerLockElement && !topMode()) openPauseMenu();
+  if (document.pointerLockElement === view){ lockLetGo = false; return; }
+  if (document.pointerLockElement) return;     // locked to something that is not us
+  if (lockLetGo) return;                       // we asked for this one
+  if (!haveFocus()){                           // alt-tab or a hidden tab, not ESC
+    if (!modeStack.length){ lockLetGo = true; openPauseMenu(); }
+    return;
+  }
+  // the lock is gone either way; escEnd takes it back when the key comes up
+  escBegin(false);
 });
 // some browsers report a refused lock here rather than rejecting the promise
-document.addEventListener('pointerlockerror', () => retryPointerLock());
+document.addEventListener('pointerlockerror', () => { if (wantPointer()) pumpPointerLock(3000); });
+// coming back to the window means coming back to the city
+addEventListener('focus', () => { if (wantPointer()) pumpPointerLock(2000); });
 
 /*============================== 13c. AUDIO =================================
   Sound comes from local files in audio/ - free-use mp3 / wav the repo does
@@ -13339,15 +13636,26 @@ const QUESTS = {
   scrap: {
     name: 'QUIET PROCUREMENT',
     stages: [
-      { log: () => 'sell 3 SCRAP ELECTRONICS to the watcher - the depots in ' +
-                   indPlaces() + ' are stacked with it',
+      { log: () => {
+          const sold = Math.min(3, player.qvar.scrap || 0), held = invCount('scrap');
+          return sold + held >= 3
+            ? 'take them to the watcher - he pays 25 a unit (' + sold + ' of 3 sold)'
+            : 'lift 3 SCRAP ELECTRONICS for the watcher - the depots in ' +
+              indPlaces() + ' are stacked with it (' + (sold + held) + ' of 3)';
+        },
+        /* The watcher is only the answer once you are carrying enough to
+           FINISH the job. One unit in your pocket used to turn the marker
+           round and walk you the whole way back across the city for a third
+           of an errand, and then point you at the yards again. Units already
+           sold count toward the three, so selling him one in passing does not
+           reset the arithmetic either. */
         target(){
-          if (invCount('scrap') > 0){
+          const sold = Math.min(3, player.qvar.scrap || 0), held = invCount('scrap');
+          if (sold + held >= 3){
             const a = actors.find(x => x.name === 'THE WATCHER');
             return a && { x: a.x, y: a.y, name: 'THE WATCHER' };
           }
-          const d = nearestDepot(3 - Math.min(3, invCount('scrap')));
-          return supplyMark(d, 'DEPOT');
+          return supplyMark(nearestDepot(Math.max(1, 3 - sold - held)), 'DEPOT');
         } }
     ]
   },
@@ -18663,6 +18971,21 @@ function drawMapMode(m){
     if (S > 1) hudBigStr(Math.round(x / S), Math.round(y / S), s, col);
     else hudStr(x, y, s, col);
   };
+  /* A pin is one glyph, and on the finest grid one glyph is three pixels
+     across. That is the same reason the words moved to the big layer, and the
+     marks standing beside them were left behind on the chart's own: a street
+     of trade letters you could see were THERE and could not read. So anything
+     naming a PLACE - a trade, a landmark, the errand, the line you dropped -
+     rides the big layer with the words. The crosshair and the ring around you
+     stay on the chart, because those mark a coordinate rather than a thing,
+     and want to be exactly where they say they are. */
+  const pinAt   = (x, y) => S > 1 ? [Math.round(x / S) * S, Math.round(y / S) * S] : [x, y];
+  const pinDraw = (x, y, ch, col) => {
+    if (S > 1) hudBigCell(Math.round(x / S), Math.round(y / S), ch, col);
+    else hudCell(x, y, ch, col);
+  };
+  const pinClaim = (x, y) => { const p = pinAt(x, y); claim(p[0], p[1], S, 0, S); };
+  const pinFree  = (x, y) => { const p = pinAt(x, y); return free(p[0], p[1], S); };
   // The marks go down before the words do, so a word can never be printed
   // through one: your own position first, then every pin on the chart.
   const px2 = sx(cam.x), py2 = sy(cam.y);
@@ -18670,10 +18993,10 @@ function drawMapMode(m){
   for (let dy = -((rr2 >> 1) + 1); dy <= (rr2 >> 1) + 1; dy++)
     claim(px2 - rr2, py2 + dy, rr2 * 2 + 1, 0);
   claim(sx(m.cx), sy(m.cy), 1, 0);                    // the crosshair
-  if (waypoint) claim(sx(waypoint.x), sy(waypoint.y), 1, 0);
+  if (waypoint) pinClaim(sx(waypoint.x), sy(waypoint.y));
   const qt = questTarget();
   const qx = qt ? sx(qt.x) : 0, qy = qt ? sy(qt.y) : 0;
-  if (qt) claim(qx, qy, 1, 0);
+  if (qt) pinClaim(qx, qy);
   /* Landmarks are on show at EVERY zoom. They were gated at eight tiles to a
      sample, which is exactly backwards: the further out you pull the less
      else there is to steer by, and the moment the chart stops showing
@@ -18683,7 +19006,7 @@ function drawMapMode(m){
   if (lmOn)
     for (const l of landmarks){
       const x = sx(l.x), y = sy(l.y);
-      if (onChart(x, y)) claim(x, y, 1, 0);
+      if (onChart(x, y)) pinClaim(x, y);
     }
   if (qt && qt.name && onChart(qx, qy) && qx + 2 + tw(qt.name.length) < cols - 1 &&
       free(qx + 2, qy, tw(qt.name.length)))
@@ -18743,7 +19066,10 @@ function drawMapMode(m){
       const x = sx(d.x), y = sy(d.y);
       if (!onChart(x, y)) continue;
       const t = doorTag(d.b);
-      if (t) hudCell(x, y, t[0], t[1]);
+      // a trade letter is most of the point of the close chart. It is drawn
+      // after the words, so on the shared layer it has to give way to one
+      // rather than punch a hole through the name of the place it is in
+      if (t && pinFree(x, y)) pinDraw(x, y, t[0], t[1]);
     }
   }
   // ---- landmarks -------------------------------------------------------
@@ -18754,7 +19080,7 @@ function drawMapMode(m){
   if (lmOn){
     for (const l of landmarks){
       const x = sx(l.x), y = sy(l.y);
-      if (onChart(x, y)) hudCell(x, y, l.sym || '*', l.col !== undefined ? l.col : H_YEL);
+      if (onChart(x, y)) pinDraw(x, y, l.sym || '*', l.col !== undefined ? l.col : H_YEL);
     }
   }
 
@@ -18765,16 +19091,16 @@ function drawMapMode(m){
   hudCell(sx(m.cx), sy(m.cy), '+', H_DIM);
   if (waypoint){
     const wxs = sx(waypoint.x), wys = sy(waypoint.y);
-    if (onChart(wxs, wys)) hudCell(wxs, wys, 'O', H_RED);
+    if (onChart(wxs, wys)) pinDraw(wxs, wys, 'O', H_RED);
   }
   if (qt){
     const pulse = ((Date.now() / 300) | 0) & 1;     // world is paused in here
-    if (onChart(qx, qy)) hudCell(qx, qy, pulse ? '!' : '*', H_YEL);
+    if (onChart(qx, qy)) pinDraw(qx, qy, pulse ? '!' : '*', H_YEL);
     else {                                          // off the edge: point at it
       const cx2 = clamp(qx, 1, cols - 2), cy2 = clamp(qy, yTop, yBot - 1);
       const dx2 = qx - cx2, dy2 = qy - cy2;
       const ch = Math.abs(dx2) >= Math.abs(dy2) ? (dx2 < 0 ? '<' : '>') : (dy2 < 0 ? '^' : 'v');
-      hudCell(cx2, cy2, pulse ? ch : '!', H_YEL);
+      pinDraw(cx2, cy2, pulse ? ch : '!', H_YEL);
     }
   }
   if (px2 >= 0 && px2 < cols && py2 >= yTop && py2 < yBot){
@@ -19031,7 +19357,7 @@ function buildTouchUI(){
   const util = (label, off, fn) => mkBtn(label,
     'top:calc(10px + env(safe-area-inset-top));left:calc(50% + ' + off + 'px);' +
     'width:46px;height:34px;border-radius:8px;', fn);
-  util('MENU', -110, () => { if (topMode()) topMode().onKey && topMode().onKey('Escape'); else openPauseMenu(); });
+  util('MENU', -110, () => escapePressed());   // the same road the key takes
   util('INV', -55, () => { const m = topMode(); if (m && m.name === 'inventory') m.onKey('Tab'); else if (!m) openInventory(); });
   util('MAP', 0, () => {
     const m = topMode();
@@ -20851,6 +21177,29 @@ function wallPass(){
   the rows above that one. So the set of blocked rows is complete by the time
   the nearest tile has been walked, and nothing later can add to it.
 ---------------------------------------------------------------------------*/
+/*--------- the off-screen wall mirror, computed here, drawn there -----------
+  Same trade as the signs, and for the same one reason: what held the readback
+  open was not what this pass COSTS - it is a tenth of a millisecond, and at
+  eye level it writes nothing at all - but the single question it asks of a
+  buffer it cannot otherwise see. `reflects(j)` is refBuf, and refBuf only
+  exists on the CPU because of the trip back. So the DDA, the facade material
+  and the mirror arithmetic all stay exactly where they are, and the card is
+  handed a point per cell with the gate left for it to apply. */
+let _wmE = 0;
+function wmEmit(x, y, g, pal){
+  const a = GV.wmM, i = GV.wmN * 4;
+  if (i + 4 > a.length) return;
+  a[i] = x; a[i + 1] = y; a[i + 2] = g; a[i + 3] = pal;
+  GV.wmN++;
+}
+function wmirCollect(){
+  const n = R.cols * R.rows;
+  if (!GV.wmM || GV.wmCap !== n){ GV.wmCap = n; GV.wmM = new Float32Array(n * 4); }
+  GV.wmN = 0;
+  _wmE = 1;
+  try { wallMirror(); } finally { _wmE = 0; }
+  return GV.wmN;
+}
 function wallMirror(){
   const cols = R.cols, rows = R.rows, px = cam.x, py = cam.y;
   const hzRow = clamp(Math.floor(horizon), 0, rows - 1);
@@ -20892,12 +21241,15 @@ function wallMirror(){
             const rr = Math.round(mb - r + wobx);
             if (rr <= hzRow || rr >= rows) continue;
             const j = rr * cols + x;
-            if (!reflects(j)) continue;
+            /* in emit mode the wetness gate belongs to the card - it is the
+               only thing here that ever needed refBuf read back */
+            if (!_wmE && !reflects(j)) continue;
             const z = cam.z - (r + 0.5 - horizon) / unitRows;
             facade(b, gu2, z, side, h, hx2, hy2);
             if (!EMISSIVE[_wb]) continue;
             const g2 = Math.round(clamp(_wd * 0.5, 0, 1) * RMAX);
             if (!g2) continue;
+            if (_wmE){ wmEmit(x, rr, g2, _wb); statCells++; continue; }
             gBuf[j] = g2; bBuf[j] = _wb;
             statCells++;
           }
@@ -21938,7 +22290,9 @@ function drawSignPlane(sg){
           const rr = Math.round(mb - r + wobx);
           if (rr <= hzRow || rr >= rows) continue;
           const j = rr * cols + x;
-          if (!reflects(j)) continue;
+          /* In emit mode the wetness gate is the CARD's to apply - asking it
+             here is the one thing that would still need refBuf read back. */
+          if (!_sigE && !reflects(j)) continue;
           const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
           const ay = (v * ah) | 0;
           let base, dens;
@@ -21959,6 +22313,7 @@ function drawSignPlane(sg){
           const g0 = Math.round(clamp(dens * dm, 0, 1) * RMAX);
           const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
           if (ng < 1) continue;
+          if (_sigE){ sigEmit(0, x, rr, ng, base, 0, 0, 0); statCells++; continue; }
           gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0;
           statCells++;
         }
@@ -21970,7 +22325,9 @@ function drawSignPlane(sg){
     if (r1 > rows - 1) r1 = rows - 1;
     for (let r = r0; r <= r1; r++){
       const idx = r * cols + x;
-      if (dBuf[idx] < t - 0.02) continue;
+      /* and in emit mode the occlusion test is the card's too, done against a
+         depth buffer seeded from the world's own distances */
+      if (!_sigE && dBuf[idx] < t - 0.02) continue;
       const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
       const ay = (v * ah) | 0;
       let base, dens;
@@ -21994,12 +22351,60 @@ function drawSignPlane(sg){
       } else { base = sg.sb[1]; dens = sg.sd[1]; }
       const g = Math.round(clamp(dens * dm, 0, 1) * RMAX);
       if (!g) continue;
+      if (_sigE){ sigEmit(1, x, r, g, base, lvl, EMISSIVE[base] ? 2 : 1, t); statCells++; continue; }
       gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = lvl; dBuf[idx] = t;
       refBuf[idx] = 0;
       srcBuf[idx] = EMISSIVE[base] ? 2 : 1;
       statCells++;
     }
   }
+}
+/*------------- the signs, computed here and drawn on the card ---------------
+  signPass keeps every line of its geometry: the plane intersection down each
+  column, the border ring and its chase, the bezel, the ink out of the sign's
+  own text bitmap. None of that moves, and it is not what was holding the
+  readback open. What was holding it open is two QUESTIONS - "is something
+  already nearer than this?" and "is this cell still water?" - and the card can
+  answer both for itself, one with a depth test and one with a gate.
+
+  So in emit mode the pass computes exactly what it always did and hands over
+  a point per cell instead of writing one. It costs a little MORE CPU than
+  before, because it can no longer skip an occluded cell early: it does not
+  know what is occluded. Measured at the busy vantage that is 7,718 cells of
+  real output against a few thousand more emitted and thrown away by the depth
+  test - a few tenths of a millisecond, against a twenty-millisecond sync.
+
+  The two halves are batched rather than interleaved - every mirror point,
+  then every on-screen point - which is only safe because they never land on
+  the same cell. Measured over four vantages including a 40-degree look down
+  that fires the mirror at all: 585 mirror cells, 6,592 on-screen cells, and
+  ZERO written by both. */
+let _sigE = 0;
+function sigEmit(kind, x, y, g, pal, lvl, sk, t){
+  if (kind === 0){
+    const a = GV.sgM, i = GV.sgMN * 4;
+    if (i + 4 > a.length) return;
+    a[i] = x; a[i + 1] = y; a[i + 2] = g; a[i + 3] = pal;
+    GV.sgMN++;
+  } else {
+    const a = GV.sgS, i = GV.sgSN * 8;
+    if (i + 8 > a.length) return;
+    a[i] = x; a[i + 1] = y; a[i + 2] = g; a[i + 3] = pal;
+    a[i + 4] = lvl; a[i + 5] = sk; a[i + 6] = 0; a[i + 7] = t;
+    GV.sgSN++;
+  }
+}
+function signCollect(){
+  const n = R.cols * R.rows;
+  if (!GV.sgM || GV.sgCap !== n){
+    GV.sgCap = n;
+    GV.sgM = new Float32Array(n * 4);
+    GV.sgS = new Float32Array(n * 8);
+  }
+  GV.sgMN = 0; GV.sgSN = 0;
+  _sigE = 1;
+  try { signPass(); } finally { _sigE = 0; }
+  return GV.sgSN;
 }
 function signPass(){
   for (let i = 0; i < signs.length; i++){
@@ -22526,6 +22931,41 @@ function glInit(){
       G.uC[k] = gl.getUniformLocation(G.pComp, k);
     G.compOK = true;
   } catch (e){ G.compOK = false; }
+  /* The tail's programs, built beside compose's because they write what
+     compose reads. A failure here costs frame time and nothing else: every
+     pass they replace is still sitting in worldPasses behind its switch. */
+  G.tailOK = false;
+  try {
+    G.pTSeed = mkProg(VS_FULL, FS_TSEED);
+    G.uTS = {};
+    for (const k of ['uG','uB','uL','uS','uR','uD','uDFar'])
+      G.uTS[k] = gl.getUniformLocation(G.pTSeed, k);
+    G.pTSign = mkProg(VS_TSIGN, FS_TSIGN);
+    G.uTG = {};
+    for (const k of ['uPt','uRw','uGrid','uDFar','uKind'])
+      G.uTG[k] = gl.getUniformLocation(G.pTSign, k);
+    G.pTSRef = mkProg(VS_FULL, FS_TSREF);
+    G.uTX = {};
+    for (const k of ['uG','uB','uL','uS','uR','uD','uRef'])
+      G.uTX[k] = gl.getUniformLocation(G.pTSRef, k);
+    G.pTRefl = mkProg(VS_TREFL, FS_TREFL);
+    G.uTR = {};
+    for (const k of ['uG','uB','uS','uD','uR','uCol','uRow','uGrid','uCamXY',
+                     'uHorizon','uCamZ','uProjRows','uHz','uRMAX','uWorldTime',
+                     'uSrcFall','uObjFall','uFres0','uPower','uGain','uRippleK'])
+      G.uTR[k] = gl.getUniformLocation(G.pTRefl, k);
+    G.pTLamp = mkProg(VS_FULL, FS_TLAMP);
+    G.uTL = {};
+    for (const k of ['uG','uB','uL','uS','uD','uR','uCol','uRow','uLamp','uPool','uLev',
+                     'uGrid','uNL','uCamZ','uLensZ','uK2','uR2','uViewD','uRMAX','uSteps',
+                     'uHaze','uAir','uNight','uFall','uCut','uMix','uGamma','uShaft',
+                     'uLift','uSwap'])
+      G.uTL[k] = gl.getUniformLocation(G.pTLamp, k);
+    G.pTRain = mkProg(VS_TRAIN, FS_TRAIN);
+    G.uTRn = {};
+    for (const k of ['uPt','uGrid','uWhite']) G.uTRn[k] = gl.getUniformLocation(G.pTRain, k);
+    G.tailOK = true;
+  } catch (e){ G.tailOK = false; }
   /* And again for the world pass. Three colour attachments and an integer
      hash in the fragment shader are more than some drivers will take, and
      every pass it replaces is still sitting there, so a failure here costs
@@ -22578,6 +23018,13 @@ function glInit(){
      as not, so rows are not four-byte aligned. Without this the driver reads
      each row from the wrong offset and the screen shears. */
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  /* And its twin on the way back. readPixels pads each row to PACK_ALIGNMENT,
+     which is 4 by default - so reading a one-byte-per-texel attachment of
+     width `cols` into an array of exactly cols*rows bytes is rejected outright
+     at every grid whose column count is not a multiple of four, and 205, 130,
+     110, 90 and 75 all are not. Same failure as the unpack side and the same
+     rule applies: it is 1 for the whole session, nothing puts it back. */
+  gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
   return G;
 }
 
@@ -22787,6 +23234,1071 @@ const GPUL = {
    _cpuLitFrame is worldPasses' honest answer to "did I write any". */
 const GPUC = { on: true };
 let _cpuLitFrame = false;
+
+/*======================= stage 4: the tail, on the card =====================
+  Everything after the sprites - the reflections, the lamp beams, the rain -
+  is screen-space work over buffers the card already has. Moving it is not the
+  problem stages 1 to 3 were, and the difference decides the order.
+
+  THE ORDER IS FORCED AND IT IS REVERSE PIPELINE ORDER, NOT PIPELINE ORDER.
+  A ported pass has to get its answer to the screen. Compose is the only thing
+  downstream of these passes and compose reads TEXTURES, so a pass whose
+  output flows forward into compose costs nothing at all to move. A pass with
+  a CPU pass still behind it has to hand its buffers back, and a hand-back is
+  a second sync on top of the six-millisecond one already there. So the chain
+  is eaten from the tail end forwards, and GPUV.stages is a SUFFIX rather than
+  a mask you may pick from:
+
+      0   the plumbing only - upload, seed, copy, compose. Proves the hinge.
+      4   rain
+      6   lampVolume and rain
+      7   the reflections, lampVolume and rain
+
+  Taking the FRONT of the chain without the back of it - porting reflectPass
+  on its own, which is what a pipeline-order reading says to do - means
+  reading the card back in the middle of the frame, which is the one thing
+  this port exists to delete.
+
+  AND THE REFLECTIONS CANNOT GO EARLIER INSTEAD. The obvious dodge is to run
+  them between the world's draw and the world's read, the way the sprites got
+  in for 0.04ms. They cannot: signPass is a CPU pass that runs AFTER the read
+  and marks sign faces as light sources, and 18.7% of every reflection in a
+  wet downtown frame is a sign being mirrored. A gather placed before the read
+  would silently lose a fifth of them.
+
+  WHAT THE HARVEST SEES. harvestEmitters is the only CPU reader left behind
+  these passes and it reads srcBuf/bBuf. Measured over four busy vantages:
+  reflectPass never once clears a live srcBuf cell (0 of 25,969 - its targets
+  are mirror cells, which by construction carry no source kind), and
+  lampVolume never writes bBuf at a source because it skips them outright.
+  Only rain clears sources - 220 to 678 cells a frame, 31 to 269 of them real
+  emitters - and rain's cell list depends on nothing but worldTime. So the CPU
+  goes on computing rain for a twentieth of a millisecond, keeps its own
+  srcBuf clears, and hands the card the ~1,400 points to draw. The harvest
+  stays byte-identical for nothing.
+
+  srcBuf is therefore an INPUT to this block and never an output, which is why
+  the targets carry three bytes and not four.
+============================================================================*/
+/* The chain, numbered so that BIT ORDER IS PIPELINE ORDER. That matters more
+   than it looks: `stages` has to be a SUFFIX of this list, and a suffix is
+   only meaningful if the bits run in the order the passes do.
+
+      1  wallMirror        the off-screen wall mirror
+      2  applySpriteRefl   the solids' reflections
+      4  signPass          the sign faces
+      8  reflectPass       the screen-space reflections
+     16  lampVolume        the beams in the air
+     32  rainPass          the drops
+
+   So the legal values are the suffixes: 32, 48, 56, 60, 62, 63.
+
+   `GPUV.max` is how far the port has got; `TAIL_ALL` is how far it has to get
+   before the trip back disappears. They are deliberately different numbers,
+   and conflating them once already published a frame with reflections in it
+   and no lamp beams. */
+/* The last thing standing between the port and the readback. On, the world's
+   buffers come back a frame late and only harvestEmitters ever looks at them;
+   off, they come back in the frame that drew them and the CPU waits. */
+const GPUH = { on: false };
+const TAIL_WMIR = 1, TAIL_SREF = 2, TAIL_SIGN = 4;
+const TAIL_REFL = 8, TAIL_LAMP = 16, TAIL_RAIN = 32;
+const TAIL_ALL = 63;
+const GPUV = { on: false, stages: 63, max: 63 };
+const GV = { t: null, ran: 0, used: 0, rainN: 0, rainBuf: null, col: null, row: null,
+             /* the harness compares CPU buffers, and the whole point of the
+                full suffix is that the answer never becomes one - so parity
+                forces the trip back that shipping does not take */
+             dbgRead: false };
+
+/* Seed: the CPU's three byte-buffers into the first tail target, so every
+   pass after it reads a texture and writes a texture and none of them has to
+   know which of the two it started as. */
+/* Seed and copy, in one shader. The chain's state is SIX buffers, not three -
+   signPass writes a source kind, a wetness byte and a depth as well as a
+   glyph, and reflectPass reads all three of those back off it. It also seeds
+   the DEPTH buffer from the world's distances, which is what lets the sign
+   pass do its occlusion test in fixed function instead of reading dBuf. */
+const FS_TSEED = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+layout(location = 2) out vec4 oL;
+layout(location = 3) out vec4 oS;
+layout(location = 4) out vec4 oR;
+layout(location = 5) out vec4 oD;
+uniform sampler2D uG, uB, uL, uS, uR, uD;
+uniform float uDFar;
+void main(){
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  oG = vec4(texelFetch(uG, c, 0).r, 0.0, 0.0, 1.0);
+  oB = vec4(texelFetch(uB, c, 0).r, 0.0, 0.0, 1.0);
+  oL = vec4(texelFetch(uL, c, 0).r, 0.0, 0.0, 1.0);
+  oS = vec4(texelFetch(uS, c, 0).r, 0.0, 0.0, 1.0);
+  oR = vec4(texelFetch(uR, c, 0).r, 0.0, 0.0, 1.0);
+  float d = texelFetch(uD, c, 0).r;
+  oD = vec4(d, 0.0, 0.0, 1.0);
+  float z = d / uDFar;
+  gl_FragDepth = z > 1.0 ? 1.0 : z;
+}`;
+
+/*------------------- the solids' reflections, laid down ---------------------
+  applySpriteRefl is a gate and a copy: the sprite pass has already marched
+  every reflection into a target of its own, and this decides which of them
+  land. On the CPU that target has to be read back first. On the card it is
+  already a texture, so the whole pass is one full-screen triangle over data
+  that never moved.
+
+  It clears the source kind at every cell it writes, and measured over three
+  busy vantages that clear lands on a live source ZERO times - the targets are
+  mirror cells and a mirror cell carries no source kind. The write is kept
+  anyway, because it costs nothing here and "never happens" is a measurement,
+  not a guarantee.
+============================================================================*/
+const FS_TSREF = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+layout(location = 2) out vec4 oL;
+layout(location = 3) out vec4 oS;
+layout(location = 4) out vec4 oR;
+layout(location = 5) out vec4 oD;
+uniform sampler2D uG, uB, uL, uS, uR, uD, uRef;
+void main(){
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  float g = texelFetch(uG, c, 0).r, b = texelFetch(uB, c, 0).r;
+  float s = texelFetch(uS, c, 0).r;
+  float rf = floor(texelFetch(uR, c, 0).r * 255.0 + 0.5);
+  vec4 q = texelFetch(uRef, c, 0);
+  // the third byte is the sprite mirror's did-write flag
+  if (floor(q.b * 255.0 + 0.5) > 0.5 && (rf > 0.5 && rf < 2.5)){
+    g = q.r; b = q.g; s = 0.0;
+  }
+  oG = vec4(g, 0.0, 0.0, 1.0);
+  oB = vec4(b, 0.0, 0.0, 1.0);
+  oS = vec4(s, 0.0, 0.0, 1.0);
+  oL = vec4(texelFetch(uL, c, 0).r, 0.0, 0.0, 1.0);
+  oR = vec4(texelFetch(uR, c, 0).r, 0.0, 0.0, 1.0);
+  oD = vec4(texelFetch(uD, c, 0).r, 0.0, 0.0, 1.0);
+}`;
+
+
+/*------------------- the sign faces, as points on the card ------------------
+  The CPU worked out every one of these cells; all this does is put them where
+  they go, and answer the two questions the CPU can no longer ask. On-screen
+  points carry their own distance and are DEPTH TESTED against the world's,
+  which the seed pass wrote into the depth buffer; mirror points are gated on
+  the wetness byte.
+
+  The gate samples GL.cellR and not the chain's own wetness, and that is not
+  laziness: sampling a texture that is attached to the bound framebuffer is a
+  feedback loop and WebGL refuses the draw outright, whether or not that
+  attachment is in drawBuffers. Nothing before the signs writes refBuf, so the
+  uploaded copy and the chain copy hold the same bytes here anyway.
+
+  The depth test is LEQUAL against (t - 0.02), which is the CPU's
+  `dBuf[idx] < t - 0.02` with the bias moved onto the other operand - the same
+  translation the sprite pass makes, and it leaves the same small difference
+  where one SIGN occludes another: fixed function has one value to write and
+  to compare, so sign-against-sign loses the bias.
+============================================================================*/
+const VS_TSIGN = `#version 300 es
+precision highp float;
+/* int precision defaults to highp in a vertex shader and mediump in a
+   fragment one, so a shared uniform int fails to LINK unless both declare it */
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D uPt;
+uniform vec2 uGrid;
+uniform float uDFar;
+uniform int uKind;                       // 0 the mirror, 1 the face
+flat out vec4 vA;
+flat out vec4 vB;
+void main(){
+  int W = textureSize(uPt, 0).x;
+  int st = uKind == 0 ? 1 : 2;
+  int o = st * gl_VertexID;
+  vA = texelFetch(uPt, ivec2(o % W, o / W), 0);
+  vB = uKind == 0 ? vec4(0.0) : texelFetch(uPt, ivec2((o + 1) % W, (o + 1) / W), 0);
+  gl_PointSize = 1.0;
+  float z = -1.0;
+  if (uKind == 1){
+    float d = (vB.w - 0.02) / uDFar;
+    z = clamp(d, 0.0, 1.0) * 2.0 - 1.0;
+  }
+  gl_Position = vec4((vA.x + 0.5) / uGrid.x * 2.0 - 1.0,
+                     (vA.y + 0.5) / uGrid.y * 2.0 - 1.0, z, 1.0);
+}`;
+const FS_TSIGN = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+layout(location = 2) out vec4 oL;
+layout(location = 3) out vec4 oS;
+layout(location = 4) out vec4 oR;
+layout(location = 5) out vec4 oD;
+uniform sampler2D uRw;
+uniform int uKind;
+flat in vec4 vA;
+flat in vec4 vB;
+void main(){
+  if (uKind == 0){
+    float rf = floor(texelFetch(uRw, ivec2(gl_FragCoord.xy), 0).r * 255.0 + 0.5);
+    if (rf < 0.5 || rf > 2.5) discard;    // reflects(): 1 or 2, nothing else
+    oG = vec4(vA.z / 255.0, 0.0, 0.0, 1.0);
+    oB = vec4(vA.w / 255.0, 0.0, 0.0, 1.0);
+    oS = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+  oG = vec4(vA.z / 255.0, 0.0, 0.0, 1.0);
+  oB = vec4(vA.w / 255.0, 0.0, 0.0, 1.0);
+  oL = vec4(vB.x / 255.0, 0.0, 0.0, 1.0);
+  oS = vec4(vB.y / 255.0, 0.0, 0.0, 1.0);
+  oR = vec4(vB.z / 255.0, 0.0, 0.0, 1.0);
+  oD = vec4(vB.w, 0.0, 0.0, 1.0);
+}`;
+
+/*--------------------- the reflections, turned round ------------------------
+  reflectPass is a scatter: it reads a cell and writes to a cell in a
+  DIFFERENT row of the same column. Stage 3 turned the sprite mirror round by
+  gathering instead, because the reflection of a solid is that solid mirrored
+  about the street and a fragment can march it. That does not work here, and
+  it is worth being clear about why: the sprite mirror had a SOLID on the far
+  end - a thing with a shape a ray can hit. This one has a screen cell, and
+  which source row lands on a given destination depends on that source's own
+  depth, so a gather would have to walk the whole column looking for a row
+  that maps back onto it. 256 taps a cell where the scatter does one.
+
+  So it stays a scatter and the card scatters it: one POINT per source cell,
+  put by the vertex shader at the cell it reflects into and moved off-screen
+  when it reflects nowhere. The CPU's inner loop runs upward and its last
+  write wins - which is a priority, and a depth test with the source row as
+  the depth and GREATER as the comparison is that rule exactly, in fixed
+  function, for nothing.
+
+  Everything separable is solved on the CPU and uploaded, for the reason the
+  world pass does it. A row's kk, the road distance it implies, its distance
+  fade and its ripple amplitude are functions of the ROW alone; a column's ray
+  and that ray's squared length are functions of the COLUMN alone. What is
+  left in the shader is one sqrt, one pow, one sin and one cos - the
+  irreducible part - rather than a re-derivation of arithmetic the CPU has
+  already done, which is where drift comes from.
+
+  It writes glyph and palette and NOT level: reflectPass does not touch lBuf,
+  so attachment 2 is bound to NONE for this draw rather than written with
+  something harmless. A harmless value is still a value, and it would land on
+  every cell the scatter hit.
+============================================================================*/
+const VS_TREFL = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D uG, uS, uD, uR, uCol, uRow;
+uniform vec2 uGrid;
+uniform vec2 uCamXY;
+uniform float uHorizon, uCamZ, uProjRows, uHz, uRMAX, uWorldTime;
+uniform float uSrcFall, uObjFall, uFres0, uPower, uGain, uRippleK;
+flat out float vG;
+flat out ivec2 vSrc;
+void main(){
+  int cols = int(uGrid.x), rows = int(uGrid.y);
+  int x = gl_VertexID % cols, r = gl_VertexID / cols;
+  ivec2 sc = ivec2(x, r);
+  gl_PointSize = 1.0;
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);        // culled unless proven otherwise
+  float g = floor(texelFetch(uG, sc, 0).r * 255.0 + 0.5);
+  if (g < 0.5) return;
+  float d = texelFetch(uD, sc, 0).r;
+  if (d > 60.0) return;
+  float sv = floor(texelFetch(uS, sc, 0).r * 255.0 + 0.5);
+  if (sv < 0.5) return;
+  float flatR = floor(2.0 * uHorizon + 2.0 * uCamZ * (uProjRows / d) - float(r) + 0.5);
+  if (flatR <= uHz || flatR >= float(rows)) return;
+  /* per row: kk, the road distance, the distance fade, the ripple amplitude.
+     reflStrength's two early outs are baked in as a zero in the table. */
+  vec4 rw = texelFetch(uRow, ivec2(int(flatR), 0), 0);
+  float kk = rw.x, fade = rw.z, rippAmp = rw.w;
+  if (kk <= 1e-4 || fade <= 0.0) return;
+  vec4 cl = texelFetch(uCol, ivec2(x, 0), 0);
+  float cosI = kk / sqrt(cl.z + kk * kk);
+  float str = (uFres0 + (1.0 - uFres0) * pow(1.0 - cosI, uPower)) * fade * uGain;
+  if (str <= 0.02) return;
+  float ripple = 0.0;
+  if (rippAmp != 0.0)
+    ripple = sin((uCamXY.x + cl.x * rw.y) * uRippleK + uWorldTime * 2.3) *
+             cos((uCamXY.y + cl.y * rw.y) * uRippleK * 0.83 - uWorldTime * 1.7) * rippAmp;
+  float rrf = floor(flatR + ripple + 0.5);
+  if (rrf <= uHz || rrf >= float(rows)) return;
+  float rf = floor(texelFetch(uR, ivec2(x, int(rrf)), 0).r * 255.0 + 0.5);
+  if (rf < 0.5 || rf > 2.5) return;              // reflects(): 1 or 2, nothing else
+  float ng;
+  if (g > uRMAX) ng = str > 0.45 ? g : 0.0;
+  else ng = floor(g * ((sv > 1.5 ? uSrcFall : uObjFall) * str));
+  if (ng < 1.0) return;
+  vG = ng; vSrc = sc;
+  float z = (float(r) + 1.0) / (float(rows) + 1.0);
+  gl_Position = vec4((float(x) + 0.5) / uGrid.x * 2.0 - 1.0,
+                     (rrf + 0.5) / uGrid.y * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+}`;
+const FS_TREFL = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+uniform sampler2D uB;
+flat in float vG;
+flat in ivec2 vSrc;
+void main(){
+  oG = vec4(vG / 255.0, 0.0, 0.0, 1.0);
+  oB = vec4(texelFetch(uB, vSrc, 0).r, 0.0, 0.0, 1.0);
+}`;
+
+/*----------------------- the beam in the air, per cell ----------------------
+  lampVolume is two loops: one over LAMPS that accumulates the strongest cone
+  over each cell and the sum of all of them, and one over CELLS that turns
+  those two numbers into a glyph. On the card it is one pass, and the reason
+  is worth stating because it decides the whole shape.
+
+  The obvious port is one quad per lamp with blending: additive for the sum,
+  MAX for the strongest. That does not work. The resolve needs the WINNER'S
+  colour and the WINNER'S depth, and a componentwise MAX over an RGBA target
+  decouples them - it would take the largest tau from one lamp and the largest
+  ramp index from another. The usual dodge is to pack tau and its payload into
+  one float so a single MAX carries the pair, but every payload bit is a bit
+  taken off tau, and tau is what four separate truncations downstream are
+  reading.
+
+  So the loop goes INSIDE the fragment instead. vMax, vSum, vCol and vDep stop
+  being four screen-sized arrays and become four registers, the winner never
+  has to survive a blend, and the resolve happens in the same shader while they
+  are all still in scope. What that costs is the lamp loop per cell - which is
+  why the CPU still does the culling. Its OUTER loop is a few hundred scalar
+  tests and was never the expense; the 4.8ms is the double loop underneath it.
+  So the CPU hands over the lamps that survive, with the screen rect it already
+  worked out for each, and the fragment tests that rect before it solves
+  anything.
+
+  levelOf is a TRUNCATION of a pow, so it does not go in the shader for the
+  same reason the world pass keeps its fog level on a CPU-solved table: GLSL
+  pow and Math.pow differ in the last bits and the disagreement lands as a
+  whole step. Its eight boundaries are constants, so they are solved once by
+  bisection against the real function and ridden in as thresholds.
+============================================================================*/
+const FS_TLAMP = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+layout(location = 2) out vec4 oL;
+/* It changes a glyph, a palette and a level and nothing else - but it is a
+   full-screen ping-pong, so the three it does not touch have to be carried
+   across or the target it writes into never gets them at all. */
+layout(location = 3) out vec4 oS;
+layout(location = 4) out vec4 oR;
+layout(location = 5) out vec4 oD;
+uniform sampler2D uG, uB, uL, uS, uD, uR, uCol, uRow, uLamp, uPool, uLev;
+uniform vec2 uGrid;
+uniform int uNL;
+uniform float uCamZ, uLensZ, uK2, uR2, uViewD, uRMAX, uSteps;
+uniform float uHaze, uAir, uNight, uFall, uCut, uMix, uGamma, uShaft, uLift, uSwap;
+void main(){
+  ivec2 ci = ivec2(gl_FragCoord.xy);
+  float gIn = floor(texelFetch(uG, ci, 0).r * 255.0 + 0.5);
+  float bIn = floor(texelFetch(uB, ci, 0).r * 255.0 + 0.5);
+  float lIn = floor(texelFetch(uL, ci, 0).r * 255.0 + 0.5);
+  oG = vec4(gIn / 255.0, 0.0, 0.0, 1.0);
+  oB = vec4(bIn / 255.0, 0.0, 0.0, 1.0);
+  oL = vec4(lIn / 255.0, 0.0, 0.0, 1.0);
+  float dLim = texelFetch(uD, ci, 0).r;
+  /* carried across untouched, because this is a ping-pong and the target it
+     writes into gets these from nowhere else */
+  oS = vec4(texelFetch(uS, ci, 0).r, 0.0, 0.0, 1.0);
+  oR = vec4(texelFetch(uR, ci, 0).r, 0.0, 0.0, 1.0);
+  oD = vec4(dLim, 0.0, 0.0, 1.0);
+  // never wash out a source: the CPU skips these before it accumulates, so
+  // they never hold a max and never reach the resolve at all
+  float sv = floor(texelFetch(uS, ci, 0).r * 255.0 + 0.5);
+  if (sv > 1.5) return;
+  vec4 cl = texelFetch(uCol, ivec2(ci.x, 0), 0);
+  float dx = cl.x, dy = cl.y;
+  float dz = -texelFetch(uRow, ivec2(ci.y, 0), 0).x;      // kk, solved on the CPU
+  float vMax = 0.0, vSum = 0.0, vDep = 0.0;
+  int vCol = 0;
+  float fc = float(ci.x), fr = float(ci.y);
+  for (int i = 0; i < uNL; i++){
+    vec4 q = texelFetch(uLamp, ivec2(1, i), 0);
+    if (fc < q.x || fc > q.y || fr < q.z || fr > q.w) continue;   // its screen rect
+    vec4 p = texelFetch(uLamp, ivec2(0, i), 0);
+    float ox = p.x, oy = p.y, oz = p.z, vis = p.w;
+    float a = dx * dx + dy * dy - uK2 * dz * dz;
+    float b = 2.0 * (ox * dx + oy * dy - uK2 * oz * dz);
+    float cc = ox * ox + oy * oy - uK2 * oz * oz;
+    float t0, t1;
+    if (abs(a) < 1e-7){
+      if (abs(b) < 1e-9) continue;
+      float th = -cc / b;
+      if (b > 0.0){ t0 = 0.0; t1 = th; } else { t0 = th; t1 = 1e30; }
+    } else {
+      float disc = b * b - 4.0 * a * cc;
+      if (disc <= 0.0) continue;
+      float sq = sqrt(disc);
+      float ta = (-b - sq) / (2.0 * a), tb = (-b + sq) / (2.0 * a);
+      if (ta > tb){ float sw = ta; ta = tb; tb = sw; }
+      if (a > 0.0){ t0 = ta; t1 = tb; } else { t0 = tb; t1 = 1e30; }
+    }
+    if (abs(dz) > 1e-9){
+      float tApex = -oz / dz, tFloor = -uCamZ / dz;
+      if (dz < 0.0){ if (tApex > t0) t0 = tApex; if (tFloor < t1) t1 = tFloor; }
+      else         { if (tFloor > t0) t0 = tFloor; if (tApex < t1) t1 = tApex; }
+    } else if (oz > 0.0 || uCamZ < 0.0) continue;
+    if (t0 < 0.0) t0 = 0.0;
+    if (t1 > dLim) t1 = dLim;
+    if (!(t1 > t0)) continue;
+    float tm = (t0 + t1) * 0.5;
+    float mx = ox + dx * tm, my = oy + dy * tm, mz = oz + dz * tm;
+    float qq = (mx * mx + my * my + mz * mz) / uR2;
+    float tau = (t1 - t0) * uHaze * uAir * vis / uLensZ * uNight / (1.0 + uFall * qq);
+    if (tau < 0.02) continue;
+    if (tau > 1.0) tau = 1.0;
+    vSum += tau;
+    if (tau > vMax){ vMax = tau; vCol = int(texelFetch(uLamp, ivec2(2, i), 0).x); vDep = t1; }
+  }
+  if (vMax <= 0.0 || vMax <= uCut) return;
+  float tau = vMax + (vSum - vMax) * uMix;
+  if (tau > 1.0) tau = 1.0;
+  tau = (tau - uCut) / (1.0 - uCut);
+  if (tau <= 0.0) return;
+  tau = pow(tau, uGamma);
+  float k = 2.0 + floor(tau * (uSteps - 2.0));
+  if (k > uSteps - 1.0) k = uSteps - 1.0;
+  float ramp = floor(texelFetch(uPool, ivec2(int(k), vCol), 0).r * 255.0 + 0.5);
+  if (gIn < 0.5){
+    float g = floor(pow(tau, 0.75) * uShaft * uRMAX + 0.5);
+    g = g < 1.0 ? 1.0 : (g > uRMAX ? uRMAX : g);
+    oG = vec4(g / 255.0, 0.0, 0.0, 1.0);
+    oB = vec4(ramp / 255.0, 0.0, 0.0, 1.0);
+    /* levelOf, off the CPU-solved boundary table - it is a truncation of a
+       pow and GLSL pow would land the wrong side of a step */
+    float t = vDep / uViewD;
+    t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+    float lv = 0.0;
+    for (int j = 1; j < 8; j++){
+      if (t >= texelFetch(uLev, ivec2(j, 0), 0).x) lv = float(j);
+    }
+    oL = vec4(lv / 255.0, 0.0, 0.0, 1.0);
+  } else {
+    float lift = floor(tau * uLift * uRMAX + 0.5);
+    if (lift > 0.0){
+      float g = gIn + lift;
+      oG = vec4((g > uRMAX ? uRMAX : g) / 255.0, 0.0, 0.0, 1.0);
+    }
+    if (tau >= uSwap) oB = vec4(ramp / 255.0, 0.0, 0.0, 1.0);
+  }
+}`;
+
+/*------------------------------- the rain -----------------------------------
+  rainPass costs 0.05ms and its cell list depends on nothing but worldTime, so
+  none of its ARITHMETIC moves. Only its WRITES do. The CPU goes on choosing
+  the drops exactly as it did - which is also what keeps its srcBuf clears
+  intact, and therefore harvestEmitters byte-identical - and hands the card the
+  fourteen hundred points to draw.
+
+  Moving the hash instead would have been a mistake twice over: hash3 is
+  Math.imul, which is exact in GLSL, but the divide by 2^32 that turns it into
+  a float is not - float(uint) rounds at 24 bits - and a drop one row out is a
+  drop in the wrong place for nothing gained.
+============================================================================*/
+const VS_TRAIN = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D uPt;
+uniform vec2 uGrid;
+flat out vec2 vGL;
+void main(){
+  vec4 p = texelFetch(uPt, ivec2(gl_VertexID, 0), 0);
+  vGL = vec2(p.z, p.w);                       // glyph, level
+  gl_PointSize = 1.0;
+  gl_Position = vec4((p.x + 0.5) / uGrid.x * 2.0 - 1.0,
+                     (p.y + 0.5) / uGrid.y * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const FS_TRAIN = `#version 300 es
+precision highp float;
+layout(location = 0) out vec4 oG;
+layout(location = 1) out vec4 oB;
+layout(location = 2) out vec4 oL;
+uniform float uWhite;
+flat in vec2 vGL;
+void main(){
+  oG = vec4(vGL.x / 255.0, 0.0, 0.0, 1.0);
+  oB = vec4(uWhite / 255.0, 0.0, 0.0, 1.0);
+  oL = vec4(vGL.y / 255.0, 0.0, 0.0, 1.0);
+}`;
+
+/* A point list into a texture. Uploaded in whole rows and then the ragged
+   tail on its own, because texSubImage2D wants the region it is handed to be
+   covered by the array it is handed and the last row of a point list is not. */
+function glTailPts(name, buf, count, stride){
+  if (!count) return;
+  const gl = GL.gl, need = count * stride, W = 2048, H = Math.ceil(need / W);
+  if (!GL[name] || GV[name + 'H'] < H){
+    GV[name + 'H'] = Math.max(8, H);
+    GL[name] = glTailTex(GL[name], gl.RGBA32F, gl.RGBA, gl.FLOAT, W, GV[name + 'H']);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, GL[name]);
+  const full = Math.floor(need / W);
+  if (full) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, full, gl.RGBA, gl.FLOAT, buf);
+  const rem = need - full * W;
+  if (rem){
+    if (!GV.ptTail || GV.ptTail.length < W * 4) GV.ptTail = new Float32Array(W * 4);
+    GV.ptTail.set(buf.subarray(full * W * 4, need * 4));
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, full, W, 1, gl.RGBA, gl.FLOAT, GV.ptTail);
+  }
+}
+/* One texture maker for everything the tail uploads that is not cell-sized. */
+function glTailTex(old, ifmt, fmt, typ, w, h){
+  const gl = GL.gl;
+  if (old) gl.deleteTexture(old);
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, typ, null);
+  for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+  for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+    gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+  return t;
+}
+
+/* levelOf's eight boundaries. It is `(pow(t,0.90)*8)|0` clamped, so the steps
+   are at fixed values of t and nothing about them changes per frame - they are
+   found once, by bisecting the real function rather than by re-deriving its
+   inverse, so the table cannot drift away from the thing it stands for. */
+function tailLevels(){
+  if (GV.lev) return GV.lev;
+  const L = GV.lev = new Float32Array(8);
+  for (let j = 1; j < 8; j++){
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 80; i++){
+      const mid = (lo + hi) / 2;
+      if (levelOf(mid) >= j) hi = mid; else lo = mid;
+    }
+    L[j] = hi;
+  }
+  return L;
+}
+/* The lamps the beam pass could possibly touch, with the screen rect each of
+   them covers - which is exactly the CPU pass's OUTER loop, kept on the CPU
+   because it was never the cost. A few hundred scalar tests against a double
+   loop over every cell of every rect. */
+function lampCollect(){
+  GV.lampN = 0;
+  if (!lampGrid || _lampNight <= 0.02 || inside) return 0;
+  const cols = R.cols, rows = R.rows;
+  const BR = LAMP_REACH * LAMPV.cone;
+  if (!GV.lampBuf || GV.lampBuf.length < lamps.length * 12)
+    GV.lampBuf = new Float32Array(Math.max(16, lamps.length) * 12);
+  const P = GV.lampBuf;
+  let n = 0;
+  for (let li = 0; li < lamps.length; li++){
+    const L = lamps[li];
+    if (L.dead) continue;
+    const ox = cam.x - L.lx, oy = cam.y - L.ly, oz = cam.z - LAMP_LENS_Z;
+    const fwd = -ox * dirX - oy * dirY;
+    if (fwd < -BR || fwd - BR > viewD) continue;
+    let vis = (Math.sqrt(ox * ox + oy * oy) - LAMPV.nearIn)
+            / (LAMPV.nearOut - LAMPV.nearIn);
+    if (vis <= 0) continue;
+    if (vis > 1) vis = 1;
+    vis = vis * vis * (3 - 2 * vis);
+    const f = Math.max(0.35, fwd);
+    const lat = (dirY * -ox - dirX * -oy) / planeLen;
+    const half = cols * 0.5 * (BR / f) + 2;
+    let c0 = Math.floor(cols * 0.5 * (1 - lat / f) - half);
+    let c1 = Math.ceil(cols * 0.5 * (1 - lat / f) + half);
+    if (c1 < 0 || c0 > cols - 1) continue;
+    if (c0 < 0) c0 = 0;
+    if (c1 > cols - 1) c1 = cols - 1;
+    const fN = Math.max(0.35, fwd - BR), fF = Math.max(0.5, fwd + BR);
+    let r0 = Math.floor(horizon + (cam.z - LAMP_LENS_Z) * projRows / fN);
+    let r1 = Math.ceil(horizon + cam.z * projRows / fN);
+    const rA = Math.floor(horizon + (cam.z - LAMP_LENS_Z) * projRows / fF);
+    const rB = Math.ceil(horizon + cam.z * projRows / fF);
+    if (rA < r0) r0 = rA;
+    if (rB > r1) r1 = rB;
+    if (r0 < 0) r0 = 0;
+    if (r1 > rows - 1) r1 = rows - 1;
+    if (r1 < r0) continue;
+    const o = n * 12;
+    P[o] = ox; P[o + 1] = oy; P[o + 2] = oz; P[o + 3] = vis;
+    P[o + 4] = c0; P[o + 5] = c1; P[o + 6] = r0; P[o + 7] = r1;
+    P[o + 8] = L.ci || 0; P[o + 9] = 0; P[o + 10] = 0; P[o + 11] = 0;
+    n++;
+  }
+  GV.lampN = n;
+  return n;
+}
+/* The drops, chosen exactly as rainPass chooses them. `clear` is the srcBuf
+   half, and it is deliberately a separate call: the beam pass reads srcBuf to
+   know what not to wash out, and on the CPU rain runs AFTER the beam - so the
+   list has to be built before the tail draws and the clears applied after it,
+   or a raindrop silently un-marks a source the beam was supposed to spare. */
+function rainCollect(){
+  GV.rainN = 0;
+  if (weather !== 1 && weather !== 2) return 0;
+  const cols = R.cols, rows = R.rows;
+  const perCol = weather === 2 ? 3 : 2;
+  const hz = clamp(Math.floor(horizon), 0, rows - 1);
+  if (!GV.rainBuf || GV.rainBuf.length < cols * 8 * 4)
+    GV.rainBuf = new Float32Array(cols * 8 * 4);
+  const P = GV.rainBuf;
+  let n = 0;
+  for (let x = 0; x < cols; x++){
+    for (let k = 0; k < perCol; k++){
+      const h1 = hash3(x, k, 5);
+      const y = (h1 * rows + worldTime * (24 + h1 * 40)) % rows;
+      const r = y | 0;
+      const xx = (x + ((y * 0.22) | 0)) % cols;
+      const low = r > hz;
+      if (low && ((x + k) & 1)) continue;
+      const o = n * 4;
+      P[o] = xx; P[o + 1] = r;
+      P[o + 2] = low ? Math.max(1, (RMAX * 0.34) | 0) : G_SLASH;
+      P[o + 3] = low ? 5 : 3;
+      n++;
+      if (!low && r + 1 < rows && xx > 0){
+        const o2 = n * 4;
+        P[o2] = xx - 1; P[o2 + 1] = r + 1; P[o2 + 2] = G_TICK; P[o2 + 3] = 5;
+        n++;
+      }
+    }
+  }
+  GV.rainN = n;
+  return n;
+}
+function rainClearSrc(){
+  const cols = R.cols, P = GV.rainBuf;
+  for (let i = 0; i < GV.rainN; i++){
+    const o = i * 4;
+    srcBuf[P[o + 1] * cols + P[o]] = 0;
+  }
+}
+
+/* The targets, built the first time the pass runs rather than on every
+   initRender - the same repair stage 3 made to the sprite atlas. A grid
+   change rebuilds them; nothing else does. */
+function glTailTargets(){
+  const gl = GL.gl, cols = R.cols, rows = R.rows;
+  if (GV.tw === cols && GV.th === rows && GL.tailA) return true;
+  const mkT = (old, ifmt, fmt, typ, w, h) => {
+    if (old) gl.deleteTexture(old);
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, typ, null);
+    for (const pn of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.NEAREST);
+    for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
+      gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  const mk8 = (old, w, h) => mkT(old, gl.R8, gl.RED, gl.UNSIGNED_BYTE, w, h);
+  /* One depth buffer, shared by both targets, and it does two unrelated jobs
+     at different points in the chain: the sign pass tests against the world's
+     distances with it, and the reflection scatter then clears it and uses the
+     SOURCE ROW as a priority. Nothing reads it afterwards. 32F because the
+     sign test carries a 0.02-tile bias and 16 bits over a 96-tile view is
+     0.0015 a step - close enough to the bias to be worth not risking. */
+  if (GL.tailD) gl.deleteRenderbuffer(GL.tailD);
+  GL.tailD = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, GL.tailD);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT32F, cols, rows);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+  /* SIX buffers of chain state, not three. signPass writes a source kind, a
+     wetness byte and a distance as well as a glyph, and reflectPass reads all
+     three of those back off it - so they travel with the glyph or the pass
+     that reads them sees the world as it was before the signs went up. */
+  const set = (old) => {
+    const o = old || {};
+    o.g = mk8(o.g, cols, rows); o.b = mk8(o.b, cols, rows); o.l = mk8(o.l, cols, rows);
+    o.s = mk8(o.s, cols, rows); o.r = mk8(o.r, cols, rows);
+    o.d = mkT(o.d, gl.R32F, gl.RED, gl.FLOAT, cols, rows);
+    if (!o.f) o.f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, o.f);
+    const A = [o.g, o.b, o.l, o.s, o.r, o.d];
+    for (let i = 0; i < 6; i++)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, A[i], 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, GL.tailD);
+    return o;
+  };
+  GL.cellS = mk8(GL.cellS, cols, rows);
+  GL.cellR = mk8(GL.cellR, cols, rows);
+  GL.cellD = mkT(GL.cellD, gl.R32F, gl.RED, gl.FLOAT, cols, rows);
+  GL.vCol  = mkT(GL.vCol, gl.RGBA32F, gl.RGBA, gl.FLOAT, cols, 1);
+  GL.vRow  = mkT(GL.vRow, gl.RGBA32F, gl.RGBA, gl.FLOAT, rows, 1);
+  GL.tailA = set(GL.tailA);
+  const okA = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  GL.tailB = set(GL.tailB);
+  const okB = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  GV.col = new Float32Array(cols * 4);
+  GV.row = new Float32Array(rows * 4);
+  GV.tw = cols; GV.th = rows;
+  return okA && okB;
+}
+/* Which of the tail's passes the card may take THIS frame. A suffix of the
+   chain or nothing at all: see the block comment. Compose has to be the thing
+   that draws the frame, because the pack path reads the CPU buffers and would
+   simply not see any of this. */
+function tailMask(){
+  if (!GL || !GL.tailOK || !GPUV.on || inside) return 0;
+  if (!GL.compOK || !GPUC.on) return 0;
+  const gpuLit = !!(GL.lightOK && GPUL.on);
+  if (!gpuLit && (LIGHTV.on || GIR.on || FOGV.on)) return 0;    // _cpuLitFrame
+  if (scopeZoom() !== 1) return 0;      // the scope blends the CPU buffers by hand
+  const st = GPUV.stages & GPUV.max;
+  /* A SUFFIX of the chain, or nothing. Anything short of TAIL_ALL still has a
+     CPU pass behind it, so it reads its answer back - a full sync, slower than
+     leaving the switch off, and the bisect step that proves each pass. Only
+     TAIL_ALL hands the frame forward to compose and costs no trip at all. */
+  return (st === 63 || st === 62 || st === 60 || st === 56 ||
+          st === 48 || st === 32) ? st : 0;
+}
+/* Upload, seed, and run whatever of the chain the card owns. Leaves the answer
+   in GL.tailB for compose to read, and never brings it back. */
+function glTailPass(stages){
+  if (!glTailTargets()) return 0;
+  const gl = GL.gl, cols = R.cols, rows = R.rows;
+  const _T = GV.t || (GV.t = { setup: 0, upload: 0, draw: 0, n: 0 });
+  let _t0 = performance.now();
+  /* Both lists are built HERE, before a byte goes up, because the beam pass
+     reads srcBuf and rain clears it - so rain's cells have to be chosen
+     before the upload and its clears applied after the draw. rainClearSrc()
+     does that second half, at rain's own slot in worldPasses. */
+  if (stages & TAIL_WMIR) wmirCollect();
+  if (stages & TAIL_SIGN) signCollect();
+  if (stages & TAIL_LAMP) lampCollect();
+  if (stages & TAIL_RAIN) rainCollect();
+  /* Per row and per column, solved here for the reason the world pass solves
+     its own: a re-derivation on the far side of the bus is a place to drift. */
+  const CO = GV.col, RO = GV.row;
+  for (let x = 0; x < cols; x++){
+    const o = x * 4, dx = rayX[x], dy = rayY[x];
+    CO[o] = dx; CO[o + 1] = dy; CO[o + 2] = dx * dx + dy * dy; CO[o + 3] = 0;
+  }
+  for (let r = 0; r < rows; r++){
+    const o = r * 4, kk = (r + 0.5 - horizon) / projRows;
+    let dRoad = 0, fade = 0, amp = 0;
+    if (kk > 1e-4){
+      dRoad = cam.z / kk;
+      fade = 1;
+      if (dRoad > REFL.fadeD){
+        fade = 1 - (dRoad - REFL.fadeD) / (REFL.maxD - REFL.fadeD);
+        if (fade <= 0) fade = 0;
+      }
+      if (dRoad > 0.2 && dRoad <= 240){
+        amp = REFL.ripple * projRows / (dRoad > 2 ? dRoad : 2);
+        if (amp > REFL.rippleMax) amp = REFL.rippleMax;
+      }
+    }
+    RO[o] = kk; RO[o + 1] = dRoad; RO[o + 2] = fade; RO[o + 3] = amp;
+  }
+  _T.setup += performance.now() - _t0; _t0 = performance.now();
+  const up8 = (t, buf) => {
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, rows, gl.RED, gl.UNSIGNED_BYTE, buf);
+  };
+  up8(GL.cellG, gBuf); up8(GL.cellB, bBuf); up8(GL.cellL, lBuf);
+  up8(GL.cellS, srcBuf); up8(GL.cellR, refBuf);
+  gl.bindTexture(gl.TEXTURE_2D, GL.cellD);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, rows, gl.RED, gl.FLOAT, dBuf);
+  gl.bindTexture(gl.TEXTURE_2D, GL.vCol);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, cols, 1, gl.RGBA, gl.FLOAT, CO);
+  gl.bindTexture(gl.TEXTURE_2D, GL.vRow);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, rows, 1, gl.RGBA, gl.FLOAT, RO);
+  if (stages & TAIL_WMIR) glTailPts('tWmM', GV.wmM, GV.wmN, 1);
+  if (stages & TAIL_SIGN){
+    glTailPts('tSgM', GV.sgM, GV.sgMN, 1);
+    glTailPts('tSgS', GV.sgS, GV.sgSN, 2);
+  }
+  if (stages & TAIL_LAMP){
+    if (GV.lampN){
+      if (!GL.tLamp || GV.lampCap < GV.lampN){
+        GV.lampCap = Math.max(64, GV.lampN);
+        GL.tLamp = glTailTex(GL.tLamp, gl.RGBA32F, gl.RGBA, gl.FLOAT, 3, GV.lampCap);
+      }
+      gl.bindTexture(gl.TEXTURE_2D, GL.tLamp);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 3, GV.lampN, gl.RGBA, gl.FLOAT, GV.lampBuf);
+    }
+    /* The ramps go up every frame. It is fifty bytes, and initRender can
+       rebuild the palette under us between one frame and the next. */
+    const PN = LAMPPOOL.length;
+    if (PN){
+      if (!GV.pool || GV.poolN !== PN){
+        GV.pool = new Uint8Array(LAMP_STEPS * PN); GV.poolN = PN;
+        GL.tPool = glTailTex(GL.tPool, gl.R8, gl.RED, gl.UNSIGNED_BYTE, LAMP_STEPS, PN);
+      }
+      for (let i = 0; i < PN; i++){
+        const rp = LAMPPOOL[i] || LAMPPOOL[0];
+        for (let k = 0; k < LAMP_STEPS; k++) GV.pool[i * LAMP_STEPS + k] = rp ? rp[k] : 0;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, GL.tPool);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LAMP_STEPS, PN, gl.RED, gl.UNSIGNED_BYTE, GV.pool);
+    }
+    if (!GL.tLev){
+      GL.tLev = glTailTex(null, gl.R32F, gl.RED, gl.FLOAT, 8, 1);
+      gl.bindTexture(gl.TEXTURE_2D, GL.tLev);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 8, 1, gl.RED, gl.FLOAT, tailLevels());
+    }
+  }
+  if ((stages & TAIL_RAIN) && GV.rainN){
+    if (!GL.tRain || GV.rainCap < GV.rainN){
+      GV.rainCap = Math.max(256, GV.rainN);
+      GL.tRain = glTailTex(GL.tRain, gl.RGBA32F, gl.RGBA, gl.FLOAT, GV.rainCap, 1);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, GL.tRain);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, GV.rainN, 1, gl.RGBA, gl.FLOAT, GV.rainBuf);
+  }
+  _T.upload += performance.now() - _t0; _t0 = performance.now();
+
+  const ALL = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2,
+               gl.COLOR_ATTACHMENT3, gl.COLOR_ATTACHMENT4, gl.COLOR_ATTACHMENT5];
+  /* Which attachments a pass is allowed to touch. An MRT fragment shader that
+     leaves an output unassigned still WRITES it, with whatever happened to be
+     in the register - so a pass that only has a glyph and a palette to give
+     has to have the other four switched OFF rather than politely ignored. */
+  const MASK = (n) => ALL.map((c, i) => i < n ? c : gl.NONE);
+  const SNAME = ['uG', 'uB', 'uL', 'uS', 'uR', 'uD'];
+  gl.viewport(0, 0, cols, rows);
+  gl.disable(gl.BLEND);
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindVertexArray(GL.empty);
+
+  /* The chain is a ping-pong and `cur` is wherever the state has got to. A
+     POINT pass writes in place - it never reads the target it is drawing into
+     - so only the full-screen passes have to swap, and a pass that is
+     switched off costs nothing rather than costing a copy. */
+  let cur = GL.tailA, oth = GL.tailB;
+  const seedFrom = (dst, src) => {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.f);
+    gl.drawBuffers(ALL);
+    gl.useProgram(GL.pTSeed);
+    gl.uniform1f(GL.uTS.uDFar, viewD);
+    const t = src ? [src.g, src.b, src.l, src.s, src.r, src.d]
+                  : [GL.cellG, GL.cellB, GL.cellL, GL.cellS, GL.cellR, GL.cellD];
+    for (let i = 0; i < 6; i++){
+      gl.uniform1i(GL.uTS[SNAME[i]], i);
+      gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]);
+    }
+    // and the world's distances into the DEPTH buffer, which is what lets the
+    // sign pass do its occlusion test without ever reading dBuf
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.ALWAYS); gl.depthMask(true);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  };
+  seedFrom(cur, null);
+
+  // --- the off-screen wall mirror, gated on the wetness byte ---------------
+  if ((stages & TAIL_WMIR) && GV.wmN){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, cur.f);
+    gl.useProgram(GL.pTSign);
+    gl.uniform2f(GL.uTG.uGrid, cols, rows);
+    gl.uniform1f(GL.uTG.uDFar, viewD);
+    gl.uniform1i(GL.uTG.uKind, 0);
+    gl.uniform1i(GL.uTG.uRw, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.cellR);
+    gl.uniform1i(GL.uTG.uPt, 1);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.tWmM);
+    /* the sign mirror clears a source kind on the way past and this does not,
+       so the same shader is used with attachment 3 switched off */
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.NONE,
+                    gl.NONE, gl.NONE, gl.NONE]);
+    gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+    gl.drawArrays(gl.POINTS, 0, GV.wmN);
+    gl.drawBuffers(ALL);
+  }
+
+  // --- the solids' reflections: a gate and a copy over data already here ---
+  if (stages & TAIL_SREF){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, oth.f);
+    gl.drawBuffers(ALL);
+    gl.useProgram(GL.pTSRef);
+    const t = [cur.g, cur.b, cur.l, cur.s, cur.r, cur.d];
+    for (let i = 0; i < 6; i++){
+      gl.uniform1i(GL.uTX[SNAME[i]], i);
+      gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]);
+    }
+    gl.uniform1i(GL.uTX.uRef, 6);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, GL.sRefT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const sw = cur; cur = oth; oth = sw;
+  }
+
+  // --- the sign faces, and the part of them that is off the top of the frame
+  if ((stages & TAIL_SIGN) && (GV.sgMN || GV.sgSN)){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, cur.f);
+    gl.useProgram(GL.pTSign);
+    gl.uniform2f(GL.uTG.uGrid, cols, rows);
+    gl.uniform1f(GL.uTG.uDFar, viewD);
+    gl.uniform1i(GL.uTG.uRw, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.cellR);
+    gl.uniform1i(GL.uTG.uPt, 1);
+    gl.activeTexture(gl.TEXTURE1);
+    /* The mirror first, then the faces - batched rather than interleaved,
+       which is only safe because the two never land on the same cell. */
+    if (GV.sgMN){
+      gl.uniform1i(GL.uTG.uKind, 0);
+      gl.bindTexture(gl.TEXTURE_2D, GL.tSgM);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.NONE,
+                      gl.COLOR_ATTACHMENT3, gl.NONE, gl.NONE]);
+      gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+      gl.drawArrays(gl.POINTS, 0, GV.sgMN);
+    }
+    if (GV.sgSN){
+      gl.uniform1i(GL.uTG.uKind, 1);
+      gl.bindTexture(gl.TEXTURE_2D, GL.tSgS);
+      gl.drawBuffers(ALL);
+      gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true);
+      gl.drawArrays(gl.POINTS, 0, GV.sgSN);
+      gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+    }
+    gl.drawBuffers(ALL);
+  }
+
+  // --- the reflections, scattered as points, ordered by a depth test -------
+  if (stages & TAIL_REFL){
+    seedFrom(oth, cur);                 // the cells the scatter does not touch
+    gl.bindFramebuffer(gl.FRAMEBUFFER, oth.f);
+    /* depthMask FIRST. A depth clear is masked by depthMask exactly as a draw
+       is, so clearing with writes disabled is a silent no-op - the buffer
+       keeps what it had, every point fails a GREATER test, and the pass
+       produces a perfect copy of its own input with no GL error to show. */
+    gl.depthMask(true);
+    gl.clearBufferfv(gl.DEPTH, 0, [0]);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.GREATER);
+    gl.drawBuffers(MASK(2));            // reflectPass writes glyph and palette
+    gl.useProgram(GL.pTRefl);
+    const u = GL.uTR;
+    gl.uniform2f(u.uGrid, cols, rows);
+    gl.uniform2f(u.uCamXY, cam.x, cam.y);
+    gl.uniform1f(u.uHorizon, horizon);
+    gl.uniform1f(u.uCamZ, cam.z);
+    gl.uniform1f(u.uProjRows, projRows);
+    gl.uniform1f(u.uHz, clamp(Math.floor(horizon), 0, rows - 1));
+    gl.uniform1f(u.uRMAX, RMAX);
+    gl.uniform1f(u.uWorldTime, worldTime);
+    gl.uniform1f(u.uSrcFall, REFL.srcFall);
+    gl.uniform1f(u.uObjFall, REFL.objFall);
+    gl.uniform1f(u.uFres0, REFL.fres0);
+    gl.uniform1f(u.uPower, REFL.power);
+    gl.uniform1f(u.uGain, REFL.gain);
+    gl.uniform1f(u.uRippleK, REFL.rippleK);
+    const bind = (loc, unit, tex) => {
+      gl.uniform1i(loc, unit); gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+    };
+    /* Its sources are the chain as it stands - the signs are in it by now -
+       and never the uploaded cell textures, which know nothing about them. */
+    bind(u.uG, 0, cur.g); bind(u.uB, 1, cur.b); bind(u.uS, 2, cur.s);
+    bind(u.uD, 3, cur.d); bind(u.uR, 4, cur.r);
+    bind(u.uCol, 5, GL.vCol); bind(u.uRow, 6, GL.vRow);
+    gl.drawArrays(gl.POINTS, 0, cols * rows);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.drawBuffers(ALL);
+    const sw = cur; cur = oth; oth = sw;
+  }
+
+  // --- the beam in the air -------------------------------------------------
+  if ((stages & TAIL_LAMP) && GV.lampN){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, oth.f);
+    gl.drawBuffers(ALL);
+    gl.useProgram(GL.pTLamp);
+    const u = GL.uTL;
+    const BRc = LAMP_REACH * LAMPV.cone, Kc = BRc / LAMP_LENS_Z;
+    gl.uniform2f(u.uGrid, cols, rows);
+    gl.uniform1i(u.uNL, GV.lampN);
+    gl.uniform1f(u.uCamZ, cam.z);
+    gl.uniform1f(u.uLensZ, LAMP_LENS_Z);
+    gl.uniform1f(u.uK2, Kc * Kc);
+    gl.uniform1f(u.uR2, LAMP_REACH * LAMP_REACH);
+    gl.uniform1f(u.uViewD, viewD);
+    gl.uniform1f(u.uRMAX, RMAX);
+    gl.uniform1f(u.uSteps, LAMP_STEPS);
+    gl.uniform1f(u.uHaze, LAMPV.haze);
+    gl.uniform1f(u.uAir, _lampAir);
+    gl.uniform1f(u.uNight, _lampNight);
+    gl.uniform1f(u.uFall, LAMPV.fall);
+    gl.uniform1f(u.uCut, LAMPV.cut);
+    gl.uniform1f(u.uMix, LAMPV.mix);
+    gl.uniform1f(u.uGamma, LAMPV.gamma);
+    gl.uniform1f(u.uShaft, LAMPV.shaft);
+    gl.uniform1f(u.uLift, LAMPV.lift);
+    gl.uniform1f(u.uSwap, LAMPV.swap);
+    const bind = (loc, unit, tex) => {
+      gl.uniform1i(loc, unit); gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+    };
+    bind(u.uG, 0, cur.g); bind(u.uB, 1, cur.b); bind(u.uL, 2, cur.l);
+    bind(u.uS, 3, cur.s); bind(u.uD, 4, cur.d); bind(u.uR, 5, cur.r);
+    bind(u.uCol, 6, GL.vCol); bind(u.uRow, 7, GL.vRow);
+    bind(u.uLamp, 8, GL.tLamp); bind(u.uPool, 9, GL.tPool); bind(u.uLev, 10, GL.tLev);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const sw = cur; cur = oth; oth = sw;
+  }
+
+  /* Rain last, over whatever the beam left, with no depth test: the CPU walks
+     the drops in one order and its last write wins, and primitive order is
+     that same rule. */
+  if ((stages & TAIL_RAIN) && GV.rainN){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, cur.f);
+    gl.drawBuffers(MASK(3));            // glyph, palette, level
+    gl.useProgram(GL.pTRain);
+    gl.uniform2f(GL.uTRn.uGrid, cols, rows);
+    gl.uniform1f(GL.uTRn.uWhite, C.nWhite);
+    gl.uniform1i(GL.uTRn.uPt, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.tRain);
+    gl.drawArrays(gl.POINTS, 0, GV.rainN);
+    gl.drawBuffers(ALL);
+  }
+
+  GV.cur = cur;
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, R.W, R.H);
+  gl.enable(gl.BLEND);
+  _T.draw += performance.now() - _t0; _T.n++;
+  GV.ran++;
+  GV.used = 1;
+  return stages;
+}
+/* The harness reads CPU buffers, and the whole point of this block is that its
+   answer never becomes one. This is the debug way back: it is a full sync and
+   it is only ever called by the parity run. */
+function glTailRead(){
+  if (!GV.used || !GV.cur) return false;
+  const gl = GL.gl, cols = R.cols, rows = R.rows, n = cols * rows;
+  if (!GV.rd || GV.rd.length !== n) GV.rd = new Uint8Array(n);
+  const rd = GV.rd;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, GV.cur.f);
+  /* ALL SIX, not the three compose wants. The signs write a source kind, a
+     wetness byte and a distance as well as a glyph, and the harness compares
+     every buffer - so bringing back only the visible three left it holding the
+     GPU's glyphs against the CPU's un-signed srcBuf, which read as 74,000
+     differing "surface" cells and looked exactly like a broken shader. */
+  for (const [att, buf] of [[0, gBuf], [1, bBuf], [2, lBuf], [3, srcBuf], [4, refBuf]]){
+    gl.readBuffer(gl.COLOR_ATTACHMENT0 + att);
+    gl.readPixels(0, 0, cols, rows, gl.RED, gl.UNSIGNED_BYTE, rd);
+    buf.set(rd);
+  }
+  gl.readBuffer(gl.COLOR_ATTACHMENT5);
+  gl.readPixels(0, 0, cols, rows, gl.RED, gl.FLOAT, dBuf);
+  gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return true;
+}
+
 let _emitTex = null, _heightUp = false;
 function glUploadHeight(){
   if (!GL || !GL.lightOK || _heightUp) return;
@@ -23758,13 +25270,27 @@ function glWorldTargets(){
      is four microseconds. The wait moves to getBufferSubData, where it is
      under a millisecond because by then the card has finished. */
   for (const pb of (GL.wPack || [])) gl.deleteBuffer(pb);
+  /* TWO sets. A readback costs what it costs because the CPU asks for the
+     answer in the same frame the GPU was told to compute it, and then stands
+     there. Issued into one set and collected out of the OTHER a frame later,
+     the same call is a memcpy off a buffer the card finished with long ago. */
+  /* THREE sets and a fence apiece. A readback costs what it costs because the
+     CPU asks for the answer in the same frame the GPU was told to compute it,
+     and then stands there. Deferring by one frame is not enough on its own -
+     measured, it took 21.9ms down to only 15.1ms, because the CPU is running
+     further ahead of the card than that. So the answer is not "wait a frame",
+     it is "never wait": each read carries a fence, the fence is polled with a
+     zero timeout, and the collect happens on whichever frame it comes back
+     signalled. If it is not ready the harvest keeps the list it had. */
   GL.wPack = [];
-  for (const sz of [n * 4, n * 4, n * 4]){
+  for (let i = 0; i < 9; i++){
     const pb = gl.createBuffer();
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pb);
-    gl.bufferData(gl.PIXEL_PACK_BUFFER, sz, gl.STREAM_READ);
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, n * 4, gl.STREAM_READ);
     GL.wPack.push(pb);
   }
+  for (const f of (GW.pbFence || [])) if (f) gl.deleteSync(f);
+  GW.pbSet = 0; GW.pbLive = 0; GW.pbFence = [null, null, null]; GW.pbMiss = 0;
   gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   GW.colD = new Float32Array(W * 8);       // two rows of RGBA
   GW.rowD = new Float32Array(H * 8);
@@ -24167,7 +25693,22 @@ function glWorldPass(defer){
   Stage 3 needs exactly that: the sprites go onto the card after the world and
   before anything comes off it, so the two of them share one sync instead of
   paying for two. Nothing below moved; it was cut here and nothing else. ---*/
-function glWorldRead(){
+/*-------------------- the toll, and how it stops being one ------------------
+  `defer` is true when the card owns the whole tail, which means the ONLY
+  thing left that reads these buffers is harvestEmitters - and harvest builds
+  a light LIST: a few hundred bucket averages of emitters that barely move,
+  consumed as a soft glow. So the read is issued into one set of pack buffers
+  and collected out of the other NEXT frame, by which time the card finished
+  it long ago and getBufferSubData is a memcpy rather than a stall.
+
+  What that costs is one frame of latency in the light list and nothing else.
+  It is not byte-parity and it is not pretending to be: a moving camera sees
+  the glow lag by a frame. Deferring the WORLD would shear the screen on every
+  turn; deferring the light list is a soft thing arriving 5ms late.
+
+  The sprite mirror read goes with it. applySpriteRefl is on the card now, so
+  GS.rq32 has no reader at all and the collect is simply skipped. */
+function glWorldRead(defer){
   if (!GW.pend) return 0;
   const stages = GW.pend; GW.pend = 0;
   const gl = GL.gl, cols = R.cols, rows = R.rows;
@@ -24178,23 +25719,51 @@ function glWorldRead(){
      runs between the two and binds its own target on the way past. */
   gl.bindFramebuffer(gl.FRAMEBUFFER, GL.wF);
   const PB = GL.wPack;
+  /* Issue into this frame's set. Deferred, the set alternates and the collect
+     below reads the one filled last frame; immediate, it is one set and the
+     collect waits, exactly as it always did. */
+  const slot = defer ? GW.pbSet : 0;
+  const put = slot * 3;
   for (let i = 0; i < 3; i++){
     gl.readBuffer(gl.COLOR_ATTACHMENT0 + i);
-    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[i]);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[put + i]);
     if (i < 2) gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, 0);
     else       gl.readPixels(0, 0, cols, rows, gl.RED, gl.FLOAT, 0);
   }
-  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[0]);
-  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GW.qa);
-  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[1]);
-  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GW.qb);
-  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[2]);
-  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dBuf);
+  let get = 0, ready = true;
+  if (defer){
+    if (GW.pbFence[slot]) gl.deleteSync(GW.pbFence[slot]);
+    GW.pbFence[slot] = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();                       // or the fence is never submitted
+    GW.pbSet = (slot + 1) % 3;
+    /* the oldest outstanding read - two frames back - and it is collected
+       only if the card says it has finished it. Zero timeout: this call must
+       never be the thing that waits. */
+    const old = GW.pbSet;
+    ready = false;
+    if (GW.pbFence[old]){
+      const st = gl.clientWaitSync(GW.pbFence[old], 0, 0);
+      if (st === gl.ALREADY_SIGNALED || st === gl.CONDITION_SATISFIED){
+        ready = true; get = old * 3;
+        gl.deleteSync(GW.pbFence[old]); GW.pbFence[old] = null;
+      } else GW.pbMiss++;
+    }
+  }
+  if (ready){
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[get]);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GW.qa);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[get + 1]);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, GW.qb);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, PB[get + 2]);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dBuf);
+  }
   gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
   gl.readBuffer(gl.COLOR_ATTACHMENT0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  glSpriteRead();
+  // applySpriteRefl is on the card when we are deferring, so nothing reads it
+  if (!defer) glSpriteRead();
   gl.enable(gl.BLEND);
+  if (!ready){ _T.read += performance.now() - _t0; _T.n++; return stages; }
   _T.read += performance.now() - _t0; _t0 = performance.now();
   const qa = GW.qa32, qb = GW.qb32;
   for (let i = 0; i < n; i++){
@@ -24798,12 +26367,19 @@ function glPackWorld(){
 function glComposeWorld(){
   if (!GL || !GL.compOK || !GPUC.on || _cpuLitFrame) return false;
   const gl = GL.gl;
-  gl.bindTexture(gl.TEXTURE_2D, GL.cellG);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, gBuf);
-  gl.bindTexture(gl.TEXTURE_2D, GL.cellB);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, bBuf);
-  gl.bindTexture(gl.TEXTURE_2D, GL.cellL);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, lBuf);
+  /* When the tail owns the end of the frame its answer is already in a
+     texture and gBuf is a frame's worth of stale bytes - so the uploads are
+     skipped and compose reads what the tail wrote. That is the whole reason
+     moving those passes costs nothing: the answer goes FORWARD. */
+  const TG = GV.used ? GV.cur : null;
+  if (!TG){
+    gl.bindTexture(gl.TEXTURE_2D, GL.cellG);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, gBuf);
+    gl.bindTexture(gl.TEXTURE_2D, GL.cellB);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, bBuf);
+    gl.bindTexture(gl.TEXTURE_2D, GL.cellL);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.UNSIGNED_BYTE, lBuf);
+  }
 
   gl.useProgram(GL.pComp);
   gl.uniform2f(GL.uC.uGrid, R.cols, R.rows);
@@ -24812,9 +26388,9 @@ function glComposeWorld(){
   gl.uniform2f(GL.uC.uRes, R.W, R.H);
   gl.uniform2f(GL.uC.uAtlas, GL_COLS, LV + 1);
   gl.uniform1f(GL.uC.uLightOn, GL._litThisFrame ? 1 : 0);
-  gl.uniform1i(GL.uC.uG, 0);     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, GL.cellG);
-  gl.uniform1i(GL.uC.uB, 1);     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.cellB);
-  gl.uniform1i(GL.uC.uLv, 2);    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, GL.cellL);
+  gl.uniform1i(GL.uC.uG, 0);     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.g : GL.cellG);
+  gl.uniform1i(GL.uC.uB, 1);     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.b : GL.cellB);
+  gl.uniform1i(GL.uC.uLv, 2);    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.l : GL.cellL);
   gl.uniform1i(GL.uC.uPal, 4);   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, GL.palT);
   gl.uniform1i(GL.uC.uTex, 5);   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, GL.tex);
   gl.uniform1i(GL.uC.uLight, 3); gl.activeTexture(gl.TEXTURE3);
@@ -25170,8 +26746,21 @@ function hudBigCell(bx, by, ch, ci){
   const i = by * bCols + bx;
   bGlyph[i] = code; bCol[i] = ci; bAny = 1;
 }
+/* A space inside a STRING is part of the string and clears the cell it lands
+   on, exactly as it does on the chart layer, where hudStr writes spaces and
+   hudCell does not. This is the string one. Without it, ' MAP ' written
+   across a drawn border left the border showing through its own title, and a
+   landmark name on the city map wore the terrain in the gaps between its
+   words - the same hole hudPanel already clears for a whole card. */
 function hudBigStr(bx, by, s, ci){
-  for (let i = 0; i < s.length; i++) hudBigCell(bx + i, by, s[i], ci);
+  for (let i = 0; i < s.length; i++){
+    if (s[i] === ' '){
+      const bx2 = bx + i;
+      if (bx2 >= 0 && bx2 < bCols && by >= 0 && by < bRows) bGlyph[by * bCols + bx2] = 0;
+      continue;
+    }
+    hudBigCell(bx + i, by, s[i], ci);
+  }
 }
 /* One centred line of HUD in its own panel, at whatever size this grid wants,
    and it hands back the row it finished on - a big one is three fine rows
@@ -25313,20 +26902,26 @@ function drawTree(m){
    two or three up there - and every mark on it goes through `cell` so the
    terrain, the traffic, the doors and your own arrow all agree. */
 const MW = 33, MH = 15;
-function mmScale(){ return hudScale(); }
-function drawMinimap(x0, y0, sc){
-  sc = sc || 1;
-  const W = MW * sc, H = MH * sc;
-  hudPanel(x0, y0, W + 2, H + 2);
-  hudBox(x0, y0, W + 2, H + 2, 'MAP');
+/* One glyph per map cell, on whichever lattice the readable HUD is using.
+
+   It used to paint each cell as an sc x sc block of the SAME character on the
+   chart's own layer, so at four cells to a character a building arrived as a
+   sixteen-glyph slab of hash and the map stopped being a picture of anything -
+   it was a texture, and the finer the grid the worse it got. One big glyph
+   covers the same ground on the glass and is actually the character it is
+   supposed to be.
+
+   The caller turns the big layer on for the map and the lines under it
+   together, because they are one readout and had drifted onto two lattices: a
+   mosaic map captioned in grey lint. */
+function drawMinimap(x0, y0){
+  hudPanel(x0, y0, MW + 2, MH + 2);
+  hudBox(x0, y0, MW + 2, MH + 2, 'MAP');
   const cxT = Math.round(cam.x), cyT = Math.round(cam.y);
   const hw = MW >> 1, hh = MH >> 1;
-  // one map cell, painted as an sc x sc block of character cells
   const cell = (i, j, ch, col) => {
     if (i < 0 || i >= MW || j < 0 || j >= MH) return;
-    const cx = x0 + 1 + i * sc, cy = y0 + 1 + j * sc;
-    for (let b = 0; b < sc; b++)
-      for (let a = 0; a < sc; a++) hudCell(cx + a, cy + b, ch, col);
+    hudCell(x0 + 1 + i, y0 + 1 + j, ch, col);
   };
   for (let j = 0; j < MH; j++){
     const ty = cyT + (j - hh) * 2;      // +y runs down-screen, same as the city map
@@ -25456,14 +27051,18 @@ function hudPass(){
   // player actually needs while walking lives under the map, the rest moved
   // to the pause menu (CONTROLS / DEBUG).
   const sceneOn = topMode() && topMode().name === 'scene';
-  const msc = mmScale(), MWs = MW * msc, MHs = MH * msc;
-  const mapOn = showMap && cols >= MWs + 30 && !sceneOn;
-  if (mapOn) drawMinimap(cols - MWs - 3, 1, msc);
+  // the corner is one readout - the chart and the lines hanging off it - so it
+  // is laid out on one lattice, the same big one every other message uses.
+  // On every ordinary grid this turns nothing on and none of it applies.
+  hudScaleOn();
+  const HC = hudCols(), HR = hudRows();
+  const mapOn = showMap && HC >= MW + 30 && !sceneOn;
+  if (mapOn) drawMinimap(HC - MW - 3, 1);
   if (!sceneOn) {
-    const bw = MWs + 2;
-    const bx = Math.max(1, cols - MWs - 3), byT = mapOn ? MHs + 3 : 1;
+    const bw = MW + 2;
+    const bx = Math.max(1, HC - MW - 3), byT = mapOn ? MH + 3 : 1;
     const put = (row, txt, col) => {
-      if (byT + row >= rows - 1) return;
+      if (byT + row >= HR - 1) return;
       hudStr(bx + 1, byT + row, String(txt).slice(0, bw - 2), col);
     };
     let row = 0;
@@ -25521,6 +27120,7 @@ function hudPass(){
       put(row++, 'fps ' + fps.toFixed(0) + '  rays ' + statRays +
                  '  glyphs ' + statCells, H_GRN);
   }
+  hudScaleOff();               // and everything below is back on the chart
   // ---- metro prompt: one bar. the probe handles it up close (SPACE/ACT);
   //      the [G] hint only shows when you are near but not facing it ----
   let mNear = null;
@@ -27406,22 +29006,53 @@ function worldPasses(){
      when the card owns the whole world - the solids test against a depth
      buffer the world pass fills - so it is gated on all three stages, and
      off indoors for the same reason the world pass is. */
+  /* The tail runs at the slot of the FIRST pass the card owns, and every pass
+     from there to compose has to be on the card with it - see the GPUV block
+     comment. Declared up here because that slot may now be wallMirror, which
+     is the earliest of them. */
+  let tm = tailMask();
+  GV.used = 0;
+  let tr = 0;
+  const runTail = () => {
+    tr = glTailPass(tm);
+    /* Short of the whole chain the card cannot hand the frame to compose - the
+       CPU passes still behind it write to gBuf and compose would never see
+       them - so the answer comes back and the CPU carries on. That is a full
+       sync and it is SLOWER than leaving the switch off; it is the bisect step
+       that proves each pass, not a shipping mode. */
+    if (tr && (tr !== TAIL_ALL || GV.dbgRead)){ glTailRead(); GV.used = 0; }
+  };
   const wantS = GPUS.on && (GPUS.stages & GPUS.max) !== 0 &&
                 GPUW.on && (GPUW.stages & GPUW.max) === 7 && !inside &&
                 GL && GL.spriteOK && GL.worldOK && GL.pWorld;
   const gw = glWorldPass(wantS);
   const gs = (wantS && gw === 7) ? glSpritePass() : 0;
-  glWorldRead();
+  /* Two of the chain's passes only exist as separate passes when the card owns
+     what feeds them: wallPass runs its own mirror inline when the CPU draws
+     the walls, and there are no sprite reflections to lay down when the CPU
+     drew the solids. Dropping a LEADING bit of a suffix leaves a suffix, which
+     is the only reason this is safe to do here - and it has to happen BEFORE
+     the read, because whether the read can be deferred depends on it. */
+  if (tm){
+    if (!(gw & 4)) tm &= ~TAIL_WMIR;
+    if (!(gs & 2)) tm &= ~TAIL_SREF;
+  }
+  /* Deferred only when the card owns every last one of them, so harvest is
+     the only reader left and one frame of light-list latency is the whole of
+     what it costs. GV.dbgRead forces the wait back for the parity run. */
+  glWorldRead(tm === TAIL_ALL && GPUV.on && !GV.dbgRead && GPUH.on);
   if (!(gw & 1)){ if (inside) ceilingPass(); else skyPass(); }
   if (!(gw & 2)) floorPass();
   /* wallMirror is the one part of the wall pass that stays on the CPU - it
      writes to a cell other than the one it is drawing, which is the one thing
      a fragment shader cannot do - so when the card takes the walls it still
      has to run, on the buffers that just came back. */
-  if (!(gw & 4)) wallPass(); else wallMirror();
+  if (!(gw & 4)) wallPass(); else { if (tm & TAIL_WMIR) runTail();
+                                   if (!(tr & TAIL_WMIR)) wallMirror(); }
   /* The solids' reflections land after it and are gated the same way, which
      is what keeps the two mirrors in the order they were written in. */
-  if (gs & 2) applySpriteRefl();
+  if (gs & 2){ if ((tm & TAIL_SREF) && !tr) runTail();
+               if (!(tr & TAIL_SREF)) applySpriteRefl(); }
   if (gs & 1) spriteReplay(); else spritePass();
   /* Order matters here and used to be wrong. A reflection is ON the road; a
      light beam is the air BETWEEN the road and the eye. The beam therefore
@@ -27431,12 +29062,25 @@ function worldPasses(){
      erasing 16.3% of the beam. Signs move up with it, which is a second small
      win - they are marked as sources before lampVolume runs, so the beam no
      longer washes over a sign face. */
+  /* The tail runs at the slot of the FIRST pass the card owns, because
+     everything from there to compose has to be on the card together - a pass
+     with a CPU pass still behind it would have to hand its buffers back.
+     See the GPUV block comment. */
   if (!inside){
-    signPass();
-    reflectPass();
+    if ((tm & TAIL_SIGN) && !tr) runTail();
+    if (!(tr & TAIL_SIGN)) signPass();
+    if ((tm & TAIL_REFL) && !tr) runTail();
+    if (!(tr & TAIL_REFL)) reflectPass();
   }
-  lampVolume();               // the beam itself, over whatever it falls on
-  if (!inside) rainPass();
+  if ((tm & TAIL_LAMP) && !tr) runTail();
+  if (!(tr & TAIL_LAMP)) lampVolume();   // the beam, over whatever it falls on
+  if (!inside){
+    if ((tm & TAIL_RAIN) && !tr) runTail();
+    /* The card drew the drops; the CPU still owns their srcBuf clears, which
+       is the only thing downstream of here that reads them - and it is what
+       keeps harvestEmitters byte-identical for a twentieth of a millisecond. */
+    if (tr & TAIL_RAIN) rainClearSrc(); else rainPass();
+  }
   /* Last, because it reads srcBuf and the signs are only in it by now. The
      light it computes is RGB and is added at pack time, so it does not care
      which pass drew the cell it lands on. */
@@ -27651,7 +29295,21 @@ function frame(now){
       to defend against this by latching CFG.manualRes on the way past, which
       both missed the sprite switch and never let go afterwards. The grid is
       held here instead, for exactly as long as the switch is on. */
-    const gpuFixedCost = GPUW.on && GL && GL.worldOK;
+    /* The tail joins it for the same reason, but only while it is short of
+       the whole chain: that is the state that reads its answer back, and a
+       readback is the per-call cost auto-res cannot walk away from. At the
+       full suffix the tail hands its answer forward and costs per CELL, which
+       is exactly the assumption auto-res is built on - so it is left alone. */
+    /* Only while a BLOCKING readback exists. That was always the real
+       condition - a cost per CALL is what auto-res cannot walk away from -
+       and with the whole tail on the card and the harvest reading a frame
+       late there is no longer one, so the grid is free to move again exactly
+       as it does on the CPU path. */
+    const blockingRead = GPUW.on && GL && GL.worldOK &&
+      !(GPUH.on && GPUV.on && GL.tailOK && (GPUV.stages & GPUV.max) === TAIL_ALL);
+    const tailBisect = GPUV.on && GL && GL.tailOK &&
+      (GPUV.stages & GPUV.max) !== TAIL_ALL;
+    const gpuFixedCost = blockingRead || tailBisect;
     if (!CFG.manualRes && !gpuFixedCost && avg > 14 && CFG.resIdx > 0){
       CFG.resIdx--; autoRes = true; initRender();
       toast('auto-res: frame time high, coarser grid ' + R.cols + 'x' + R.rows + '  ([ ] to override)');
