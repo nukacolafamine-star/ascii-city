@@ -1743,6 +1743,52 @@ region stats, an in-window A/B, a driver pause for clean screenshots).
   By design ("the city remembers its lights"), self-correcting in
   seconds, but worth knowing when comparing screenshots across clients.
 
+### 5t. Neon lies down in the wet street (commits ce629c2, 14dd026)
+
+Three aesthetic features, all in the light pass or the bloom, none of
+which the CPU renderer could afford:
+
+**THE STREAK** - the defining shot of the whole genre, and the game had
+the glyph mirror but not this: every light lays its COLOUR down the wet
+road. In FS_LIGHT's per-light loop: the light's mirror image under the
+ground (`(ep.x, ep.y, -ep.z)`), a lobe formed by the view ray against
+the mirror direction with its VERTICAL error forgiven (`streakZ` 0.28) -
+rough wet asphalt in one anisotropic exponent: tight across the road,
+long down it. Fresnel SQUARED puts the streaks in the middle distance
+and takes them out from underfoot. One shadow march, only for streaks
+past a brightness gate (the lobe is tight in azimuth, so few lights a
+cell ever pay it - "signs through buildings" stays fixed in the streaks
+too). The puddle mask is `puddleAt` ported BIT FOR BIT (the integer
+hash3 twin), so streaks and the glyph mirror agree about where the
+water is. Gain is in ACC UNITS: the chords accumulate 20-100 there, so
+1.2 measured invisible, 150 flooded the road, 80 is bars that stay
+bars; shine 60 summed to a wash, 170 leaves darkness between streaks.
+THE BINNING: a streak lands far below the light's glow rect, so when
+the road is wet every in-frustum light's rect extends to the frame's
+bottom edge and widens by the lobe's azimuth reach
+(`cols·1.1·sqrt(3.9/shine)`) - or a distant sign's streak pops at a
+tile boundary. Measured: +27k pairs (115k total against the 1M cap),
+frame cost inside noise (3.11ms streaks-on vs 3.29 off at 414x236),
+stable frame to frame while strafing.
+
+**THE PHASE** - a Henyey-Greenstein lobe (`phaseG` 0.32 at `phaseK`
+0.6) leans every glow chord toward its light: a sign BLOOMS as you turn
+to face it and settles as it slides to the frame's edge. The single
+strongest "this air is real" cue there is, and it costs a dot product.
+
+**THE FLOOR OF THE SMOG** - chord density height-graded (`airLow` 1.45
+at street level fading out by `airLowH` 14 units): the street swims in
+the lit air, the tower tops rise out of it. With fog weather on top the
+far street dissolves while the near pools bloom through - the best the
+game has looked.
+
+**THE FLARE** (14dd026) - an anamorphic pass in the bloom: the second
+tap smeared horizontally twice (6 taps each, weights summing to one, at
+an eighth of the frame), laid back additively at `BLOOMV.ana` 0.5. A
+lit sign's core stretches into the classic horizontal lens streak;
+subtle enough to read as atmosphere, not a sticker. FS_POST gained mode
+4 (the smear) and mode 5 (a gained lay-back).
+
 ---
 
 ## 6. Measurement traps that have already cost time
