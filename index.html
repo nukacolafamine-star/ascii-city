@@ -19784,7 +19784,11 @@ function skyPass(){
          from the glyph haze below it, with a visible border where the haze
          ran out. A floor of one ramp step puts the same material over every
          sky cell, so the dome is one colour by construction. */
-      else if (night > 0) dens += 0.035 + (hs < 0.05 ? 0.04 : 0.0);
+      /* 0.040, not 0.035: at RMAX 25 the floor must sit a FULL rung up
+         (1.0), or the rung dither below rounds a scatter of dome cells to
+         zero and the raw gradient peeks through as stipple - measured 5 of
+         1024 at 0.035. At 1.0 the worst dither still rounds to one. */
+      else if (night > 0) dens += 0.040 + (hs < 0.05 ? 0.04 : 0.0);
       if (sunOn){
         const day = CFG.timeMode === 2;
         const dy = (r - sunRow) * 2, q = sunD[x] * sunD[x] + dy * dy;
@@ -19794,7 +19798,14 @@ function skyPass(){
           if (halo > dens){ dens = halo; base = day ? C.lineW : sunGlow; }
         }
       }
-      const g = Math.round(clamp(dens, 0, 1) * RMAX);
+      /* The rung is the band: glowD varies only by ROW, so a plain round
+         switched a whole row of sky at once wherever dens crossed a half
+         rung - the horizontal stripes across the day and dusk sky, and
+         rings round the sun's halo. Half a rung of the cell's own hash
+         turns every boundary into stipple: the lamp pools' fix, applied
+         to the dome. The sun's core sits a full rung above the dither's
+         reach, so it stays solid. */
+      const g = Math.max(0, Math.round(clamp(dens, 0, 1) * RMAX + (hs - 0.5) * 0.9));
       if (g === 0) continue;
       gBuf[idx] = g; bBuf[idx] = base; lBuf[idx] = 3;
     }
@@ -26990,7 +27001,8 @@ void main(){
     float dens = glowD, base = uSkyMat.x;
     if (uNight > 0.0 && hs < 0.007 * up * uNight){ dens = 0.45 + hs * 24.0; base = uSkyMat.y; }
     // the whole dome wears the haze after dark - the CPU twin, line for line
-    else if (uNight > 0.0) dens += 0.035 + (hs < 0.05 ? 0.04 : 0.0);
+    // (0.040: a full rung, so the rung dither can never round the dome out)
+    else if (uNight > 0.0) dens += 0.040 + (hs < 0.05 ? 0.04 : 0.0);
     if (uSunOn > 0.5){
       bool day = uDay > 0.5;
       float dy = (float(r) - uSunRow) * 2.0;
@@ -27001,7 +27013,9 @@ void main(){
         if (halo > dens){ dens = halo; base = day ? uLineW : uSkyMat.w; }
       }
     }
-    float gg = jround(jclamp(dens, 0.0, 1.0) * uRMAX);
+    // dithered by half a rung of the cell's own hash, or a whole row of
+    // sky switches together at every rung crossing - the CPU twin, exactly
+    float gg = max(0.0, jround(jclamp(dens, 0.0, 1.0) * uRMAX + (hs - 0.5) * 0.9));
     if (gg != 0.0){ oG = gg; oPal = base; oLv = 3.0; oWrote = 16.0; }
   }
 
