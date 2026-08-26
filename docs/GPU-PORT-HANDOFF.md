@@ -1819,6 +1819,29 @@ entry's position on the ring, not just a single colour; and the small
 white/red blinker props. The half-per-frame colour take helps both
 whenever they are even partially visible.
 
+### 5v. The sky stops wearing stripes by day (commit a8bce97)
+
+The 5p sky fix was verified AT NIGHT; the banding the player still saw
+by day and at dusk was a different line entirely. skyPass's horizon
+glow falls off smoothly with height but varies only by ROW, and
+`Math.round(dens * RMAX)` snapped it to a glyph rung - every rung
+crossing switched a whole row of sky at once. Wide horizontal stripes,
+worst at dusk (glow amp 0.8 across a 2.5-power curve), plus rings round
+the sun's halo, which quantises through the same line. Measured first:
+the pure background gradient between glyph strokes steps at 1/255 -
+smooth; the bands were always the GLYPH layer's rung quantisation.
+
+Fix: half a rung of the cell's own hash before the round (the lamp
+pools' recipe, applied to the dome), in both twins; the sun's core sits
+a full rung above the dither's reach and stays solid. FOLLOW THE KNOCK-
+ON: the night haze floor was tuned to ~one rung (0.035·RMAX25 = 0.875),
+which sits INSIDE the dither's reach, and a scatter of dome cells
+rounded to empty - the raw-gradient stipple creeping back (measured 5
+of 1024). Floor raised to 0.040 = rung 1.0; the worst dither (−0.45)
+still rounds to one, so the dome cannot open by construction. RULE: any
+smooth field quantised to rungs gets the half-rung hash dither, and any
+FLOOR that must survive the dither needs (floor·RMAX − 0.45) ≥ 0.5.
+
 ---
 
 ## 6. Measurement traps that have already cost time
