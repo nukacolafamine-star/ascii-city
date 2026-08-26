@@ -1418,6 +1418,76 @@ of frame-to-frame noise (off-baseline 1.3), and `worldPasses` 4.87 against
 measured inside one ~1.5s window: the windows churn (5j), so any GI number
 taken minutes apart from its baseline is not a comparison.
 
+### 5l. The spectacle pass: the dimming bug, HDR overflow, and a real bloom
+
+The player's brief: path tracing does not earn its frames, coloured light
+does not land on walls, windows dull out UP CLOSE while stalls stay
+emissive, and only white ever reads as a light. All of it traced to three
+mechanisms, none of them the light pass - which is why (their words) "every
+light change we have made has failed to fix it".
+
+**1. THE dimming bug, at last: `T.amb` multiplied EVERY palette entry.**
+The bake did `c * dim * T.amb` for all 64 materials - so every neon sign,
+lit window and stall lamp baked toward half brightness exactly when night
+fell. Dissected pixel by pixel (palette says (120,255,240), compose says
+0.63) after the fix at one hour, T.amb was 0.94 and the residual dim was
+glyph alpha - but the amb multiply swings to ~0.55 across the night, and
+it sat UPSTREAM of everything: the compose ceiling is over the DISPLAYED
+palette, so no light-side gain could ever buy the loss back. Emissive
+materials now skip amb in both bakes (glBuildPalette and the 2D atlas);
+the fog fade stays, because fog is air, not sun.
+
+**2. The lights sat ON their walls and shadowed themselves.** A harvested
+window's bucket position was the ray hit - the facade plane - and shadow
+taps toward it graze the building's own tile, so the wall self-shadowed its
+own windows and zeroed the surface term precisely where it matters. Stalls
+protrude off their walls, which is exactly why stalls looked emissive and
+windows did not. Harvested positions now sit a third of a tile off the
+surface toward the eye (`t - 0.35`), the way a neon tube hangs in front of
+its glass.
+
+**3. Saturated colour cannot out-luminance white inside a display
+ceiling.** That needs headroom, and headroom needs somewhere to go:
+
+- **Compose gained a second output: the OVERFLOW plane** - the picture (0)
+  keeps the exact old hue-preserving ceiling BEFORE the alpha blend (the
+  glyph texture IS partial alpha; normalising after the blend flattens
+  every bright wall into a slab - tried, it did), and (1) gets `c - disp`,
+  the light the ceiling cut, in the cell's own hue.
+- **Emissive materials run `uEGain` (1.55) past the ceiling** and skip the
+  AO multiply (they emit; the dark cannot dim them). The excess lands in
+  the overflow and comes back as glow in the material's own colour - cyan
+  blooms cyan. The EMISSIVE bitmask rides into compose as two uint words,
+  set once.
+- **The bloom was rebuilt.** The old one was a per-channel cube ("crush
+  everything that is not neon") into two bare taps: the cube kept only
+  near-white (why only white ever glowed), and a single bilinear tap at an
+  eighth size lands BETWEEN the thin strokes ASCII is made of, so most
+  window energy never reached it - and the losses were baked into the
+  look, which bit when an energy-preserving chain replaced it at equal
+  strength. Now: half-float scene and taps (`GL.halfOK`), a knee on the
+  BRIGHTEST channel scaling the whole colour (hue kept), the overflow
+  plane added kneeless (existing is its threshold), a quarter-to-32nd
+  4-tap box chain, and ONE merged lay-back draw (four fullscreen additive
+  passes were most of a millisecond). `BLOOMV` holds every knob; key B and
+  the menu still toggle it, and `bloomOn` off also drops `uEGain` to 1 so
+  the picture is exactly the picture.
+
+**And the light gain came off its leash.** `GPUE.gain` 0.15 was tuned
+against fast turns blowing out - the stale double-list bug the cache fixed
+in 5j, not a property of the scene. At 0.22, a deliberately fast spin
+peaks at 0% cells over 150. The PT bounce now lands where it should:
+cells dark without GI gain **+30 lit units** with it on (was +4-5), which
+is "worth the frames" by inspection.
+
+Costs, measured at the dense vantage: `worldPasses` 6.3 -> **4.49ms**
+after two recoveries (the cut-shell sort went from 4 shells to 16, so the
+sorted shell is a few hundred entries, not thousands: harvest 3.9 -> 1.76;
+and the merged lay-back: present 1.8 -> **1.2ms**). Day is gated as
+before (no bloom, no egain at timeMode 2), interiors take the CPU-lit
+path untouched, and rain now mirrors genuinely luminous windows in the
+wet street, which is most of "reflections got better" for free.
+
 ---
 
 ## 6. Measurement traps that have already cost time
