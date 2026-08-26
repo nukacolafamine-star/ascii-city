@@ -1369,6 +1369,55 @@ air and surface tuning drowns in it; read the term in isolation or by eye.
 And knob A/Bs at a still pose converge at 1/n up to `GIR.maxFrames` (240) -
 drop it to 8 while comparing or the second screenshot is 45% the first one.
 
+### 5k. Path tracing felt like the REVERSE of path tracing, and it was
+
+Reported: the bounce-and-colour feel the switch promises was stronger with
+the switch OFF. Measured settled at the shopfront, GI on against off: mean
+29.40 / 29.41, saturation 0.212 / 0.210 - **the traced bounce contributed
+NOTHING to the picture**, and what the switch actually did was darken
+surfaces 8% (openness AO) and drag the ENTIRE light field - the vivid
+analytic colour included - behind a 240-frame running average. On = darker
+and laggier, off = instant and punchy. The player was right.
+
+(That "GI-only = 19 mean" figure in 5j's instrument note is itself the
+average trap: it was residual analytic light still draining out of the
+history, measured 110 frames after the terms were zeroed. The traced term
+was never 19 of anything.)
+
+Two causes, two changes:
+
+**The average wrapped the wrong thing.** The analytic terms are
+deterministic - averaging them buys nothing and costs the drag. The light
+FBO now carries a second RGBA16F attachment: 0 is the composed light,
+written FRESH every frame, on or off; 1 is the traced term's running
+average, the only ping-ponged meaning, reprojected under rotation like 5j's
+history (clamped at the frame edge rather than dropped - a stretched
+neighbour beats one raw sample as a prior). `moveA` eased 0.30 to 0.18: lag
+on the bounce is invisible now that the direct term does not share it, and
+what a high alpha costs - sample noise shimmering while walking - is not.
+Openness rides in the average's alpha, so the corner darkening is as
+denoised as the bounce. A bonus: the resize dark-flash (alpha 0.3 against a
+just-cleared history) is gone, because attachment 0 no longer mixes.
+
+**The estimator sampled four thousand lights to hit nothing.** One uniform
+pick over the whole nearest-rings list spends almost every sample on a far
+light the falloff has already discarded. It picks from the nearest
+`GIR.pick` (384) now, scaled by the same count - the same estimator over
+the lights that matter, uNE/K times the hit rate. With signal actually
+arriving, the term could be tuned: `bounce` 3.5 (the rolloff compresses the
+addition in lit areas; dark cells sit on the linear part and gain ~4-5 lit
+units, which is where a bounce SHOULD show), `falloff` 0.30 (at 0.10 a hit
+averaged the whole street to grey; steeper keeps the colour of what is near
+the hit), and the sky-escape term came OFF the bounce knob so turning the
+bounce up does not wash dusk in sky-grey.
+
+After: GI on against off is +1.7 to +2.6 of mean (was +0.01), a quarter of
+cells gain >3 lit units, hot stays 0%, strafing adds 0.7 of a 255-channel
+of frame-to-frame noise (off-baseline 1.3), and `worldPasses` 4.87 against
+4.79-4.80 - inside this machine's drift. The on/off deltas above were each
+measured inside one ~1.5s window: the windows churn (5j), so any GI number
+taken minutes apart from its baseline is not a comparison.
+
 ---
 
 ## 6. Measurement traps that have already cost time

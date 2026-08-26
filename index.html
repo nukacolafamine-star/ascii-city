@@ -20149,16 +20149,42 @@ function emitVolume(){
 ============================================================================*/
 const GIR = {
   on:        true,   // on the card now, and it costs a ray a cell
-  bounce:    1.00,   // what the traced bounce is worth against the direct term
+  /* 3.5, against the 1.0 it launched at, and the reason is the rolloff: in a
+     lit area the direct acc is already deep into the exp curve, so what the
+     bounce adds is compressed toward nothing - at 1.0 the converged bounce
+     measured 0.01 of a mean against GI off, which is why the switch felt
+     like it did the REVERSE of path tracing. At 3.5 the places that were
+     dark without GI gain ~4-5 lit units (they sit on the linear part of the
+     curve, so the bounce shows exactly where it should), hot cells stay at
+     zero, and frame-to-frame shimmer while walking adds 0.7 of a 255-unit
+     channel. The sky-escape term is deliberately NOT on this knob. */
+  bounce:    3.50,
   clamp:     400,    // ceiling on one sample, in acc units - the firefly cap
   bounces:   2,      // the CPU tracer's, kept only for the CPU light path
   dist:      34,     // how far a shadow or bounce ray is worth following, tiles
-  falloff:   0.10,   // inverse-square, softened so a street does not go black
+  /* Steeper than the CPU tracer's 0.10: at 0.10 a bounce hit averaged the
+     whole street's lights into grey; at 0.30 it keeps the colour of what is
+     NEAR the hit, which is the "red sign lands on the kerb" the term is
+     for. */
+  falloff:   0.30,
   albedo:    0.55,   // how much of a ray survives a bounce off a wall
   sky:       0.22,   // and what the open sky is worth to a ray that escapes
   target:    18,     // mean traced light per channel, in 0-255 - see below
   maxFrames: 240,    // the slowest the running average is allowed to become
-  moveA:     0.30,   // how fast it re-converges while the camera is moving
+  /* Softer than the 0.30 it was, for two reasons: the average now holds ONLY
+     the traced sample (the analytic light is instant regardless), so what
+     lag costs is invisible, and the history is reprojected under rotation,
+     so most of what the pin used to throw away is valid. What a HIGH value
+     costs is visible: single-sample noise shimmering through the bounce
+     while the camera walks. */
+  moveA:     0.18,
+  /* The bounce ray's light is picked uniformly from the NEAREST pick lights
+     of the (nearest-first) list, scaled by the same count - not from all
+     four thousand. The falloff discards the far tail anyway; sampling it
+     spent almost every ray's sample on a light worth nothing, which is the
+     other half of why the converged bounce measured 0.01 mean against GI
+     off. 384 is the nearest couple of dozen tiles at street density. */
+  pick:      384,
   ao:        0.75,   // how much a fully shut-in cell is darkened, 0-1
   aoDist:    7.0,    // a bounce ray that dies inside this counts as occlusion
   phases:    3,      // cells traced per frame = 1/this, cycling
@@ -22843,7 +22869,14 @@ void main(){
 const FS_LIGHT = `#version 300 es
 precision highp float;
 precision highp sampler2D;
-in vec2 vT; out vec4 o;
+in vec2 vT;
+/* TWO outputs. 0 is the light compose reads, and it is FRESH every frame -
+   the analytic terms are deterministic and averaging them only made the
+   picture drag behind the camera. 1 is the traced term's running average,
+   ping-ponged, because the traced sample is the one stochastic thing in
+   this pass and the ONLY thing that needs denoising. */
+layout(location = 0) out vec4 o;
+layout(location = 1) out vec4 oT;
 uniform sampler2D uDepth;     // R32F, one texel per character cell
 uniform sampler2D uEmit;      // RGBA32F, 2 rows: xyz+weight, rgb+radius
 uniform sampler2D uHeight;    // R32F, the city's heightfield
@@ -22927,12 +22960,23 @@ float gMarch(vec3 o, vec3 d, float maxT, out vec3 hitN){
   if (tGround < maxT){ hitN = vec3(0.0, 0.0, 1.0); return tGround; }
   return -1.0;
 }
-/* One emitter, chosen at random and weighted back up by how many there were -
-   giDirect, in a shader. Importance by count, denoised by the average. */
+/* One emitter, chosen at random and weighted back up by how many stood for
+   it - giDirect, in a shader. Importance by count, denoised by the average.
+
+   CHOSEN FROM THE NEAREST K, NOT FROM ALL OF THEM. The dense list is four
+   thousand lights, nearest rings first, and 1/(1+0.1d2) kills anything past
+   a couple of dozen tiles - so a uniform pick over the whole list spends
+   almost every sample on a light that contributes nothing, and the running
+   average converged to nothing: measured settled, GI on against off was
+   0.01 of a mean apart. Picking uniformly from the nearest K (uTune3.z) is
+   the same estimator over the lights that matter, with uNE/K times the hit
+   rate; what it omits is the far tail the falloff had already discarded. */
 vec3 gOneLight(vec3 p, vec3 n, float rnd, float dist, int steps){
   if (uNE <= 0) return vec3(0.0);
-  int i = int(rnd * float(uNE));
-  if (i >= uNE) i = uNE - 1;
+  int K = uNE;
+  if (uTune3.z > 0.5 && int(uTune3.z) < K) K = int(uTune3.z);
+  int i = int(rnd * float(K));
+  if (i >= K) i = K - 1;
   vec4 A = texelFetch(uEmit, ivec2(i, 0), 0);
   vec4 B = texelFetch(uEmit, ivec2(i, 1), 0);
   vec3 L = A.xyz - p;
@@ -22944,13 +22988,15 @@ vec3 gOneLight(vec3 p, vec3 n, float rnd, float dist, int steps){
   if (ndl <= 0.0) return vec3(0.0);
   vec3 hn;
   if (gMarch(p + n * 0.02, L, d - 0.05, hn) >= 0.0) return vec3(0.0);
-  /* One sample stands in for the whole list, so it is scaled by uNE - and
-     uNE is thousands now, not the 120 the CPU tracer had. A sample that lands
-     next to a light comes back thousands of acc units bright, and the running
-     average smears those fireflies into white patches precisely where the
-     lights are. Clamp the sample; the average converges to a slightly dimmer
-     bounce instead of a blown one, which is the right trade everywhere. */
-  float w = min(A.w * float(uNE) * ndl / (1.0 + d2 * 0.10), uGIClamp);
+  /* One sample stands in for the K it was drawn from, so it is scaled by K.
+     A sample that lands next to a light still comes back hundreds of acc
+     units bright, and the running average would smear those fireflies into
+     white patches precisely where the lights are. Clamp the sample; the
+     average converges to a slightly dimmer bounce instead of a blown one,
+     which is the right trade everywhere. uTune3.w is GIR.falloff: the
+     steeper it is, the more the bounce keeps the colour of the light
+     NEAREST the hit instead of averaging the whole street to grey. */
+  float w = min(A.w * float(K) * ndl / (1.0 + d2 * uTune3.w), uGIClamp);
   return B.rgb * w;
 }
 
@@ -23076,10 +23122,19 @@ void main(){
       occ += (1.0 - sh) * att; occW += att;
     }
   }
-  /*----------------------- the traced bounce ----------------------------*/
+  /*----------------------- the traced bounce ----------------------------
+    One sample a frame is snow, so THIS TERM - and only this term - runs
+    through a reprojected history (oT, ping-ponged). It used to be the whole
+    output that was averaged, and that is what made the switch feel
+    backwards: the traced RGB converged to almost nothing, while the average
+    dragged the vivid ANALYTIC light three frames behind every move and the
+    openness term darkened what was left. Path tracing REMOVED punch.
+    Now the analytic light is instant whether the tracer is on or off, and
+    what the tracer adds - the bounce colour and the shut-in corners - rides
+    on top of it. */
   float giOn = uGI2.x, giSeed = uGI2.y;
   float bounceGain = uGI2.w;
-  float openness = 1.0;
+  vec4 accT = vec4(0.0, 0.0, 0.0, 1.0);
   if (giOn > 0.5){
     vec3 n = gNormal(c, r, depth, rd);
     vec3 sp = surf + n * 0.02;
@@ -23092,14 +23147,30 @@ void main(){
     if (dot(bd, n) < 0.05) bd = n;
     vec3 hn;
     float tHit = gMarch(sp, bd, uGI.x, hn);
+    vec3 sB; float sOpen;
     if (tHit >= 0.0){
-      openness = clamp(tHit / uGI.w, 0.0, 1.0);
+      sOpen = clamp(tHit / uGI.w, 0.0, 1.0);
       vec3 hp = sp + bd * tHit;
-      acc += gOneLight(hp, hn, gHash(vec3(giSeed, r, c)), uGI.x, sSteps)
-             * uGI.y * bounceGain;
+      sB = gOneLight(hp, hn, gHash(vec3(giSeed, r, c)), uGI.x, sSteps)
+           * uGI.y * bounceGain;
     } else {
-      acc += uSky * uGI2.z * bounceGain;      // it got away to the sky
+      sOpen = 1.0;
+      /* NOT scaled by bounceGain: the sky level was tuned on its own and
+         the gain knob is for the emitter bounce, or turning the bounce up
+         washes dusk in sky-grey. */
+      sB = uSky * uGI2.z;                     // it got away to the sky
     }
+    /* The history is fetched where this ray WAS: pitch is a row shift by
+       the horizon delta exactly, yaw a shift in the tangent of the column
+       angle. Clamped rather than dropped at the frame edge - a stretched
+       neighbour is a better prior for an indirect term than one raw
+       sample. */
+    float phi = atan(cxn * uHR.z);
+    float cxp = tan(phi + uHR.x) / uHR.z;
+    vec2 hUV = clamp(vec2((cxp + 1.0) * 0.5, vT.y + uHR.y / uGrid.y), 0.0, 1.0);
+    vec4 histT = texture(uHist, hUV);
+    accT = mix(histT, vec4(sB, sOpen), uGI.z);
+    acc += accT.rgb;
   }
   /* Many lights add, brightness does not: roll the sum toward a ceiling.
      ON THE BRIGHTEST CHANNEL, NOT EACH CHANNEL. 1-exp per channel compresses
@@ -23112,29 +23183,14 @@ void main(){
   float aRoll = (1.0 - exp(-aMax * gain / roof)) * roof;
   vec3 lit = aMax > 1e-4 ? acc * (aRoll / aMax) : vec3(0.0);
   float ao = occW > 0.0 ? 1.0 - aoK * (occ / occW) : 1.0;
-  if (giOn > 0.5) ao *= mix(1.0 - uTune2.z, 1.0, openness);
+  // the AVERAGED openness, so the corner darkening is as denoised as the bounce
+  if (giOn > 0.5) ao *= mix(1.0 - uTune2.z, 1.0, accT.a);
   if (uTune2.y < -0.5){            // debug: show the heightfield, not the light
     float hh = hAt(surf.xy) / 24.0;
-    o = vec4(hh, hh, hh, 1.0); return;
+    o = vec4(hh, hh, hh, 1.0); oT = accT; return;
   }
-  /* One sample a frame is snow. Keep the history and re-weight it: standing
-     still uGI.z falls as 1/n and this converges; moving it pins and
-     re-converges over about three frames.
-     The history is fetched where this ray WAS, not where this cell is: pitch
-     shifts every row by the horizon delta exactly, and yaw shifts the tangent
-     of the column angle. A cell whose past fell off the screen has no
-     history and keeps its fresh value. */
-  vec4 now = vec4(lit / 255.0, ao);
-  if (giOn > 0.5){
-    float phi = atan(cxn * uHR.z);
-    float cxp = tan(phi + uHR.x) / uHR.z;
-    vec2 hUV = vec2((cxp + 1.0) * 0.5, vT.y + uHR.y / uGrid.y);
-    if (hUV.x >= 0.0 && hUV.x <= 1.0 && hUV.y >= 0.0 && hUV.y <= 1.0){
-      vec4 hist = texture(uHist, hUV);
-      now = mix(hist, now, uGI.z);
-    }
-  }
-  o = now;
+  o = vec4(lit / 255.0, ao);
+  oT = accT;
 }`;
 const VS_QUAD = `#version 300 es
 uniform vec4 uRect; uniform vec2 uRes;
@@ -23450,26 +23506,37 @@ function glResize(){
      this renderer can never be finer than a glyph, so anything more is thrown
      away by the glyph pass a moment later. */
   if (GL.lightOK){
-    /* TWO of them, and RGBA16F rather than RGBA8. The tracer keeps a running
-       average across up to two hundred frames and eight bits cannot hold one -
-       the increments fall below a quantum and it stops converging. Ping-ponged
-       because a frame reads the last one while it writes this one. */
+    /* TWO of them, RGBA16F, and each with a SECOND attachment. Attachment 0
+       is the light compose reads, written fresh every frame; attachment 1 is
+       the traced term's running average, which is the only thing ping-ponged
+       in meaning - a frame reads the last average (uHist) while writing this
+       one. Averaging the whole of attachment 0 was the old design, and it is
+       what made the tracer read backwards: it smeared the analytic light
+       behind the camera while the traced part converged to nothing. 16F
+       because the average moves by 1/240ths and eight bits cannot hold one. */
     for (const t of (GL.lightTs || [])) gl.deleteTexture(t);
+    for (const t of (GL.giTs || [])) gl.deleteTexture(t);
     for (const f of (GL.lightFs || [])) gl.deleteFramebuffer(f);
-    GL.lightTs = []; GL.lightFs = [];
+    GL.lightTs = []; GL.giTs = []; GL.lightFs = [];
     for (let i = 0; i < 2; i++){
-      const t = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, R.cols, R.rows, 0, gl.RGBA, gl.HALF_FLOAT, null);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const mk = () => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, R.cols, R.rows, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return t;
+      };
+      const t = mk(), tg = mk();
       const f = gl.createFramebuffer();
       gl.bindFramebuffer(gl.FRAMEBUFFER, f);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, tg, 0);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) GL.lightOK = false;
-      GL.lightTs.push(t); GL.lightFs.push(f);
+      GL.lightTs.push(t); GL.giTs.push(tg); GL.lightFs.push(f);
     }
     GL.litIdx = 0;
     GL.lightT = GL.lightTs[0]; GL.lightF = GL.lightFs[0];
@@ -25157,7 +25224,8 @@ function glLightPass(){
   gl.viewport(0, 0, R.cols, R.rows);
   gl.disable(gl.BLEND);
   gl.useProgram(GL.pLight);
-  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GL.lightTs[prev]);
+  // the history is the traced average alone; attachment 0 is always fresh
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GL.giTs[prev]);
   gl.uniform1i(GL.uL.uHist, 3);
   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, GL.tileT);
   gl.uniform1i(GL.uL.uTiles, 4);
@@ -25194,7 +25262,8 @@ function glLightPass(){
   gl.uniform4f(GL.uL.uTune2, DEN ? GPUE.shaft : GPUL.shaft, GPUL.shadow,
                              DEN ? GPUE.ao : GPUL.ao, _lampNight);
   gl.uniform4f(GL.uL.uTune3, DEN ? GPUE.surf : GPUL.surf,
-                             DEN ? GPUE.surfFall : GPUL.surfFall, 0, 0);
+                             DEN ? GPUE.surfFall : GPUL.surfFall,
+                             DEN ? GIR.pick : 0, GIR.falloff);
   /* Where the history's camera was, so the shader fetches each ray's own
      past. Pure rotation is exact; a translation is not a screen shift and
      leans on the pinned alpha as before. litPrev* always describes the
