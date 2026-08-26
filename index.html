@@ -11353,6 +11353,13 @@ function openSettingsMenu(){
     items: [
       { label: 'BLOOM', value: () => bloomOn ? 'ON' : 'OFF',
         adj(){ bloomOn = !bloomOn; } },
+      { label: 'WET STREAKS', value: () => GPUE.streak > 0 ? 'ON' : 'OFF',
+        hint: 'every light lays its colour down the wet road - neon on ' +
+              'asphalt. only shows when the street is actually wet',
+        adj(){
+          if (GPUE.streak > 0){ GPUE._streak0 = GPUE.streak; GPUE.streak = 0; }
+          else GPUE.streak = GPUE._streak0 || 80;
+        } },
       { label: 'VOLUMETRIC LIGHT', value: () => LIGHTV.on ? 'ON' : 'OFF',
         hint: 'air around every light in the city, not just the street lamps',
         adj(){ LIGHTV.on = !LIGHTV.on; } },
