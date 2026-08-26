@@ -1699,7 +1699,7 @@ function buildCity(seed){
   The pool is cast under the LENS, not the post, which is the whole point of
   giving the thing an arm: the light lands out on the roadway.
 ============================================================================*/
-let lamps = [], lampGrid = null;
+let lamps = [], lampGrid = null, lampGrid2 = null;
 const LAMP_REACH = 4.6;                       // how far a pool carries, in tiles
 const LAMP_LENS_U = 0.367;                    // the luminaire, across the artwork
 const LAMP_LENS_Z = 5.4 * (1 - 3.5 / 55);     // and how high off the pavement
@@ -1848,7 +1848,9 @@ function lampColourIndex(o){
 function indexLamps(){
   lamps = props.filter(q => q.k === PK_LAMP);
   if (!lampGrid || lampGrid.length !== MAP * MAP) lampGrid = new Int32Array(MAP * MAP);
+  if (!lampGrid2 || lampGrid2.length !== MAP * MAP) lampGrid2 = new Int32Array(MAP * MAP);
   lampGrid.fill(-1);
+  lampGrid2.fill(-1);
   const def = PROPDEF[PK_LAMP];
   // the lens sits this far along the arm from the post
   const reach = (def.anchor - (LAMP_LENS_U - 0.5)) * def.w;
@@ -1889,17 +1891,30 @@ function indexLamps(){
         if (x < 0 || x >= MAP) continue;
         const dx = x + 0.5 - o.lx, dy = y + 0.5 - o.ly;
         if (dx * dx + dy * dy > LAMP_REACH * LAMP_REACH) continue;
-        /* Pools overlap. Rather than sum them - which needs a list per tile
-           and a loop per cell - each tile keeps the nearest lamp, so the
-           brightest source wins its own ground and the seam between two of
-           them falls where they were equal anyway. */
-        const cur = lampGrid[y * MAP + x];
+        /* Pools overlap, so each tile keeps its TWO nearest lamps - one grid
+           slot was a hard per-tile switch along the line where two pools met,
+           and a per-tile switch over a smooth field is a blocky seam. With
+           both to hand, lampPool sums their falloffs across the boundary and
+           the seam stops existing. */
+        const gi = y * MAP + x;
+        const cur = lampGrid[gi];
         if (cur >= 0){
           const p = lamps[cur];
           const ex = x + 0.5 - p.lx, ey = y + 0.5 - p.ly;
-          if (ex * ex + ey * ey <= dx * dx + dy * dy) continue;
+          if (ex * ex + ey * ey <= dx * dx + dy * dy){
+            // not the nearest; maybe the second-nearest
+            const c2 = lampGrid2[gi];
+            if (c2 >= 0){
+              const q = lamps[c2];
+              const qx = x + 0.5 - q.lx, qy = y + 0.5 - q.ly;
+              if (qx * qx + qy * qy <= dx * dx + dy * dy) continue;
+            }
+            lampGrid2[gi] = i;
+            continue;
+          }
+          lampGrid2[gi] = cur;             // demoted to second
         }
-        lampGrid[y * MAP + x] = i;
+        lampGrid[gi] = i;
       }
     }
   }
@@ -19524,7 +19539,13 @@ function skyPass(){
       const hs = hash3(skyA[x], (r - horizon) | 0, 11);
       let dens = glowD, base = glowMat;
       if (night > 0 && hs < 0.007 * up * night){ dens = 0.45 + hs * 24; base = C.nWhite; }
-      else if (night > 0 && hs < 0.05) dens += 0.05;   // texture suits dark skies only
+      /* the WHOLE dome wears the haze after dark, not just the horizon band.
+         The upper sky used to be empty cells - the raw background gradient -
+         and however that gradient was tuned it was a DIFFERENT colour system
+         from the glyph haze below it, with a visible border where the haze
+         ran out. A floor of one ramp step puts the same material over every
+         sky cell, so the dome is one colour by construction. */
+      else if (night > 0) dens += 0.035 + (hs < 0.05 ? 0.04 : 0.0);
       if (sunOn){
         const day = CFG.timeMode === 2;
         const dy = (r - sunRow) * 2, q = sunD[x] * sunD[x] + dy * dy;
@@ -19579,19 +19600,49 @@ function waterShade(wx, wy){
    gently at the rim instead of ending on a circle. Daylight puts it away. */
 function lampPool(wx, wy, ix, iy){
   if (!lampGrid || _lampNight <= 0.01 || inside) return;
-  const li = lampGrid[iy * MAP + ix];
-  if (li < 0) return;
-  const L = lamps[li];
-  if (!L || L.dead) return;
-  const dx = wx - L.lx, dy = wy - L.ly;
-  const d2 = dx * dx + dy * dy;
-  if (d2 >= LAMP_REACH * LAMP_REACH) return;
-  const f = 1 - Math.sqrt(d2) / LAMP_REACH;
-  const e = f * f * (3 - 2 * f) * _lampNight;   // smooth in, smooth out
-  if (e <= 0.02) return;
+  const gi = iy * MAP + ix;
+  /* BOTH lamps this tile can feel. One used to win the whole tile, and
+     along the line where two pools met, intensity and cast switched on
+     tile boundaries - a blocky seam through a smooth field. Their falloffs
+     ADD now (light does), so the meeting ground is a brightening, not an
+     edge; the cast comes from the stronger, and near a tie the cells vote
+     so the colour boundary is a dithered shore instead of a wall. */
+  let eA = 0, eB = 0, LA = null, LB = null;
+  const la = lampGrid[gi];
+  if (la >= 0){
+    const L = lamps[la];
+    if (L && !L.dead){
+      const dx = wx - L.lx, dy = wy - L.ly, d2 = dx * dx + dy * dy;
+      if (d2 < LAMP_REACH * LAMP_REACH){
+        const f = 1 - Math.sqrt(d2) / LAMP_REACH;
+        eA = f * f * (3 - 2 * f) * _lampNight; LA = L;
+      }
+    }
+  }
+  const lb = lampGrid2 ? lampGrid2[gi] : -1;
+  if (lb >= 0){
+    const L = lamps[lb];
+    if (L && !L.dead){
+      const dx = wx - L.lx, dy = wy - L.ly, d2 = dx * dx + dy * dy;
+      if (d2 < LAMP_REACH * LAMP_REACH){
+        const f = 1 - Math.sqrt(d2) / LAMP_REACH;
+        eB = f * f * (3 - 2 * f) * _lampNight; LB = L;
+      }
+    }
+  }
+  if (eB > eA){ const t = eA; eA = eB; eB = t; const T = LA; LA = LB; LB = T; }
+  let e = eA + eB * 0.85;
+  if (e > 1) e = 1;
+  if (e <= 0.02 || !LA) return;
   _wd = clamp(_wd + e * LAMP_GAIN, 0, 1);
-  const k = (e * LAMP_STEPS) | 0;
-  _wb = L.pool[k < LAMP_STEPS ? k : LAMP_STEPS - 1];
+  let P = LA;
+  if (LB && LB.pool !== LA.pool &&
+      hash3((wx * 8) | 0, (wy * 8) | 0, 53) < eB / (eA + eB)) P = LB;
+  /* half a step of dither on the rung, or the falloff quantises into the
+     concentric rings the pool used to wear at its rim */
+  let k = (e * LAMP_STEPS + (hash3((wy * 8) | 0, (wx * 8) | 0, 71) - 0.5) * 0.8) | 0;
+  if (k < 0) k = 0;
+  _wb = P.pool[k < LAMP_STEPS ? k : LAMP_STEPS - 1];
 }
 /*========================= the beam in the air ==============================
   The pool says where the light lands. This is the light on its way down.
@@ -22767,9 +22818,13 @@ void main(){
   float t = 1.0 - vT.y;
   float a = max(0.001, uHz - 0.16);
   vec3 c;
-  if (t < a) c = mix(uSky, uMid, t / a);
-  else if (t < uHz) c = mix(uMid, uFog, (t - a) / max(0.001, uHz - a));
-  else c = mix(uFog, uGround, (t - uHz) / max(0.001, 1.0 - uHz));
+  /* smoothstepped, not linear: three straight mixes meet with a slope BREAK
+     at each joint, and the eye finds a crease there - the band across the
+     top of the sky. With the ramp eased, every joint lands with zero slope
+     on both sides and the gradient reads as one sky. */
+  if (t < a) c = mix(uSky, uMid, smoothstep(0.0, 1.0, t / a));
+  else if (t < uHz) c = mix(uMid, uFog, smoothstep(0.0, 1.0, (t - a) / max(0.001, uHz - a)));
+  else c = mix(uFog, uGround, smoothstep(0.0, 1.0, (t - uHz) / max(0.001, 1.0 - uHz)));
   o = vec4(c, 1.0);
 }`;
 const VS_GLYPH = `#version 300 es
@@ -23252,9 +23307,17 @@ void main(){
     float h1 = gHash(vec3(c, r, giSeed));
     float h2 = gHash(vec3(r, giSeed, c));
     float h3 = gHash(vec3(giSeed, c, r));
-    // a cosine-ish hemisphere direction: the normal plus noise, normalised
+    /* a cosine-ish hemisphere direction: the normal plus noise, normalised
+       BY HAND - when the jitter happens to cancel the normal, normalize()
+       returns NaN, the NaN survives every mix() into the history FOREVER,
+       and the reprojection's bilinear reads spread it to the neighbours.
+       That was the "path tracing rots until you toggle it" bug: toggling
+       OFF wrote one clean frame of zeros over the poison. (NaN also fails
+       every comparison, so the dot() rescue below never caught it.) */
     vec3 jit = vec3(h1, h2, h3) * 2.0 - 1.0;
-    vec3 bd = normalize(n + jit * 0.85);
+    vec3 bdv = n + jit * 0.85;
+    float bl = dot(bdv, bdv);
+    vec3 bd = bl > 1e-5 ? bdv * inversesqrt(bl) : n;
     if (dot(bd, n) < 0.05) bd = n;
     vec3 hn;
     float tHit = gMarch(sp, bd, uGI.x, hn);
@@ -23280,6 +23343,10 @@ void main(){
     float cxp = tan(phi + uHR.x) / uHR.z;
     vec2 hUV = clamp(vec2((cxp + 1.0) * 0.5, vT.y + uHR.y / uGrid.y), 0.0, 1.0);
     vec4 histT = texture(uHist, hUV);
+    /* a poisoned past is no past at all: NaN fails <=, so this catches NaN
+       and infinity both, and heals a rotted buffer within one frame */
+    if (!(histT.x <= 1e9) || !(histT.y <= 1e9) ||
+        !(histT.z <= 1e9) || !(histT.w <= 1e9)) histT = vec4(sB, sOpen);
     accT = mix(histT, vec4(sB, sOpen), uGI.z);
     acc += accT.rgb;
   }
@@ -23577,7 +23644,17 @@ function glBuildPalette(){
                 T.fog[1] * (1 - ftn) + CTINT.g * fl * ftn,
                 T.fog[2] * (1 - ftn) + CTINT.b * fl * ftn];
   for (let b = 0; b < NBASE; b++){
-    const c = BASE[b];
+    let c = BASE[b];
+    /* the night haze the sky pass paints is ATMOSPHERE: it takes the city's
+       hue like the fog and the backdrop do, or it stands over the tinted
+       sky as a blue field with a border - which it did */
+    if (b === C.skyGlow && ftn > 0){
+      const skn = Math.min(0.9, ftn * 1.6);
+      const lum = Math.max(c[0], Math.max(c[1], c[2]));
+      c = [c[0] * (1 - skn) + CTINT.r * lum * skn,
+           c[1] * (1 - skn) + CTINT.g * lum * skn,
+           c[2] * (1 - skn) + CTINT.b * lum * skn];
+    }
     /* THE dimming bug, and it was never in the light pass: T.amb is the sun
        on diffuse surfaces, and it was multiplied into EVERY material - so a
        lit window's palette baked to ~55% at night, exactly when it should
@@ -23600,6 +23677,19 @@ function glBuildPalette(){
                  + drugFx('hueC', 0);
       const warm = drugFx('warm', 0);
       let r0 = c[0] * dim * amb, g0 = c[1] * dim * amb, b0 = c[2] * dim * amb;
+      /* aerial perspective in a COLOURED atmosphere: the residual base a far
+         unlit surface keeps after the fog mix is its own daylight colour,
+         and at night a blue-grey tower standing in a purple sky reads as a
+         hole in the world. The further into the haze a level sits, the more
+         its leftover hue belongs to the atmosphere - near levels untouched,
+         the skyline nearly all the way. Emitters keep their own colour. */
+      if (!EMISSIVE[b] && ftn > 0 && f > 0){
+        const hs2 = Math.min(0.88, f * 2.6) * _lampNight * GPUE.matTint;
+        const lm = Math.max(r0, Math.max(g0, b0));
+        r0 = r0 * (1 - hs2) + CTINT.r * lm * hs2;
+        g0 = g0 * (1 - hs2) + CTINT.g * lm * hs2;
+        b0 = b0 * (1 - hs2) + CTINT.b * lm * hs2;
+      }
       if (sat !== 1){
         const lum = r0 * 0.3 + g0 * 0.59 + b0 * 0.11;
         r0 = lum + (r0 - lum) * sat; g0 = lum + (g0 - lum) * sat; b0 = lum + (b0 - lum) * sat;
@@ -23931,6 +24021,10 @@ const GPUE = {
   fogTint: 0.45,
   bgTint:  0.55,
   skyTint: 0.60,
+  /* how much a far, unlit surface's LEFTOVER colour (what the fog mix does
+     not claim) belongs to the atmosphere at night, scaled by its fog level -
+     the skyline melts into the smog instead of standing in it as blue-grey */
+  matTint: 0.70,
   /* What the glow is worth in cells with NOTHING in them. The light pass
      shades open air at full view distance now, and compose paints it over
      the sky - the aura above a shopfront, the wash between towers. Below 1
@@ -24592,8 +24686,14 @@ void main(){
   float dx = cl.x, dy = cl.y;
   float dz = -texelFetch(uRow, ivec2(ci.y, 0), 0).x;      // kk, solved on the CPU
   float vMax = 0.0, vSum = 0.0, vDep = 0.0;
-  int vCol = 0;
+  float v2Max = 0.0, v2Dep = 0.0;
+  int vCol = 0, v2Col = 0;
   float fc = float(ci.x), fr = float(ci.y);
+  /* two decorrelated per-cell hashes: one dithers every hard threshold in
+     the resolve (the ramp steps, the swap ring), the other arbitrates the
+     seam between the two strongest cones */
+  float h1 = fract(sin(dot(vec2(fc, fr), vec2(12.9898, 78.233))) * 43758.5453);
+  float h2 = fract(sin(dot(vec2(fr, fc), vec2(39.3467, 11.135))) * 24634.6345);
   for (int i = 0; i < uNL; i++){
     vec4 q = texelFetch(uLamp, ivec2(1, i), 0);
     if (fc < q.x || fc > q.y || fr < q.z || fr > q.w) continue;   // its screen rect
@@ -24630,16 +24730,33 @@ void main(){
     if (tau < 0.02) continue;
     if (tau > 1.0) tau = 1.0;
     vSum += tau;
-    if (tau > vMax){ vMax = tau; vCol = int(texelFetch(uLamp, ivec2(2, i), 0).x); vDep = t1; }
+    if (tau > vMax){
+      v2Max = vMax; v2Col = vCol; v2Dep = vDep;
+      vMax = tau; vCol = int(texelFetch(uLamp, ivec2(2, i), 0).x); vDep = t1;
+    } else if (tau > v2Max){
+      v2Max = tau; v2Col = int(texelFetch(uLamp, ivec2(2, i), 0).x); v2Dep = t1;
+    }
   }
   if (vMax <= 0.0 || vMax <= uCut) return;
+  /* THE SEAM FIX. The resolve is winner-take-all - it has to be, the ramp
+     and the depth belong to ONE lamp - so where two pools meet, the colour
+     used to switch on a hard line. Near a tie, the cells now VOTE: each one
+     picks the runner-up with probability equal to its relative strength, and
+     the boundary dissolves into the dither this renderer is made of. */
+  if (v2Max > 0.0 && h2 < v2Max / (vMax + v2Max)){
+    vCol = v2Col; vDep = v2Dep;
+  }
   float tau = vMax + (vSum - vMax) * uMix;
   if (tau > 1.0) tau = 1.0;
   tau = (tau - uCut) / (1.0 - uCut);
   if (tau <= 0.0) return;
   tau = pow(tau, uGamma);
-  float k = 2.0 + floor(tau * (uSteps - 2.0));
+  /* THE RING FIX. tau is floored into a handful of ramp steps, and a floor
+     over a smooth field is a set of concentric rings. Half a step of
+     per-cell dither turns each ring edge into a stipple. */
+  float k = 2.0 + floor(tau * (uSteps - 2.0) + (h1 - 0.5) * 0.9);
   if (k > uSteps - 1.0) k = uSteps - 1.0;
+  if (k < 2.0) k = 2.0;
   float ramp = floor(texelFetch(uPool, ivec2(int(k), vCol), 0).r * 255.0 + 0.5);
   if (gIn < 0.5){
     float g = floor(pow(tau, 0.75) * uShaft * uRMAX + 0.5);
@@ -24656,12 +24773,14 @@ void main(){
     }
     oL = vec4(lv / 255.0, 0.0, 0.0, 1.0);
   } else {
-    float lift = floor(tau * uLift * uRMAX + 0.5);
+    float lift = floor(tau * uLift * uRMAX + (h1 - 0.5) * 0.9 + 0.5);
     if (lift > 0.0){
       float g = gIn + lift;
       oG = vec4((g > uRMAX ? uRMAX : g) / 255.0, 0.0, 0.0, 1.0);
     }
-    if (tau >= uSwap) oB = vec4(ramp / 255.0, 0.0, 0.0, 1.0);
+    /* the swap threshold was the hardest ring of all: an exact ellipse on
+       the ground where the pool palette begins. Dithered, it is a shore. */
+    if (tau >= uSwap + (h1 - 0.5) * 0.22) oB = vec4(ramp / 255.0, 0.0, 0.0, 1.0);
   }
 }`;
 
@@ -25821,20 +25940,50 @@ void waterShade(float wx, float wy){
    ground being painted. */
 void lampPool(float wx, float wy, int ix, int iy){
   if (uLamp.x <= 0.01) return;
-  float li = texelFetch(uLampG, ivec2(ix, iy), 0).r - 1.0;
-  if (li < 0.0) return;
-  vec4 L = texelFetch(uLamps, ivec2(int(li), 0), 0);
-  if (L.w > 0.5) return;                       // dead
-  float dx = wx - L.x, dy = wy - L.y;
-  float d2 = dx * dx + dy * dy;
-  if (d2 >= uLamp.y * uLamp.y) return;
-  float f = 1.0 - sqrt(d2) / uLamp.y;
-  float e = f * f * (3.0 - 2.0 * f) * uLamp.x;
-  if (e <= 0.02) return;
+  /* the CPU twin's two-lamp sum, line for line: falloffs ADD across the
+     meeting ground, the stronger's cast wins, and near a tie the cells
+     vote on a world-anchored hash so the boundary is a dithered shore */
+  vec2 lg = texelFetch(uLampG, ivec2(ix, iy), 0).rg - 1.0;
+  float eA = 0.0, eB = 0.0;
+  vec4 LA = vec4(0.0), LB = vec4(0.0);
+  bool hasA = false, hasB = false;
+  if (lg.x >= 0.0){
+    vec4 L = texelFetch(uLamps, ivec2(int(lg.x), 0), 0);
+    if (L.w < 0.5){
+      float dx = wx - L.x, dy = wy - L.y, d2 = dx * dx + dy * dy;
+      if (d2 < uLamp.y * uLamp.y){
+        float f = 1.0 - sqrt(d2) / uLamp.y;
+        eA = f * f * (3.0 - 2.0 * f) * uLamp.x; LA = L; hasA = true;
+      }
+    }
+  }
+  if (lg.y >= 0.0){
+    vec4 L = texelFetch(uLamps, ivec2(int(lg.y), 0), 0);
+    if (L.w < 0.5){
+      float dx = wx - L.x, dy = wy - L.y, d2 = dx * dx + dy * dy;
+      if (d2 < uLamp.y * uLamp.y){
+        float f = 1.0 - sqrt(d2) / uLamp.y;
+        eB = f * f * (3.0 - 2.0 * f) * uLamp.x; LB = L; hasB = true;
+      }
+    }
+  }
+  if (eB > eA){
+    float t = eA; eA = eB; eB = t;
+    vec4 T = LA; LA = LB; LB = T;
+    bool hb = hasA; hasA = hasB; hasB = hb;
+  }
+  float e = eA + eB * 0.85;
+  if (e > 1.0) e = 1.0;
+  if (e <= 0.02 || !hasA) return;
   _wd = jclamp(_wd + e * uLamp.z, 0.0, 1.0);
-  int k = trunc0(e * uLamp.w);
+  vec4 P = LA;
+  if (hasB && int(LB.z) != int(LA.z) &&
+      hash3(trunc0(wx * 8.0), trunc0(wy * 8.0), 53) < eB / (eA + eB)) P = LB;
   int st = int(uLamp.w);
-  _wb = int(uMat[M_POOL0]) + int(L.z) * st + (k < st ? k : st - 1);
+  int k = int(floor(e * uLamp.w +
+                    (hash3(trunc0(wy * 8.0), trunc0(wx * 8.0), 71) - 0.5) * 0.8));
+  if (k < 0) k = 0;
+  _wb = int(uMat[M_POOL0]) + int(P.z) * st + (k < st ? k : st - 1);
 }
 int zoneAt(int bi, int bj){
   float zr = length(vec2(float(bi) + 0.5 - uNB * 0.5, float(bj) + 0.5 - uNB * 0.5)) / (uNB * 0.5);
@@ -26198,7 +26347,8 @@ void main(){
     float hs = hash3(int(cs.x), int(float(r) - uHorizon), 11);
     float dens = glowD, base = uSkyMat.x;
     if (uNight > 0.0 && hs < 0.007 * up * uNight){ dens = 0.45 + hs * 24.0; base = uSkyMat.y; }
-    else if (uNight > 0.0 && hs < 0.05) dens += 0.05;
+    // the whole dome wears the haze after dark - the CPU twin, line for line
+    else if (uNight > 0.0) dens += 0.035 + (hs < 0.05 ? 0.04 : 0.0);
     if (uSunOn > 0.5){
       bool day = uDay > 0.5;
       float dy = (float(r) - uSunRow) * 2.0;
@@ -26637,9 +26787,13 @@ function glWorldStatics(){
   }
   GL.wTile = mkTex(GL.wTile, gl.RGBA8, MAP, MAP, gl.RGBA, gl.UNSIGNED_BYTE, TB);
 
-  const LG = new Float32Array(N);
-  if (lampGrid) for (let i = 0; i < N; i++) LG[i] = lampGrid[i] + 1;
-  GL.wLampG = mkTex(GL.wLampG, gl.R32F, MAP, MAP, gl.RED, gl.FLOAT, LG);
+  // two channels now: the nearest lamp and the second, both one-based
+  const LG = new Float32Array(N * 2);
+  if (lampGrid) for (let i = 0; i < N; i++){
+    LG[i * 2] = lampGrid[i] + 1;
+    LG[i * 2 + 1] = lampGrid2 ? lampGrid2[i] + 1 : 0;
+  }
+  GL.wLampG = mkTex(GL.wLampG, gl.RG32F, MAP, MAP, gl.RG, gl.FLOAT, LG);
 
   GL.wDist = mkTex(GL.wDist, gl.R8, NB, NB, gl.RED, gl.UNSIGNED_BYTE, distMap);
 
@@ -27773,22 +27927,33 @@ function glPresent(){
   } else {
     /* The backdrop is the largest single surface on screen and it was
        neutral grey-blue - most of "the whole scene reads grey" was THIS.
-       At night the horizon band and the ground take the city's hue (the
-       smog the city lights from below); the zenith keeps most of its dark
-       sky so up still reads as up. */
+       Every band leans toward the city's hue THE SAME WAY: same fraction,
+       tint scaled by the band's OWN brightness. The first version gave the
+       zenith its own smaller fraction and a floor that lit even a black
+       sky, so as the tint drifted the top quarter of the horizon moved in
+       a different direction from the rest and the sky read as two weathers
+       at once. Proportional-to-own-luminance keeps the ramp: a dark band
+       tints darkly, a black zenith stays black, and the whole gradient
+       shifts as one sky. */
     const tn = GPUE.on ? _lampNight * GPUE.bgTint : 0;
-    const fl = Math.max(fog[0], Math.max(fog[1], fog[2])) * 1.3;
-    const fT = [fog[0] * (1 - tn) + CTINT.r * fl * tn,
-                fog[1] * (1 - tn) + CTINT.g * fl * tn,
-                fog[2] * (1 - tn) + CTINT.b * fl * tn];
-    const zn = tn * 0.35;
-    gl.uniform3f(GL.uBG.uSky,
-      T.sky[0] / 255 * (1 - zn) + CTINT.r * (T.sky[0] / 255 + 0.02) * zn,
-      T.sky[1] / 255 * (1 - zn) + CTINT.g * (T.sky[1] / 255 + 0.02) * zn,
-      T.sky[2] / 255 * (1 - zn) + CTINT.b * (T.sky[2] / 255 + 0.02) * zn);
-    gl.uniform3f(GL.uBG.uMid, T.sky[0] / 255 * 0.35 + fT[0] * 0.65,
-                              T.sky[1] / 255 * 0.35 + fT[1] * 0.65,
-                              T.sky[2] / 255 * 0.35 + fT[2] * 0.65);
+    const tintB = (r, g, b, tn2) => {
+      const lum = Math.max(r, Math.max(g, b)) * 1.18;
+      return [r * (1 - tn2) + CTINT.r * lum * tn2,
+              g * (1 - tn2) + CTINT.g * lum * tn2,
+              b * (1 - tn2) + CTINT.b * lum * tn2];
+    };
+    /* the zenith is so dim that a proportional tint leaves its own night
+       BLUE standing while the brighter bands below go to the city's hue -
+       two skies with a border between them. The top band swaps hue harder
+       instead, to the same dark level, so the whole dome is one colour. */
+    const skyT = tintB(T.sky[0] / 255, T.sky[1] / 255, T.sky[2] / 255,
+                       Math.min(0.92, tn * 1.75));
+    const midT = tintB((T.sky[0] * 0.35 + T.fog[0] * 0.65) / 255,
+                       (T.sky[1] * 0.35 + T.fog[1] * 0.65) / 255,
+                       (T.sky[2] * 0.35 + T.fog[2] * 0.65) / 255, tn);
+    const fT = tintB(fog[0], fog[1], fog[2], tn);
+    gl.uniform3f(GL.uBG.uSky, skyT[0], skyT[1], skyT[2]);
+    gl.uniform3f(GL.uBG.uMid, midT[0], midT[1], midT[2]);
     gl.uniform3f(GL.uBG.uFog, fT[0], fT[1], fT[2]);
     const gnd = CFG.timeMode === 2 ? 0.22 : 0.42;          // day ground stays dark
     gl.uniform3f(GL.uBG.uGround, fT[0] * gnd, fT[1] * gnd, fT[2] * gnd);

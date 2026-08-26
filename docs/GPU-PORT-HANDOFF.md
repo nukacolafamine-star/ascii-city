@@ -1577,6 +1577,48 @@ With them: `airGlow` 0.75 -> 1.0 and `lightSat` 1.35 -> 1.45. The
 pitched-up canyon vantage - the densest thing the game can frame -
 measures worldPasses 5.77ms; the level street 5.2.
 
+### 5p. Three small artefacts, and one sky
+
+Player-reported, player-verified fixed:
+
+**The lamp pools' rings and the seam where two pools meet.** Both in the
+GROUND pool (floorSample's lampPool, both twins), not the beam: the pool
+palette rung was `(e*STEPS)|0` over a smooth falloff - concentric rings -
+and `lampGrid` kept ONE lamp per tile, so where two pools met, intensity
+and cast switched on tile boundaries. `lampGrid2` now carries the
+second-nearest lamp; the two falloffs ADD across the meeting ground (light
+does), the cast comes from the stronger with a world-anchored hash vote
+near ties, and the rung takes half a step of the same dither. FS_TLAMP's
+beam resolve got the matching treatment: a second-best cone tracked, the
+winner dithered by relative strength at the seam, the ramp step and the
+swap threshold dithered. The lampGrid texture is RG now.
+
+**Path tracing rotting until toggled.** `normalize(n + jit*0.85)` is NaN
+when the jitter cancels the normal; NaN survives every mix() into the
+traced history FOREVER, fails every comparison so no gate caught it, and
+the reprojection's bilinear reads SPREAD it. Toggling PT off wrote one
+clean frame of zeros over the poison, which is why the toggle "fixed" it.
+Now: hand-normalised with a guard, and the history read heals itself
+(`!(x <= 1e9)` catches NaN and infinity both).
+
+**And the sky was three colour systems wearing one trenchcoat.** The
+horizon band the player liked is skyPass HAZE GLYPHS (C.skyGlow, tinted);
+above it the haze ran out and the raw background gradient showed (a
+different colour however tuned - and its three linear mixes met with
+slope breaks the eye reads as bands, now smoothstepped); and far unlit
+towers kept 60-90% of their blue-grey base through the fog mix and stood
+in the glowing sky like holes. Fixed by construction: the whole dome
+wears one ramp step of the same haze material at night (both sky-pass
+twins, +0.035 floor), C.skyGlow itself follows CTINT in the bake, the
+zenith band hue-swaps harder than its luminance-proportional share
+(`tn*1.75`, or its own night blue dominates the dark), and non-emissive
+materials hand their fog-level-proportional leftover hue to the
+atmosphere (`GPUE.matTint` 0.70, `min(0.88, f*2.6)` by level - near
+untouched, skyline nearly all the way). Verified by pixel measurement:
+the four sky regions the player marked now agree in normalised hue to
+within 0.1 per channel, and the upper sky holds ZERO empty cells in
+1,715 sampled.
+
 ---
 
 ## 6. Measurement traps that have already cost time
