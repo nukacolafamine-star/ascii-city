@@ -23423,7 +23423,11 @@ void main(){
                                  : vec3(0.0);
           if (gOK < 0.5)
             sL = gOneLight(hp, hn, gHash(vec3(rs, r, c)), uGI.x, sSteps);
-          sB = sL * uGI.y * bounceGain;
+          /* the firefly cap is in ACC UNITS - what actually lands in the
+             sum - so it clamps AFTER albedo and gain. Clamping the raw
+             sample let bounce 16 push 3,500-unit fireflies through a
+             "400" ceiling, and the history near bright walls sat at 800+ */
+          sB = min(sL * uGI.y * bounceGain, vec3(uGIClamp));
         } else sB = vec3(0.0);
       } else {
         sOpen = 1.0;
