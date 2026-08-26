@@ -524,16 +524,19 @@ refuse you, and sniffer chips that ping loose loot on the minimap.
 Vandalism and theft still feed the corruption ledger — the city keeps
 count.
 
-**The guns take up less of the screen than they did.** The viewmodel was sixty
-percent of the frame, thirty characters across, and sixteen of its twenty-six
-rows were the player's own forearms — most of the lower half of the view spent
-on a grey shape you already know the shape of, over the street you are aiming
-into. Narrower arms, shorter models and **forty-two percent** of the height
-gives back a third of the screen with no loss of legibility, because what reads
-at this size was always the silhouette. What goes into the room the shrink made
-is flair: every weapon carries one light of its own in the city's own neon — an
-amber round counter, a blue heat vent between the bolt rails, a violet
-capacitor stack, a red-hot heat shield, a green lamp inside the glass.
+**Your own hands are made of the same stuff as the city.** The viewmodel used
+to be a second art style — hand-drawn ASCII forearms pasted over a voxel world,
+and the seam between the two was the most visible line in the game. The first
+person is one dynamic voxel volume now, hung half a metre in front of the
+camera and rebuilt every frame: forearms reaching in from the bottom corners
+wearing your actual coat (put on the puffer and your own sleeves change), the
+gun with its recoil and one amber light of its own, the blade arcing across
+the reticle on the same beat the damage lands, the deck with a lit nose that
+really rolls over its own length mid-kickflip. Same slabs, same palette, same
+rays, same occlusion, same GPU path as everything else on the street. The
+rituals run long enough to be worth their price — the raise, bite after bite
+off a steaming cup, a can tipping emptier, the ember answering every draw,
+the put-away — and your hands are spoken for the whole time.
 
 **And a body firing a gun now looks like one.** From outside — a hijacked
 camera, another player across a junction — a shot used to be a body holding a
@@ -544,6 +547,18 @@ much as brace, because what it does to the person holding it is soak. The
 specials get their own muzzle too — the railgun leaves a line of light standing
 in the air where the slug went, the arc gun throws two forks off the axis of
 the bore, the nailer barely lights at all.
+
+**Bodies animate between their poses now.** A pose used to be a name in a
+table and a walk was two names taking turns; everything between them never
+rendered. Every body is a point in pose space moved every frame instead —
+gaits are sinusoids of the stride phase, swings and recoils and rituals are
+envelopes over their own timers, every state change is a blend — and the
+volume rebuilds in place whenever the pose has visibly moved, re-uploading
+its own atlas slot rather than eating a new one. Jumps are true ballistics
+(launch velocity, gravity, done when the ground takes it back), the body
+outside rides the same height the camera does, and the lift travels the
+wire beside the stride phase — so a peer's feet finally leave the street
+when they ollie, and the deck under them genuinely rolls over mid-flick.
 
 **Shops have trades now**: groceries and bodegas in the neighbourhoods,
 clothiers, jewelers, armories and tool shops on the strip, dispensaries
