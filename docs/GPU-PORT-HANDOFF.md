@@ -1517,6 +1517,40 @@ air is worth under 0.002 still discard. worldPasses unmoved (4.45),
 present 1.2 -> 1.6ms - the sky cells now run the tile loop and it shows
 up as GPU pressure at the sync, nowhere else.
 
+### 5n. The colour pass: bright is not rich
+
+Player: enough brightness now, not enough COLOUR - lights do not give off
+the colour they are. Three mechanisms, three fixes, all knobs:
+
+**Hue dominance (`GPUE.rich`, uRichK).** A sum of overlapping glows is
+physically additive and visually grey: with five-tile spheres lying ten
+deep, cyan + magenta + amber average to soup, and every light's colour is
+donated to the street instead of kept. The loop now also accumulates a
+luminance-weighted hue (accH += c*max(c)), and the answer is the plain
+sum's ENERGY carried on the dominant hue, mixed by rich (0.9). Energy is
+conserved; only ownership changes. `GPUE.fall` (5.5) is the dense path's
+own in-sphere falloff now - steeper than the sparse 3.2, so each glow has
+a saturated core that is ITS colour.
+
+**Chroma lift at APPLY time (`GPUE.lightSat`, uLSat, compose).** Coloured
+light added to a grey base is pale - the sum keeps the hue but the base's
+greyness dilutes it. The light (never the palette) is pushed away from
+its own luminance by 1.35 as it lands, surfaces and air cells both.
+
+**And "more of that" (the tower the player pointed at):** emissive
+materials resist the distance fog at 0.45 of the rate (fog in front of a
+light scatters its colour, it does not grey it) so the far skyline reads
+as coloured points the way a near facade does; and litP's floor rose
+0.04 -> 0.16 so no tower rolls nearly dark - the special cases that set
+litP directly keep their deliberate darkness.
+
+Ambient came up with it: GIR.sky 0.30, GPUE.ao 0.26, gain 0.26/roof 155.
+Fast-spin max hot 0.09%. Denser city costs: pairs ~392k (budget 1M),
+worldPasses 5.2ms at the dense vantage - inside the 5.56 target still.
+Light-buffer saturation (weak lens, see 5j's note): 0.21 -> 0.25 global,
+but the per-region look is the judge and the streets now carry their
+nearest light's hue visibly.
+
 ---
 
 ## 6. Measurement traps that have already cost time
