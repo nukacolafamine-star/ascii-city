@@ -11440,8 +11440,9 @@ function openSettingsMenu(){
                if (GPUH.on && !(GPUV.on && (GPUV.stages & GPUV.max) === TAIL_ALL))
                  toast('gpu harvest: needs gpu tail set to ON'); } },
       { label: 'PATH TRACING', value: () => !GIR.on ? 'OFF' : GIR.bounces > 1 ? 'BOUNCE' : 'DIRECT',
-        hint: 'traced shadows and bounced colour. costs about half the frame; ' +
-              'it settles while you stand still and starts over when you move',
+        hint: 'DIRECT is traced sky and shut-in corners; BOUNCE adds light ' +
+              'carried off nearby walls and signs. it settles while you ' +
+              'stand still and starts over when you move',
         adj(d){
           // OFF -> DIRECT -> BOUNCE -> OFF
           const step = d < 0 ? -1 : 1;
@@ -20233,16 +20234,18 @@ function emitVolume(){
 ============================================================================*/
 const GIR = {
   on:        true,   // on the card now, and it costs a ray a cell
-  /* 3.5, against the 1.0 it launched at, and the reason is the rolloff: in a
-     lit area the direct acc is already deep into the exp curve, so what the
-     bounce adds is compressed toward nothing - at 1.0 the converged bounce
-     measured 0.01 of a mean against GI off, which is why the switch felt
-     like it did the REVERSE of path tracing. At 3.5 the places that were
-     dark without GI gain ~4-5 lit units (they sit on the linear part of the
-     curve, so the bounce shows exactly where it should), hot cells stay at
-     zero, and frame-to-frame shimmer while walking adds 0.7 of a 255-unit
-     channel. The sky-escape term is deliberately NOT on this knob. */
-  bounce:    3.50,
+  /* 16, against the 3.5 it shipped at and the 1.0 it launched at. The 3.5
+     was tuned to be safe under the old estimator's noise, and safe meant
+     invisible: through gain 0.26 a converged bounce of 4-6 acc units is a
+     single lit unit on a 255 screen. What buys the headroom is the grid
+     estimator (an order less variance), the rays knob, and the display
+     denoise - measured at 16 the street level lifts visibly in the light's
+     own colour and hot cells stay at zero (the max-channel rolloff is
+     self-limiting: bright cells sit deep in the exp curve and barely
+     move). The sky-escape term is deliberately NOT on this knob. */
+  bounce:    16.0,
+  rays:      2,      // bounce rays per cell per frame, averaged (1-4)
+  denoise:   true,   // display-only cross blur of the traced history
   clamp:     400,    // ceiling on one sample, in acc units - the firefly cap
   bounces:   2,      // the CPU tracer's, kept only for the CPU light path
   dist:      34,     // how far a shadow or bounce ray is worth following, tiles
@@ -20269,6 +20272,11 @@ const GIR = {
      other half of why the converged bounce measured 0.01 mean against GI
      off. 384 is the nearest couple of dozen tiles at street density. */
   pick:      384,
+  /* The world-space light grid the bounce samples from - lights near the
+     HIT, not near the camera. false falls back to the camera-nearest pick,
+     kept for A/B: the two estimate the same integral, the grid with an
+     order less variance and true local colour. */
+  grid:      true,
   ao:        0.75,   // how much a fully shut-in cell is darkened, 0-1
   aoDist:    7.0,    // a bounce ray that dies inside this counts as occlusion
   phases:    3,      // cells traced per frame = 1/this, cycling
@@ -23064,6 +23072,14 @@ uniform float uRichK;
    pure row shift (the horizon delta), and yaw is a shift in the tangent of
    the column angle. x: dAng, y: dRow, z: planeLen. */
 uniform vec4  uHR;
+/* The GI grid: the strongest few lights standing over each 4x4 of world
+   tiles, camera-centred, so the bounce can sample lights near ITS HIT
+   rather than near the camera. xy origin, z 1/cell, w cells across (0 =
+   grid off, fall back to the camera-nearest pick). */
+uniform sampler2D uGIGrid;
+uniform vec4  uGIG;
+// x: display denoise on; y: bounce rays per frame; zw spare
+uniform vec4  uGI3;
 
 // a hash good enough for one ray a frame, denoised by the average
 float gHash(vec3 v){
@@ -23137,6 +23153,54 @@ vec3 gOneLight(vec3 p, vec3 n, float rnd, float dist, int steps){
      NEAREST the hit instead of averaging the whole street to grey. */
   float w = min(A.w * float(K) * ndl / (1.0 + d2 * uTune3.w), uGIClamp);
   return B.rgb * w;
+}
+/* The bounce light, chosen from the lights that stand NEAR THE HIT rather
+   than near the camera. gOneLight picks uniformly from the camera's nearest
+   K, so a ray landing twenty tiles away almost always samples a light the
+   falloff then discards - unbiased, but nearly every sample wasted, which
+   is why the bounce had to shout (gain) to be seen at all. Here: read the
+   hit's grid cell, weigh the few candidates that actually stand over it,
+   importance-pick one by that weight, shadow-march only the pick, and
+   scale its colour by the SUMMED weight - the same integral, an order
+   less variance, and the red sign lands on ITS kerb, not a grey mean of
+   the street. ok=0 means the hit fell outside the grid, not that it was
+   dark - the caller falls back to the camera-K pick there. */
+vec3 gGridLight(vec3 p, vec3 n, float rnd, float open, out float ok){
+  ok = 0.0;
+  vec2 gc = (p.xy - uGIG.xy) * uGIG.z;
+  if (gc.x < 0.0 || gc.y < 0.0 || gc.x >= uGIG.w || gc.y >= uGIG.w) return vec3(0.0);
+  int bx = int(gc.x) * 8, cy = int(gc.y) * 3;
+  float wS[8];
+  float W = 0.0;
+  for (int s = 0; s < 8; s++){
+    vec4 A = texelFetch(uGIGrid, ivec2(bx + s, cy), 0);
+    float w = 0.0;
+    if (A.w > 0.0){
+      vec3 L = A.xyz - p;
+      float d2 = max(dot(L, L), 1e-4);
+      float ndl = dot(n, L * inversesqrt(d2));
+      if (ndl > 0.0) w = A.w * ndl / (1.0 + d2 * uTune3.w);
+    }
+    wS[s] = w; W += w;
+  }
+  ok = 1.0;                    // in range: an empty cell is a TRUE dark, no fallback
+  /* The tail: everything that did not make a slot, colour-weighted, kept
+     rather than dropped - eight slots truncate a downtown cell badly (every
+     window is a light). Isotropic (x0.5 for the hemisphere) and unshadowed,
+     so it rides the ray's own openness: a shut-in hit gets little of the
+     street's wash, an open kerb gets all of it. */
+  vec3 res = texelFetch(uGIGrid, ivec2(bx, cy + 2), 0).rgb * (0.5 * open);
+  if (W <= 1e-5) return min(res, vec3(uGIClamp));
+  float r = rnd * W; int pick = 7;
+  for (int s = 0; s < 8; s++){ r -= wS[s]; if (r <= 0.0){ pick = s; break; } }
+  vec4 A = texelFetch(uGIGrid, ivec2(bx + pick, cy), 0);
+  vec3 L = A.xyz - p;
+  float d = max(length(L), 1e-2);
+  vec3 hn;
+  if (gMarch(p + n * 0.02, L / d, d - 0.05, hn) >= 0.0)
+    return min(res, vec3(uGIClamp));
+  vec3 col = texelFetch(uGIGrid, ivec2(bx + pick, cy + 1), 0).rgb;
+  return min(col * min(W, uGIClamp) + res, vec3(uGIClamp));
 }
 
 float hAt(vec2 w){
@@ -23301,39 +23365,61 @@ void main(){
   float giOn = uGI2.x, giSeed = uGI2.y;
   float bounceGain = uGI2.w;
   vec4 accT = vec4(0.0, 0.0, 0.0, 1.0);
+  vec4 dispT = vec4(0.0, 0.0, 0.0, 1.0);
   if (giOn > 0.5 && !airCell){
     vec3 n = gNormal(c, r, depth, rd);
     vec3 sp = surf + n * 0.02;
-    float h1 = gHash(vec3(c, r, giSeed));
-    float h2 = gHash(vec3(r, giSeed, c));
-    float h3 = gHash(vec3(giSeed, c, r));
-    /* a cosine-ish hemisphere direction: the normal plus noise, normalised
-       BY HAND - when the jitter happens to cancel the normal, normalize()
-       returns NaN, the NaN survives every mix() into the history FOREVER,
-       and the reprojection's bilinear reads spread it to the neighbours.
-       That was the "path tracing rots until you toggle it" bug: toggling
-       OFF wrote one clean frame of zeros over the poison. (NaN also fails
-       every comparison, so the dot() rescue below never caught it.) */
-    vec3 jit = vec3(h1, h2, h3) * 2.0 - 1.0;
-    vec3 bdv = n + jit * 0.85;
-    float bl = dot(bdv, bdv);
-    vec3 bd = bl > 1e-5 ? bdv * inversesqrt(bl) : n;
-    if (dot(bd, n) < 0.05) bd = n;
-    vec3 hn;
-    float tHit = gMarch(sp, bd, uGI.x, hn);
-    vec3 sB; float sOpen;
-    if (tHit >= 0.0){
-      sOpen = clamp(tHit / uGI.w, 0.0, 1.0);
-      vec3 hp = sp + bd * tHit;
-      sB = gOneLight(hp, hn, gHash(vec3(giSeed, r, c)), uGI.x, sSteps)
-           * uGI.y * bounceGain;
-    } else {
-      sOpen = 1.0;
-      /* NOT scaled by bounceGain: the sky level was tuned on its own and
-         the gain knob is for the emitter bounce, or turning the bounce up
-         washes dusk in sky-grey. */
-      sB = uSky * uGI2.z;                     // it got away to the sky
+    /* uGI3.y rays a frame, averaged - the bounce runs at a gain where one
+       sample a frame boils while the camera walks (the history is pinned
+       at moveA there, so nothing averages it), and independent rays cut
+       that noise at its source. */
+    int nRay = int(clamp(uGI3.y, 1.0, 4.0));
+    vec3 sBs = vec3(0.0); float sOs = 0.0;
+    for (int ri = 0; ri < 4; ri++){
+      if (ri >= nRay) break;
+      float rs = giSeed + float(ri) * 0.37119;
+      float h1 = gHash(vec3(c, r, rs));
+      float h2 = gHash(vec3(r, rs, c));
+      float h3 = gHash(vec3(rs, c, r));
+      /* a cosine-ish hemisphere direction: the normal plus noise, normalised
+         BY HAND - when the jitter happens to cancel the normal, normalize()
+         returns NaN, the NaN survives every mix() into the history FOREVER,
+         and the reprojection's bilinear reads spread it to the neighbours.
+         That was the "path tracing rots until you toggle it" bug: toggling
+         OFF wrote one clean frame of zeros over the poison. (NaN also fails
+         every comparison, so the dot() rescue below never caught it.) */
+      vec3 jit = vec3(h1, h2, h3) * 2.0 - 1.0;
+      vec3 bdv = n + jit * 0.85;
+      float bl = dot(bdv, bdv);
+      vec3 bd = bl > 1e-5 ? bdv * inversesqrt(bl) : n;
+      if (dot(bd, n) < 0.05) bd = n;
+      vec3 hn;
+      float tHit = gMarch(sp, bd, uGI.x, hn);
+      vec3 sB; float sOpen;
+      if (tHit >= 0.0){
+        sOpen = clamp(tHit / uGI.w, 0.0, 1.0);
+        vec3 hp = sp + bd * tHit;
+        /* bounceGain 0 is the DIRECT menu state: traced openness and sky,
+           no emitter bounce - the march above still ran for sOpen. */
+        if (bounceGain > 0.0){
+          float gOK = 0.0;
+          vec3 sL = uGIG.w > 0.5 ? gGridLight(hp, hn, gHash(vec3(rs, r, c)), sOpen, gOK)
+                                 : vec3(0.0);
+          if (gOK < 0.5)
+            sL = gOneLight(hp, hn, gHash(vec3(rs, r, c)), uGI.x, sSteps);
+          sB = sL * uGI.y * bounceGain;
+        } else sB = vec3(0.0);
+      } else {
+        sOpen = 1.0;
+        /* NOT scaled by bounceGain: the sky level was tuned on its own and
+           the gain knob is for the emitter bounce, or turning the bounce up
+           washes dusk in sky-grey. */
+        sB = uSky * uGI2.z;                   // it got away to the sky
+      }
+      sBs += sB; sOs += sOpen;
     }
+    float rInv = 1.0 / float(nRay);
+    vec3 sB = sBs * rInv; float sOpen = sOs * rInv;
     /* The history is fetched where this ray WAS: pitch is a row shift by
        the horizon delta exactly, yaw a shift in the tangent of the column
        angle. Clamped rather than dropped at the frame edge - a stretched
@@ -23348,7 +23434,26 @@ void main(){
     if (!(histT.x <= 1e9) || !(histT.y <= 1e9) ||
         !(histT.z <= 1e9) || !(histT.w <= 1e9)) histT = vec4(sB, sOpen);
     accT = mix(histT, vec4(sB, sOpen), uGI.z);
-    acc += accT.rgb;
+    /* WHAT IS SHOWN is denoised; WHAT IS KEPT is not. The CPU tracer's
+       litUpsample doubled as its denoiser and the GPU path shipped without
+       one - this is it: a cross blur of the reprojected PAST, display only
+       so the blur can never compound into the history, with the fresh
+       sample mixed back at half weight for response. Every tap is healed
+       like the centre, or one poisoned neighbour would smear five cells. */
+    if (uGI3.x > 0.5){
+      vec2 txx = vec2(1.0 / uGrid.x, 0.0), txy = vec2(0.0, 1.0 / uGrid.y);
+      vec4 t1 = texture(uHist, clamp(hUV + txx, 0.0, 1.0));
+      vec4 t2 = texture(uHist, clamp(hUV - txx, 0.0, 1.0));
+      vec4 t3 = texture(uHist, clamp(hUV + txy, 0.0, 1.0));
+      vec4 t4 = texture(uHist, clamp(hUV - txy, 0.0, 1.0));
+      if (!(t1.x <= 1e9) || !(t1.y <= 1e9) || !(t1.z <= 1e9) || !(t1.w <= 1e9)) t1 = histT;
+      if (!(t2.x <= 1e9) || !(t2.y <= 1e9) || !(t2.z <= 1e9) || !(t2.w <= 1e9)) t2 = histT;
+      if (!(t3.x <= 1e9) || !(t3.y <= 1e9) || !(t3.z <= 1e9) || !(t3.w <= 1e9)) t3 = histT;
+      if (!(t4.x <= 1e9) || !(t4.y <= 1e9) || !(t4.z <= 1e9) || !(t4.w <= 1e9)) t4 = histT;
+      vec4 hB = (histT * 2.0 + t1 + t2 + t3 + t4) * (1.0 / 6.0);
+      dispT = mix(hB, vec4(sB, sOpen), uGI.z * 0.5);
+    } else dispT = accT;
+    acc += dispT.rgb;
   }
   /* Many lights add, brightness does not: roll the sum toward a ceiling.
      ON THE BRIGHTEST CHANNEL, NOT EACH CHANNEL. 1-exp per channel compresses
@@ -23362,7 +23467,7 @@ void main(){
   vec3 lit = aMax > 1e-4 ? acc * (aRoll / aMax) : vec3(0.0);
   float ao = occW > 0.0 ? 1.0 - aoK * (occ / occW) : 1.0;
   // the AVERAGED openness, so the corner darkening is as denoised as the bounce
-  if (giOn > 0.5) ao *= mix(1.0 - uTune2.z, 1.0, accT.a);
+  if (giOn > 0.5) ao *= mix(1.0 - uTune2.z, 1.0, dispT.a);
   if (uTune2.y < -0.5){            // debug: show the heightfield, not the light
     float hh = hAt(surf.xy) / 24.0;
     o = vec4(hh, hh, hh, 1.0); oT = accT; return;
@@ -23477,7 +23582,8 @@ function glInit(){
     G.uL = {};
     for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane','uCap',
                      'uHist','uGI','uGI2','uSky','uGIClamp','uTiles','uTIdx','uTune3','uHR',
-                     'uRichK','uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2'])
+                     'uRichK','uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2',
+                     'uGIGrid','uGIG','uGI3'])
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
   } catch (e){ G.lightOK = false; }
@@ -25587,6 +25693,80 @@ function glLightPass(){
     const rowsUsed = Math.min(512, Math.ceil(Math.max(1, run) / 2048));
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 2048, rowsUsed, gl.RED, gl.FLOAT, pairs.subarray(0, rowsUsed * 2048));
   }
+  /*--------------- the GI grid: lights binned over WORLD tiles --------------
+    The bounce estimator reads this instead of the camera-nearest list: the
+    strongest few lights standing over each 4x4 of world tiles, camera-
+    centred, SELF-CONTAINED - position and colour, not indices, because the
+    list above re-sorts every frame, and through a texture rebuilt every
+    fourth frame a stale index is a DIFFERENT light where stale data is the
+    same light a step behind, which is invisible. Cell rows come in pairs:
+    row 2c is position+weight, row 2c+1 is colour. Rebuilt when the camera
+    crosses a cell or every fourth frame, whichever is sooner. */
+  if (GIR.on && GIR.grid !== false){
+    const GN = 24, GM = 8, GC = 4, GW = GN * GM;
+    if (!GL.gigT){
+      GL.gigT = glTailTex(null, gl.RGBA32F, gl.RGBA, gl.FLOAT, GW, GN * 3);
+      GPUL._gig = new Float32Array(GW * GN * 3 * 4);
+      GPUL._gigW = new Float32Array(GN * GN * GM);
+    }
+    const ox = (Math.floor(cam.x / GC) - (GN >> 1)) * GC;
+    const oy = (Math.floor(cam.y / GC) - (GN >> 1)) * GC;
+    GPUL._gigTick = (GPUL._gigTick || 0) + 1;
+    if (ox !== GPUL._gigOx || oy !== GPUL._gigOy || GPUL._gigTick >= 4){
+      GPUL._gigOx = ox; GPUL._gigOy = oy; GPUL._gigTick = 0;
+      const gig = GPUL._gig, gw = GPUL._gigW;
+      gig.fill(0); gw.fill(0);
+      const fall = GIR.falloff, wMin = 0.05;
+      for (let k = 0; k < n; k++){
+        const o0 = k * 4, o1 = LIGHT_CAP * 4 + k * 4;
+        const lx = T[o0], ly = T[o0 + 1], ew = T[o0 + 3];
+        const cr = T[o1], cg = T[o1 + 1], cb = T[o1 + 2];
+        /* reach: where this light's weight falls under wMin; capped so one
+           strong light cannot make the splat quadratic */
+        const rr = Math.min(14, Math.sqrt(Math.max(0, (ew / wMin - 1) / fall)));
+        let cx0 = ((lx - rr - ox) / GC) | 0, cx1 = ((lx + rr - ox) / GC) | 0;
+        let cy0 = ((ly - rr - oy) / GC) | 0, cy1 = ((ly + rr - oy) / GC) | 0;
+        if (cx1 < 0 || cy1 < 0 || cx0 >= GN || cy0 >= GN) continue;
+        if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
+        if (cx1 >= GN) cx1 = GN - 1; if (cy1 >= GN) cy1 = GN - 1;
+        for (let cy = cy0; cy <= cy1; cy++)
+          for (let cx = cx0; cx <= cx1; cx++){
+            const dx = lx - (ox + (cx + 0.5) * GC), dy = ly - (oy + (cy + 0.5) * GC);
+            const w = ew / (1 + (dx * dx + dy * dy) * fall);
+            if (w < wMin) continue;
+            const wb = (cy * GN + cx) * GM;
+            const rb = ((cy * 3 + 2) * GW + cx * GM) * 4;   // the cell's residual
+            let mi = 0, mw = gw[wb];
+            for (let s = 1; s < GM; s++) if (gw[wb + s] < mw){ mw = gw[wb + s]; mi = s; }
+            if (w <= mw){
+              /* did not make a slot: keep its energy in the residual rather
+                 than dropping it - eight slots truncate a downtown cell
+                 badly, and dropped energy read as the grid DIMMING the
+                 bounce against the old estimator */
+              gig[rb] += cr * w; gig[rb + 1] += cg * w; gig[rb + 2] += cb * w;
+              gig[rb + 3] += w;
+              continue;
+            }
+            const tb = ((cy * 3) * GW + cx * GM + mi) * 4;
+            if (mw > 0){                       // the displaced holder's energy too
+              const ob = tb + GW * 4;
+              gig[rb]     += gig[ob]     * mw;
+              gig[rb + 1] += gig[ob + 1] * mw;
+              gig[rb + 2] += gig[ob + 2] * mw;
+              gig[rb + 3] += mw;
+            }
+            gw[wb + mi] = w;
+            gig[tb] = lx; gig[tb + 1] = ly; gig[tb + 2] = T[o0 + 2]; gig[tb + 3] = ew;
+            gig[tb + GW * 4]     = cr;
+            gig[tb + GW * 4 + 1] = cg;
+            gig[tb + GW * 4 + 2] = cb;
+          }
+      }
+      gl.bindTexture(gl.TEXTURE_2D, GL.gigT);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, GW, GN * 3, gl.RGBA, gl.FLOAT, gig);
+    }
+    GPUL._gigOn = 1;
+  } else GPUL._gigOn = 0;
   /* The depth this pass needs is already on the card whenever the tail owns
      the frame, and taking it from there is not just one upload saved - it is
      the difference between working and not. worldPasses clears dBuf to 1e30
@@ -25635,8 +25815,11 @@ function glLightPass(){
      from every cell every frame, and the average had nothing new to average.
      A structured error instead of noise, and it never converged. */
   GL.litTick = ((GL.litTick || 0) + 1) % 4096;
+  /* bounceGain 0 is the menu's DIRECT state: traced openness and the sky
+     escape, no emitter bounce. The GPU tracer used to ignore GIR.bounces
+     entirely, which made DIRECT and BOUNCE the same picture. */
   gl.uniform4f(GL.uL.uGI2, gi ? 1 : 0, (GL.litTick * 0.6180339887) % 1.0,
-                           GIR.sky, GIR.bounce);
+                           GIR.sky, GIR.bounces > 1 ? GIR.bounce : 0);
   gl.uniform1f(GL.uL.uGIClamp, GIR.clamp);
   {
     /* A ray that escapes at night does not see black space - it sees the
@@ -25655,6 +25838,11 @@ function glLightPass(){
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, GL.heightT);
   gl.uniform1i(GL.uL.uDepth, 0); gl.uniform1i(GL.uL.uEmit, 1); gl.uniform1i(GL.uL.uHeight, 2);
+  gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, GL.gigT || GL.emitT);
+  gl.uniform1i(GL.uL.uGIGrid, 6);
+  if (GPUL._gigOn) gl.uniform4f(GL.uL.uGIG, GPUL._gigOx, GPUL._gigOy, 0.25, 24);
+  else gl.uniform4f(GL.uL.uGIG, 0, 0, 0, 0);
+  gl.uniform4f(GL.uL.uGI3, GIR.denoise !== false ? 1 : 0, GIR.rays || 1, 0, 0);
   gl.uniform2f(GL.uL.uGrid, R.cols, R.rows);
   gl.uniform3f(GL.uL.uCam, cam.x, cam.y, cam.z);
   gl.uniform2f(GL.uL.uDir, dirX, dirY);
