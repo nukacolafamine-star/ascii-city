@@ -8253,21 +8253,32 @@ function updateCam(dt){
                               : { vol: 0.5, rate: 0.92 + Math.random() * 0.16 });
     }
   }
-  if (jumpT > 0){
-    jumpT -= dt;
-    if (jumpT <= 0) sfx('footstep', { vol: 0.6, rate: 0.7 });   // the landing
+  if (jumping){
+    /* A real arc, not a shape that looks like one: launch velocity, gravity,
+       done when the ground takes it back. The numbers land where the old
+       sine hop lived - 0.62 m at the apex, half a second in the air - so
+       every ledge the city was tuned around still clears; the difference is
+       that the height is TRUE at every instant, the body outside rides the
+       same number, and a peer watching you sees the jump you actually made. */
+    jumpVz -= JUMP_G * dt;
+    jumpZ += jumpVz * dt;
+    if (jumpZ <= 0){
+      jumpZ = 0; jumping = false;
+      sfx('footstep', { vol: 0.6, rate: 0.7 });   // the landing
+    }
   }
-  const hop = jumpT > 0 ? Math.sin((1 - jumpT / JUMP_DUR) * Math.PI) * 0.62 : 0;
-  cam.z = 1.62 + hop +
+  liftZ = jumpZ;
+  cam.z = 1.62 + jumpZ +
           Math.sin(cam.walkPhase) * (run > 1 ? 0.06 : 0.035) * (ml > 0.001 ? 1 : 0);
 }
-const JUMP_DUR = 0.5;
-let jumpT = 0;
+const JUMP_G = 21.5, JUMP_V0 = 5.15;   // apex 0.617 m, airborne 0.48 s
+let jumpZ = 0, jumpVz = 0, jumping = false;
+let liftZ = 0;              // how far the body's feet are off the ground, live
 function jump(){
   if (inside === undefined) return;
   if (sitting || cam.riding || skating) return;
-  if (jumpT > 0) return;                        // one hop at a time
-  jumpT = JUMP_DUR;
+  if (jumping) return;                          // one hop at a time
+  jumping = true; jumpVz = JUMP_V0;
   sfx('footstep', { vol: 0.45, rate: 1.6 });
 }
 /* the deck is a physics object: pushes surge, friction coasts, carves cost
@@ -8408,6 +8419,8 @@ function skateFrame(dt){
   if (wobbleT > 0){ wobbleT -= dt; z += Math.sin(worldTime * 30) * 0.05; }
   if (stumbleT > 0){ stumbleT -= dt; z = 1.22 + Math.random() * 0.05; skV = 0; }
   cam.z = z;
+  // the body outside rides the same air the camera does
+  liftZ = Math.max(0, z - 1.62);
 }
 function skidBurst(){
   for (let i = 0; i < 3; i++)
@@ -12440,6 +12453,14 @@ function playerBodyVol(worn, P){
   const lean = (P.lean || 0) * FWD, crouch = P.crouch || 0, raise = P.armRaise || 0;
   // the thigh pivots at the hip, so it trails the foot rather than matching it
   const thigh = P.thigh === undefined ? 0.5 : P.thigh;
+  /* Continuous shape factors. sit and the mouth-folded arms used to be
+     switches, which is all a pose CACHE could ever see of them; the animator
+     slides them, so a body lowers onto the bench and a hand TRAVELS to the
+     face instead of teleporting there. Discrete branches still exist below -
+     a shape has to pick a topology - but they pick at the halfway point of a
+     motion instead of being the motion. */
+  const sitF = Math.min(1, P.sit || 0);
+  const mF_L = Math.min(1, P.mouthL || 0), mF_R = Math.min(1, P.mouthR || 0);
   return function(aw, vd, ah){
     const v = new Uint8Array(aw * vd * ah);
     const set = (x, y, z, role) => {
@@ -12462,7 +12483,7 @@ function playerBodyVol(worn, P){
     /* Everything above the hips is stacked ON the hips, so a crouch lowers
        the whole upper body and keeps its proportions instead of squashing
        it. The stock figure has its hip at 0.86 and its crown at 1.76. */
-    const hip = (P.sit ? 0.60 : 0.86) - crouch;
+    const hip = 0.86 - 0.26 * sitF - crouch;
     const tT = hip + 0.56, nT = tT + 0.10, hT = nT + 0.24;   // torso/neck/head tops
     /*--- the legs, and whatever is under them ------------------------
       Four things a trick does to a body that a rolling stance does not, and
@@ -12472,9 +12493,10 @@ function playerBodyVol(worn, P){
       foot alone. `cross` turns the deck across the direction of travel, for
       a grind. `vert` stands it on its edge.
     -------------------------------------------------------------------*/
-    const tuck = P.tuck ? 0.30 : 0;
-    const rz = P.footDown ? 0 : tuck;            // the pushing foot is on the road
-    if (P.sit){
+    const tuck = 0.30 * Math.min(1, P.tuck || 0);
+    const fd = Math.min(1, P.footDown || 0);     // how far the pushing foot has left
+    const rz = tuck * (1 - fd);                  // the deck for the road
+    if (sitF > 0.5){
       // thighs forward off the hip, shins down from the knee
       slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P, -2.4, FWD * 2.0);
       slab(hip - 0.06, hip + 0.08, 1.6, 1.7, R.P,  2.4, FWD * 2.0);
@@ -12488,16 +12510,40 @@ function playerBodyVol(worn, P){
       slab(tuck + 0.10, hip, 1.6, 1.6, R.P, -2.4, legL * thigh);  // thigh trails the foot
       slab(rz + 0.10, hip, 1.6, 1.6, R.P,  2.4, legR * thigh);
       if (P.board){                                          // the deck underfoot
-        const by = P.footDown ? legL : (legL + legR) * 0.5;
-        if (P.vert){                             // stood on its edge, mid-flick
-          slab(tuck, tuck + 0.34, 0.9, 4.2, R.T, 0, by);
-          slab(tuck + 0.03, tuck + 0.31, 0.6, 4.4, R.W, 0, by);
-        } else if (P.cross){                     // turned across the rail
-          slab(tuck, tuck + 0.05, 4.2, 1.6, R.T, 0, by);
-          slab(tuck + 0.05, tuck + 0.09, 4.4, 1.1, R.W, 0, by);
-        } else {
-          slab(tuck, tuck + 0.05, 3.0, 4.2, R.T, 0, by);
-          slab(tuck + 0.05, tuck + 0.09, 2.2, 4.4, R.W, 0, by);
+        const by = legL * fd + (legL + legR) * 0.5 * (1 - fd);
+        /* The deck is the one thing under a body that really ROTATES - a
+           kickflip is the board rolling clean over its own length, a shove-it
+           is it spinning flat under the feet - so it is stamped as a rotated
+           box rather than a slab: every voxel near it is carried into the
+           board's own frame and asked whether it is wood. The old vert and
+           cross flags are just right angles of the same two numbers. */
+        const roll = P.deckRoll !== undefined ? P.deckRoll
+                   : P.vert ? Math.PI / 2 : 0;
+        const yawB = P.deckYaw !== undefined ? P.deckYaw
+                   : P.cross ? Math.PI / 2 : 0;
+        const vxm = BODY_W / aw, vym = BODY_DEP / vd;
+        const bcz = tuck + 0.045;                 // board centre, metres up
+        const L = 0.20, W2 = 0.135, T2 = 0.034;   // half length / width / depth
+        const cr = Math.cos(roll), sr = Math.sin(roll);
+        const cb = Math.cos(yawB), sb2 = Math.sin(yawB);
+        const zc = zOf(bcz), zr = Math.ceil(W2 / (BODY_H / ah)) + 1;
+        for (let z = Math.max(0, zc - zr); z <= Math.min(ah - 1, zc + zr); z++){
+          const dz = (1 - z / (ah - 1)) * BODY_H - bcz;      // metres, up
+          for (let y = 0; y < vd; y++){
+            const dy = (y - cy - by) * vym;
+            if (Math.abs(dy) > L + vym) continue;
+            for (let x = 0; x < aw; x++){
+              const dx = (x - cx) * vxm;
+              if (Math.abs(dx) > L + vxm) continue;
+              const u = dx * cb + dy * sb2, v2 = -dx * sb2 + dy * cb;
+              const uu = u * cr + dz * sr, ww = -u * sr + dz * cr;
+              if (Math.abs(uu) > W2 || Math.abs(v2) > L || Math.abs(ww) > T2)
+                continue;
+              // bright top sheet over a dark underside, and the split
+              // rotates with the board - which is how a flip reads at all
+              set(x, y, z, ww > T2 * 0.25 ? R.W : R.T);
+            }
+          }
         }
       }
     }
@@ -12522,10 +12568,18 @@ function playerBodyVol(worn, P){
       reach > 0 && inw ? xoff - Math.sign(xoff) * inw : xoff;
     const arm = (xoff, swing, reach, drop, role, hw, mouth, inw, dz) => {
       const sh = shoulder + (dz || 0);
-      if (mouth){
-        // a hand brought up to the face: the forearm folds IN and UP rather
-        // than reaching out, which is what eating and smoking look like
-        slab(sh - 0.08, nT + 0.02, hw, 1.5, role, xoff * 0.5, FWD * 1.1);
+      const m01 = Math.min(1, mouth || 0);
+      if (m01 > 0.03){
+        /* A hand brought up to the face: the forearm folds IN and UP rather
+           than reaching out, which is what eating and smoking look like.
+           `mouth` is a factor now, not a flag - at 0 the arm hangs at the
+           side, at 1 it is folded to the chin, and the animator sweeping it
+           through the middle is the raise itself. */
+        const z0 = (armLo + (dz || 0)) * (1 - m01) + (sh - 0.08) * m01;
+        const z1 = sh * (1 - m01) + (nT + 0.02) * m01;
+        slab(z0, z1, hw, 1.9 - 0.4 * m01, role,
+             (xoff + tw * 0.35) * (1 - m01) + xoff * 0.5 * m01,
+             swing * (1 - m01) + FWD * 1.1 * m01);
         return;
       }
       if (reach > 0){
@@ -12545,11 +12599,18 @@ function playerBodyVol(worn, P){
     // and whatever is being lifted to it
     if (P.mouthItem){
       const M = P.mouthItem;
-      // level with the mouth, not the chin: it has to break the head's
-      // outline or it is simply inside the face
-      const z0 = nT + 0.04, z1 = z0 + (M.h || 0.10);
-      const off = M.both ? 0 : (P.mouthR ? 2.4 : -2.4);
-      slab(z0, z1, M.w || 1.0, 1.2, R[M.r] || R.W, off, FWD * 1.6);
+      /* Level with the mouth, not the chin: it has to break the head's
+         outline or it is simply inside the face. It rides the hand that
+         carries it - waist high when the arm has barely started, up at the
+         face when the fold finishes - so the raise reads from outside. */
+      const mF = Math.max(mF_L, mF_R);
+      if (mF > 0.15){
+        const zm = nT + 0.04, zw = hip + 0.16;
+        const z0 = zw * (1 - mF) + zm * mF, z1 = z0 + (M.h || 0.10);
+        const off = M.both ? 0 : (mF_R >= mF_L ? 2.4 : -2.4);
+        slab(z0, z1, M.w || 1.0, 1.2, R[M.r] || R.W, off,
+             FWD * (0.9 + 0.7 * mF));
+      }
     }
     slab(tT, nT, 2.0, 2.0, R.S, tw * 0.55, lean);            // neck
     slab(nT, hT, 3.0, 2.6, R.S, tw * 0.7, lean);             // head
@@ -12595,7 +12656,7 @@ function playerBodyVol(worn, P){
       slab(hip + 0.02, hip + 0.44, 4.4, 2.6, R.K, 0, lean);
       slab(hip + 0.02, hip + 0.16, 4.0, 1.0, under, 0, lean + FRONT);
     }
-    if (shoes && !P.sit){
+    if (shoes && sitF <= 0.5){
       slab(0.00, 0.14, 2.8, 2.8, R.W, -2.4, legL);           // the good shoes
       slab(0.00, 0.14, 2.8, 2.8, R.W,  2.4, legR);
     }
@@ -12926,14 +12987,15 @@ function weaponArt(id, vertical){
    ordinary guns throw a cone of light; the two that are not ordinary throw
    what their name says they do, which is the only chance anybody watching
    from across a junction gets to tell a railgun from a rifle. */
-function drawMuzzleFlash(x, y, yaw, G, t, kind){
+function drawMuzzleFlash(x, y, yaw, G, t, kind, lift){
   if (!G || G.up || kind === 'none') return;    // a blade has no bore
+  const lz = lift || 0;
   const sl = gunSlots(), art = weaponArt('flash', false);
   const fx = Math.cos(yaw), fy = Math.sin(yaw);
   const d = (G.fwd || 0.22) + G.len + 0.05;
   const u = Math.min(1, t / 0.09);
   const k = (0.10 + 0.20 * u) * (kind === 'small' ? 0.62 : 1);
-  drawModel(x + fx * d, y + fy * d, G.z - k * 0.45, k, k, art,
+  drawModel(x + fx * d, y + fy * d, G.z + lz - k * 0.45, k, k, art,
             sl.base, sl.dens, 0, yaw + Math.PI / 2, 1.5, 0);
   if (kind === 'rail'){
     /* A line of light standing in the air where the slug went, fading from
@@ -12943,7 +13005,7 @@ function drawMuzzleFlash(x, y, yaw, G, t, kind){
       const s = k * (0.85 - i * 0.16);
       if (s <= 0.02) continue;
       const dd = d + i * 0.62 * (0.4 + 0.6 * u);
-      drawModel(x + fx * dd, y + fy * dd, G.z - s * 0.45, s, s, art,
+      drawModel(x + fx * dd, y + fy * dd, G.z + lz - s * 0.45, s, s, art,
                 sl.base, sl.dens, 0, yaw + Math.PI / 2, 1.5, 0);
     }
   } else if (kind === 'arc'){
@@ -12953,58 +13015,103 @@ function drawMuzzleFlash(x, y, yaw, G, t, kind){
       const dd = d + 0.34 * u;
       const s = k * 0.55;
       drawModel(x + Math.cos(a2) * dd, y + Math.sin(a2) * dd,
-                G.z - s * 0.45 + s2 * 0.05, s, s, art,
+                G.z + lz - s * 0.45 + s2 * 0.05, s, s, art,
                 sl.base, sl.dens, 0, a2 + Math.PI / 2, 1.5, 0);
     }
   }
 }
-function drawHeldWeapon(x, y, yaw, H){
-  const G = H && H.gun;
+/*--- the weapon at whatever angle the swing has it -------------------------
+  The renderer's volumes only turn about the vertical, so a weapon coming
+  DOWN through an arc cannot be one volume rotated - it is the same box list
+  restamped at a handful of pitches, cached forever, and the swing picks the
+  step its envelope has reached. Five steps from level to upright cover it:
+  at body size nobody can see the difference between eleven and twenty-two
+  and a half degrees. ---*/
+const _gunArtP = {};
+function pitchedVol(boxes, ang, len, hgt, H2, D2){
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  return function(aw, vd, ah){
+    const v = new Uint8Array(aw * vd * ah);
+    for (let z = 0; z < ah; z++){
+      const dz = (1 - z / (ah - 1)) * H2 - H2 * 0.5;    // metres, up from centre
+      for (let y = 0; y < vd; y++){
+        const dyM = (0.5 - (y + 0.5) / vd) * D2;        // + toward the muzzle
+        // carried into the weapon's own frame: s along the length, t across
+        const s = dyM * ca + dz * sa, t = -dyM * sa + dz * ca;
+        const fv = s / len + 0.5, fw = t / hgt + 0.5;
+        if (fv < 0 || fv > 1 || fw < 0 || fw > 1) continue;
+        for (let x = 0; x < aw; x++){
+          const fu = (x + 0.5) / aw;
+          for (let n = 0; n < boxes.length; n++){
+            const b = boxes[n];
+            if (fu >= b.u0 && fu <= b.u1 && fv >= b.v0 && fv <= b.v1 &&
+                fw >= b.w0 && fw <= b.w1){
+              v[(z * vd + y) * aw + x] = ROLE[b.r];
+              break;
+            }
+          }
+        }
+      }
+    }
+    return v;
+  };
+}
+function weaponArtP(id, step, G){
+  const k = id + 'p' + step;
+  if (_gunArtP[k]) return _gunArtP[k];
+  const boxes = WEAPON_MODEL[id] || WEAPON_MODEL.pipe;
+  const ang = step * Math.PI / 8;
+  const len = G.len, hgt = G.h || G.th || 0.10;
+  const H2 = len * Math.sin(ang) + hgt * Math.cos(ang);
+  const D2 = len * Math.cos(ang) + hgt * Math.sin(ang);
+  const aw = 7, ah = Math.max(8, Math.min(30, Math.round(26 * H2 / len)));
+  return (_gunArtP[k] = { w: aw, h: ah, data: new Uint8Array(aw * ah),
+                          pH: H2, pD: D2,
+                          vol: pitchedVol(boxes, ang, len, hgt, H2, D2) });
+}
+/* P carries the live gun state: fwd and z ride the recoil, pitch and dyaw
+   ride the swing, lift rides the jump the whole body is in. */
+function drawHeldWeapon(x, y, yaw, P, lift){
+  const G = P && P.gun;
   if (!G || !G.id) return;
   const sl = gunSlots();
-  const fx = Math.cos(yaw), fy = Math.sin(yaw);
+  const lz = lift || 0;
+  const swp = yaw + (G.dyaw || 0);              // the sweep of the swing
+  const fx = Math.cos(swp), fy = Math.sin(swp);
   if (G.up){
     // carried upright, out past the shoulder rather than through the head
     /* Out past the shoulder rather than through the head - but only just.
        At 0.26 m the haft stood a hand's width outboard of the fists holding
        it; the head is 0.13 m across, so 0.17 clears it and lands on the
        grip, which is where both hands now converge. */
-    const sx = Math.cos(yaw + Math.PI * 0.5), sy = Math.sin(yaw + Math.PI * 0.5);
+    const sx = Math.cos(swp + Math.PI * 0.5), sy = Math.sin(swp + Math.PI * 0.5);
     const art = weaponArt(G.id, true);
-    drawModel(x + fx * 0.08 + sx * 0.17, y + fy * 0.08 + sy * 0.17, G.z,
-              G.w, G.len, art, sl.base, sl.dens, 0, yaw + Math.PI / 2,
+    drawModel(x + fx * 0.08 + sx * 0.17, y + fy * 0.08 + sy * 0.17, G.z + lz,
+              G.w, G.len, art, sl.base, sl.dens, 0, swp + Math.PI / 2,
               G.th / G.w, 1);
+    return;
+  }
+  const step = Math.round(clamp(G.pitch || 0, 0, 1) * 4);
+  if (step > 0){
+    const art = weaponArtP(G.id, step, G);
+    const ang = step * Math.PI / 8, ca = Math.cos(ang), sa = Math.sin(ang);
+    const hgt = G.h || G.th || 0.10;
+    // the butt stays in the hands; the rest of it goes where the angle says
+    const d = (G.fwd || 0.22) + G.len * 0.5 * ca;
+    const cz = G.z + hgt * 0.5 + G.len * 0.5 * sa;
+    drawModel(x + fx * d, y + fy * d, cz - art.pH * 0.5 + lz,
+              G.w, art.pH, art, sl.base, sl.dens, 0, swp + Math.PI / 2,
+              art.pD / G.w, 1);
     return;
   }
   const art = weaponArt(G.id, false);
   const d = (G.fwd || 0.22) + G.len * 0.5;
-  drawModel(x + fx * d, y + fy * d, G.z, G.w, G.h, art, sl.base, sl.dens, 0,
-            yaw + Math.PI / 2, G.len / G.w, 1);
+  drawModel(x + fx * d, y + fy * d, G.z + lz, G.w, G.h, art, sl.base, sl.dens, 0,
+            swp + Math.PI / 2, G.len / G.w, 1);
 }
-const BODY_CACHE = new Map();
-const BODY_CACHE_MAX = 192;
 function bodyWorn(p){ return (p && p.local === false ? p.worn : player.worn) || []; }
 function bodySkin(p){ return (p && p.local === false ? p.skinC : player.skinC) || C.skinA || C.metal; }
 function bodyShirt(p){ return (p && p.local === false ? p.shirtC : player.shirtC) || C.nWhite; }
-function bodyArtFor(p, poseName){
-  const worn = bodyWorn(p).slice().sort();
-  const skin = bodySkin(p), shir = bodyShirt(p);
-  const key = worn.join(',') + '|' + poseName + '|' + skin + '|' + shir;
-  let e = BODY_CACHE.get(key);
-  if (e) return e;
-  const outer = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
-                  .find(id => worn.indexOf(id) >= 0);
-  const coat = (outer && COAT_COL[outer]) || C.rail;
-  e = { sl: slots({ S: [skin, 0.92], P: [C.pants, 0.84], T: [C.tire, 0.8],
-                    B: [shir, 0.86], K: [coat, 0.9],
-                    X: [C.tlAmb, 1.0], W: [C.nWhite, 0.9] }),
-        art: { w: BODY_GW, h: BODY_GH, data: new Uint8Array(BODY_GW * BODY_GH),
-               vol: playerBodyVol(worn, bodyPose(poseName)) } };
-  if (BODY_CACHE.size >= BODY_CACHE_MAX)          // oldest out; Map is insertion-ordered
-    BODY_CACHE.delete(BODY_CACHE.keys().next().value);
-  BODY_CACHE.set(key, e);
-  return e;
-}
 /* Which weapon this body is holding. Ours comes from the inventory; theirs
    comes off the wire, so the camjack still works with netplay off. */
 function bodyWeaponOf(p){
@@ -13017,58 +13124,387 @@ function bodyUsingOf(p){
   if (!p || p.local !== false) return typeof usingNow === 'function' ? usingNow() : null;
   return p.using || null;
 }
-/* What a body is doing, read off the same flags the first-person view uses.
-   A hold and a swing carry the weapon in the key, because the arms are a
-   different shape for a rifle than for a knife. */
-function bodyPoseOf(p){
-  const u = bodyUsingOf(p);
-  if (u) return 'use:' + consumeClass(u);       // a ritual outranks everything
-  if (p.sit) return 'sit';
-  if (p.hitT > 0) return 'hurt';
-  const w = bodyWeaponOf(p);
-  if (p.skate){
-    const sp = skatePose(p);
-    return w === 'fist' ? sp : 'sk:' + sp + ':' + w;
+/*========================= THE ANIMATION ENGINE ============================
+  A body used to be a POSE: a name looked up in a table, a volume cached
+  under that name, two names alternating making a walk. Everything between
+  two names - the arm travelling to the face, the knees loading before a
+  pop, the follow-through of a swing - happened between frames, which is to
+  say it never happened at all.
+
+  Now a body is a POINT IN POSE SPACE, moved every frame. The tables above
+  survive as the vocabulary - they are where the point is headed - but what
+  gets built is wherever the point actually is this frame: gaits are
+  sinusoids of the stride phase rather than two stills of it, actions are
+  envelopes over their own timers rather than a held keyframe, and every
+  state change is a blend rather than a cut. The volume is rebuilt whenever
+  the pose has moved a visible amount, which while moving is every frame -
+  that is the entire point - and while standing still is never.
+
+  Everything here works from the same flags the wire carries, so a peer's
+  body animates from fifteen packets a second exactly as ours animates from
+  the live globals: the packet names the state, the envelope is local.
+===========================================================================*/
+const POSE_NUM = ['legL', 'legR', 'armL', 'armR', 'armInL', 'armInR',
+                  'reachL', 'reachR', 'dropL', 'dropR', 'crouch', 'lean',
+                  'thigh', 'armRaise', 'twist', 'roll', 'tuck', 'sit',
+                  'mouthL', 'mouthR', 'footDown'];
+const easeIO = t => t * t * (3 - 2 * t);            // smoothstep
+const easeIn = t => t * t;
+/* A swing's clock, for bodies whose punchDur we cannot read: cool and the
+   strike beat, straight off meleeStats. */
+const MELEE_TIME = { fist: [0.40, 0.13], knife: [0.30, 0.10],
+                     pipe: [0.50, 0.16], bat: [0.85, 0.27],
+                     katana: [0.70, 0.22], maul: [1.20, 0.40] };
+let poseFrame = 0, poseDt = 1 / 60;    // stamped once per rendered frame
+function poseTick(p){
+  const S = p._pose || (p._pose = { cur: {}, seed: Math.random() * 9 });
+  if (p._poseF === poseFrame) return S;
+  p._poseF = poseFrame;
+  const T = samplePoseTarget(p, S, poseDt);
+  const k = S.live ? Math.min(1, poseDt * (T._rate || 18)) : 1;
+  S.live = 1;
+  const C = S.cur;
+  for (let i = 0; i < POSE_NUM.length; i++){
+    const f = POSE_NUM[i];
+    C[f] = (C[f] || 0) + ((T[f] || 0) - (C[f] || 0)) * k;
   }
-  if (p.punchT > 0) return 'sw:' + w;
-  /* The shot outranks the hold. The muzzle timer is a twelfth of a second,
-     which is short enough that a body could hold its aim stance right
-     through one - so a firing body is its own pose, not a hold with a light
-     in front of it. Ours reads the first-person timer directly, so the
-     camjack shows our own shots with netplay switched off entirely. */
-  const fT = p.local === false ? (p.fireT || 0) : (typeof muzzleT === 'number' ? muzzleT : 0);
-  if (fT > 0 && WEAPON_FIRE[w]) return 'fi:' + w;
-  if (p.aiming && w !== 'fist') return 'wp:' + w;
-  if (p.moving) return (p.running ? 'run' : 'walk') + ((p.phase | 0) & 1);
-  return 'idle';
+  /* The spins are DRIVEN, not chased: a deck two radians into a kickflip
+     lagged through a low-pass filter is a deck that never quite flips. */
+  C.deckRoll = T.deckRoll || 0; C.deckYaw = T.deckYaw || 0;
+  C.board = T.board || 0;
+  C.gun = T.gun || null; C.fire = T.fire || null;
+  C.mouthItem = T.mouthItem || null;
+  /* Rebuild the volume only when the pose has moved a visible amount. A
+     sixteenth of a voxel of quantise is under the size anything renders at,
+     so a standing body hashes the same forever and costs nothing. */
+  let h = 0;
+  for (let i = 0; i < POSE_NUM.length; i++)
+    h = (h * 31 + Math.round((C[POSE_NUM[i]] || 0) * 16) + 128) | 0;
+  h = (h * 31 + Math.round(C.deckRoll * 16) + Math.round(C.deckYaw * 16)) | 0;
+  const key = h + '|' + (C.board ? 1 : 0) + (C.mouthItem ? C.mouthItem.r : '') +
+              bodyWorn(p).join(',');
+  if (key !== S.hash){
+    S.hash = key;
+    if (p._dbody) p._dbody.stamp++;
+  }
+  return S;
 }
-/* A pose key resolves either to a plain stance or to a weapon hold. */
-function bodyPose(key){
-  const c = key.indexOf(':');
-  if (c < 0) return BODY_POSE[key] || BODY_POSE.idle;
-  const mode = key.slice(0, c), arg = key.slice(c + 1);
-  if (mode === 'use') return CONSUME_POSE[arg] || CONSUME_POSE.eat;
-  if (mode === 'sk'){                            // sk:<pose>:<weapon>
-    const c2 = arg.indexOf(':');
-    return skateHold(arg.slice(0, c2), arg.slice(c2 + 1));
+function samplePoseTarget(p, S, dt){
+  const T = { thigh: 0.5, _rate: 18 };
+  const local = p.local !== false;
+  const lift = local ? 0 : (p.lift || 0);
+  const wt = worldTime + (S.seed || 0);
+  // ---- the stance: a seat, the deck, the gait, or the air ----
+  if (p.sit){ T.sit = 1; T._rate = 7; }
+  else if (p.skate) sampleSkate(T, p, S, local, dt);
+  else {
+    sampleGait(T, p, wt);
+    if (lift > 0.04) sampleAirLegs(T, Math.min(1, lift / 0.62));
   }
-  return weaponHold(arg, mode === 'sw' ? 'sw' : mode === 'fi' ? 'fi' : 0);
+  // ---- the arms: a ritual, a swing, a shot, a hold, or the gait's own ----
+  const u = bodyUsingOf(p);
+  if (u) sampleRitual(T, p, S, u, local, dt);
+  else {
+    S.useId = null; S.useT = 0;
+    if (!p.sit) sampleArms(T, p, S, local);
+  }
+  // ---- the flinch, scaled by how fresh the hit is ----
+  const hT = local ? (typeof hurtT !== 'undefined' ? Math.min(hurtT, 0.3) : 0)
+                   : Math.min(p.hitT || 0, 0.3);
+  if (hT > 0){
+    const f = easeIO(Math.min(1, hT / 0.3));
+    T.lean = (T.lean || 0) - 1.4 * f;
+    T.crouch = (T.crouch || 0) + 0.12 * f;
+    T.armRaise = (T.armRaise || 0) - 0.05 * f;
+    T.armL = (T.armL || 0) + 1.0 * f;
+    T.armR = (T.armR || 0) + 1.0 * f;
+    T._rate = 30;
+  }
+  return T;
+}
+function sampleGait(T, p, wt){
+  if (!p.moving){
+    // breathing, and a slow shift of weight - alive rather than frozen
+    T.armRaise = 0.008 * Math.sin(wt * 1.5);
+    T.crouch = 0.006 + 0.005 * Math.sin(wt * 1.1);
+    T.armL = 0.25 * Math.sin(wt * 0.6);
+    T.armR = -0.25 * Math.sin(wt * 0.6 + 0.8);
+    T.legL = 0.15 * Math.sin(wt * 0.31);
+    T.legR = -0.15 * Math.sin(wt * 0.31);
+    T._rate = 9;
+    return;
+  }
+  /* The two authored walk frames were the extremes of a sine of the stride
+     phase all along - this is the rest of that sine, with the bounce landing
+     at the passing beat, where a real one lands. */
+  const run = !!p.running;
+  const s = Math.sin(p.phase || 0), c = Math.abs(Math.cos(p.phase || 0));
+  const A = run ? 3.5 : 3.1, B = run ? 3.0 : 2.3;
+  T.legL = A * s; T.legR = -A * s;
+  T.armL = -B * s; T.armR = B * s;
+  T.thigh = run ? 0.85 : 0.7;
+  T.lean = run ? 1.1 : 0.2;
+  T.crouch = (run ? 0.06 : 0.02) + (run ? 0.05 : 0.02) * c;
+  T._rate = 26;
+}
+/* Airborne on foot: one knee drives up, the trailing leg hangs, and the body
+   leans into the arc. q is how much of the jump's height is under you. */
+function sampleAirLegs(T, q){
+  T.legL = 2.0 * q; T.legR = -1.1 * q;
+  T.tuck = 0.45 * q;
+  T.crouch = (T.crouch || 0) + 0.06 * q;
+  T.lean = (T.lean || 0) + 0.5 * q;
+  T._air = q;
+  T._rate = 22;
+}
+function sampleSkate(T, p, S, local, dt){
+  T.board = 1;
+  // rolling: knees soft, arms out, and a slow sway off the wheels
+  const sw = Math.sin((p.phase || 0) * 0.5);
+  T.legL = 2.0 + 0.4 * sw; T.legR = -1.2 + 0.3 * sw;
+  T.armL = -1.9 + 0.5 * sw; T.armR = 2.5 - 0.4 * sw;
+  T.crouch = 0.09 + 0.02 * sw;
+  T._rate = 20;
+  let air = false, airPh = 0, pushQ = 0, trick = null, trickQ = 0;
+  if (local){
+    if (typeof skLean === 'number') T.roll = skLean * 1.5;   // banks into a carve
+    if (typeof grind !== 'undefined' && grind){
+      // stood over the rail, arms wide - balance is the whole trick
+      T.legL = 0.6; T.legR = -0.6; T.armL = -4.0; T.armR = 3.8;
+      T.crouch = 0.14; T.deckYaw = Math.PI / 2;
+      return;
+    }
+    const charge = ollieHold > 0 ? clamp((ollieHold - 0.12) / 0.33, 0, 1) : 0;
+    if (crouchT > 0 || ollieHold >= 0)
+      T.crouch = 0.26 + 0.12 * charge;                       // the coil
+    if (landT > 0) T.crouch += 0.16 * (landT / 0.18);        // the absorb
+    if (pushArtT > 0) pushQ = Math.sin(Math.PI * clamp(pushArtT / 0.2, 0, 1));
+    if (airT > 0){
+      air = true;
+      airPh = clamp(1 - airT / Math.max(0.001, airDur), 0, 1);
+      if (skTrick){ trick = skTrick.base; trickQ = clamp(skTrick.t / skTrick.dur, 0, 1); }
+    }
+  } else {
+    if (p.pushT > 0) pushQ = Math.sin(Math.PI * clamp(p.pushT / 0.2, 0, 1));
+    if (p.air){
+      air = true;
+      S.airT = (S.wasAir ? (S.airT || 0) + dt : 0);
+      airPh = clamp(S.airT / 0.7, 0, 0.95);
+      if (p.trick){
+        S.trickT = (S.trickId === p.trick ? (S.trickT || 0) + dt : 0);
+        S.trickId = p.trick;
+        trick = p.trick; trickQ = clamp(S.trickT / 0.55, 0, 1);
+      } else S.trickId = null;
+    } else { S.airT = 0; S.trickId = null; }
+    S.wasAir = p.air;
+  }
+  if (pushQ > 0){
+    // the back foot leaves the deck for the road, and the body folds over
+    // the front one - the push IS that, so the whole silhouette breaks
+    T.legR = -1.2 - 3.4 * pushQ; T.footDown = pushQ;
+    T.legL = 1.2;
+    T.lean = 1.4 * pushQ; T.crouch += 0.07 * pushQ;
+    T.armL = -3.0 * pushQ + T.armL * (1 - pushQ);
+    T.armR = 1.4 * pushQ + T.armR * (1 - pushQ);
+  }
+  if (air){
+    // the tuck comes on and gives back before the wheels do, so the legs
+    // are already reaching when the ground arrives
+    const e = Math.sin(Math.PI * Math.min(1, airPh * 1.15));
+    T.tuck = e; T.crouch = 0.10 + 0.20 * e; T.lean = 0.4 * e;
+    T.armL = -3.2; T.armR = 3.0;
+    if (trick) sampleTrick(T, trick, trickQ);
+  }
+}
+/* Each flick is the air pose with the thing that MAKES it done to the body,
+   as a motion now: the deck really rolls over its own length, the hips
+   really carry round, and it all resolves before the wheels come back. */
+function sampleTrick(T, base, q){
+  const s = Math.sin(Math.PI * q);        // how deep the body is in it
+  switch (base){
+    case 'kickflip':
+      T.deckRoll = -Math.PI * 2 * q;
+      T.legL = 2.8; T.roll = (T.roll || 0) - 1.6 * s; break;
+    case 'heelflip':
+      T.deckRoll = Math.PI * 2 * q;
+      T.legR = -2.8; T.roll = (T.roll || 0) + 1.6 * s; break;
+    case 'ollie':
+      T.crouch += 0.06 * s; break;
+    case 'shove-it':
+      T.deckYaw = Math.PI * q; T.twist = 2.2 * s; break;
+    case 'bigspin':
+      T.deckYaw = Math.PI * 2 * q; T.twist = 3.6 * s;
+      T.roll = (T.roll || 0) + 0.8 * s; break;
+    case 'impossible':
+      T.deckRoll = Math.PI * 2 * q; T.deckYaw = Math.PI * q;
+      T.twist = -3.2 * s; T.roll = (T.roll || 0) + 2.6 * s;
+      T.lean = -0.8 * s; break;
+  }
+}
+/* Lerp one hold toward another - the swing and the recoil are both the rest
+   hold with a morph over it, and t is how far into the morph we are. */
+function mixHold(T, A, B, t, sk){
+  const f = sk ? 0.78 : 1;               // riding: everything tucks a little
+  const g = (a, b) => ((a || 0) * (1 - t) + (b || 0) * t) * f;
+  T.reachL = g(A.reachL, B.reachL); T.reachR = g(A.reachR, B.reachR);
+  T.armInL = g(A.armInL, B.armInL); T.armInR = g(A.armInR, B.armInR);
+  T.dropL = g(A.dropL, B.dropL); T.dropR = g(A.dropR, B.dropR);
+  T.armRaise = g(A.armRaise, B.armRaise);
+  if (B.lean !== undefined || A.lean !== undefined)
+    T.lean = (T.lean || 0) + g(A.lean, B.lean);
+  if (B.crouch !== undefined) T.crouch = (T.crouch || 0) + (B.crouch || 0) * t;
+  T.armL = 0; T.armR = 0;                // holding arms do not swing
+  const GA = A.gun, GB = B.gun;
+  if (GA || GB){
+    const Gs = GB || GA, Gr = GA || GB;
+    T.gun = { id: Gs.id, len: Gs.len, w: Gs.w, th: Gr.th || Gs.th,
+              h: (Gr.h || Gr.th || 0.1) * (1 - t) + (Gs.h || Gs.th || 0.1) * t,
+              fwd: (Gr.fwd || 0.16) * (1 - t) + (Gs.fwd || 0.16) * t,
+              z: (Gr.z || 1.1) * (1 - t) + (Gs.z || 1.1) * t,
+              up: t > 0.35 ? Gs.up : Gr.up };
+  }
+}
+function sampleArms(T, p, S, local){
+  const w = bodyWeaponOf(p);
+  const H = WEAPON_HOLD[w] || WEAPON_HOLD.fist;
+  const pT = Math.max(0, p.punchT || 0);
+  const fT = local ? (typeof muzzleT === 'number' ? muzzleT : 0) : (p.fireT || 0);
+  const sk = !!p.skate;
+  if (pT > 0){
+    // one continuous curve: the wind gathers, the strike snaps, the
+    // follow-through gives it back
+    let dur, b1;
+    if (local && typeof punchDur === 'number'){ dur = punchDur; b1 = strikeAt || dur * 0.35; }
+    else { const M = MELEE_TIME[w] || MELEE_TIME.fist; dur = M[0]; b1 = M[1]; }
+    if (pT > (S.lastPT || 0) + 0.06) S.swFlip = !S.swFlip;   // a fresh swing
+    S.lastPT = pT;
+    const e = clamp(dur - pT, 0, dur);
+    const env = e < b1 ? easeIn(e / b1)
+              : 1 - easeIO(Math.min(1, (e - b1) / Math.max(0.12, dur - b1)));
+    if (w === 'fist'){
+      // fists alternate: the lead hand drives, the off hand guards
+      const lead = S.swFlip ? 'L' : 'R', off = S.swFlip ? 'R' : 'L';
+      T['reach' + lead] = (1.6 + 2.2 * env) * (sk ? 0.78 : 1);
+      T['reach' + off] = 1.4;
+      T['armIn' + lead] = 2.6 * env; T['armIn' + off] = 1.2;
+      T.armRaise = 0.10; T.armL = 0; T.armR = 0;
+      T.lean = (T.lean || 0) + 0.9 * env;
+      T.twist = (T.twist || 0) + (S.swFlip ? 1.4 : -1.4) * env;
+    } else {
+      mixHold(T, H, weaponHold(w, 'sw'), env, sk);
+      if (T.gun && H.gun && H.gun.up){
+        /* The blade or the bat comes DOWN through the swing: upright in the
+           guard, levelled at the strike, back up through the recover - and
+           it sweeps across the body while it does. */
+        T.gun.up = 0;
+        T.gun.pitch = 1 - env;
+        T.gun.dyaw = 0.6 - 1.4 * env;
+        T.gun.h = H.gun.th || 0.1;
+      }
+    }
+    T._rate = 30;
+  } else if (fT > 0 && WEAPON_FIRE[w]){
+    // the recoil rides the muzzle timer down: full kick at the instant,
+    // settled before the timer dies
+    const kk = easeIO(clamp(fT / 0.12, 0, 1));
+    mixHold(T, H, weaponHold(w, 'fi'), kk, sk);
+    T.fire = WEAPON_FIRE[w];
+    T._rate = 34;
+  } else if (p.aiming && w !== 'fist'){
+    mixHold(T, H, H, 0, sk);
+    T._rate = 16;
+  } else if (T._air){
+    // out for balance, and up a little - the body knows it is falling
+    const q = T._air;
+    T.armL = -2.6 * q; T.armR = 2.8 * q;
+    T.armRaise = 0.05 * q;
+    S.lastPT = 0;
+  } else S.lastPT = 0;
+}
+/* The ritual, seen from outside, on the same clock as the hands: the arm
+   RISES over the first stretch, savours the middle - bites, sips, drags,
+   each class with its own pulse - and comes down over the last. */
+function sampleRitual(T, p, S, u, local, dt){
+  const cls = consumeClass(u);
+  const CP = CONSUME_POSE[cls] || CONSUME_POSE.eat;
+  let rt = 0, rd = (VANIM[u] && VANIM[u].dur) || 2.4, loop = false;
+  if (local && vAnim && vAnim.id === u){ rt = vAnim.t; rd = vAnim.d.dur; loop = !!vAnim.loop; }
+  else {
+    S.useT = (S.useId === u ? (S.useT || 0) + dt : 0); S.useId = u;
+    rt = S.useT; loop = !!(VANIM[u] && VANIM[u].loop);
+  }
+  const q = loop ? 0.5 : clamp(rt / rd, 0, 1);
+  const up = 0.16, down = 0.86;
+  const m = q < up ? easeIO(q / up)
+          : q > down ? easeIO((1 - q) / (1 - down))
+          : 1;
+  const pulse = cls === 'smoke' ? 0.70 + 0.30 * Math.sin(rt * 1.9)
+              : cls === 'drink' ? 0.86 + 0.14 * Math.sin(rt * 5.2)
+              : cls === 'inhale' || cls === 'jab' ? 1
+              : 0.80 + 0.20 * Math.sin(rt * 7.0);
+  const mm = m * pulse;
+  T.mouthL = (CP.mouthL || 0) * mm; T.mouthR = (CP.mouthR || 0) * mm;
+  T.armL = (T.armL || 0) * (1 - m) + (CP.armL || 0) * m;
+  T.armR = (T.armR || 0) * (1 - m) + (CP.armR || 0) * m;
+  // a drink tips further back the emptier it gets
+  const leanX = cls === 'drink' ? 0.5 + 0.9 * q : 1;
+  T.lean = (T.lean || 0) * (1 - m) + (CP.lean || 0) * leanX * m;
+  T.crouch = (T.crouch || 0) + (CP.crouch || 0) * m;
+  if (CP.mouthItem && m > 0.1) T.mouthItem = CP.mouthItem;
+  T._rate = 12;
+}
+/*-------------------- one live volume per animated body --------------------
+  Not a cache: a body that animates every frame has nothing to cache. Each
+  body owns one art object for life; the pose engine bumps its stamp when
+  the pose has visibly moved, and the dynamic-volume path rebuilds it in
+  place and re-uploads the same atlas slot. The PALETTE is still cached -
+  what is worn changes at a wardrobe, not at sixty hertz. */
+const BODY_SL_CACHE = new Map();
+function dynBodyArt(p){
+  let D = p._dbody;
+  if (!D){
+    D = p._dbody = { w: BODY_GW, h: BODY_GH,
+                     data: new Uint8Array(BODY_GW * BODY_GH),
+                     dyn: 1, stamp: 0, vol: null };
+    D.vol = (aw, vd, ah) =>
+      playerBodyVol(bodyWorn(p), (p._pose && p._pose.cur) || BODY_POSE.idle)(aw, vd, ah);
+  }
+  return D;
+}
+function bodyArtFor(p){
+  const key = bodyWorn(p).join(',') + '|' + bodySkin(p) + '|' + bodyShirt(p);
+  let sl = BODY_SL_CACHE.get(key);
+  if (!sl){
+    const worn = bodyWorn(p);
+    const outer = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
+                    .find(id => worn.indexOf(id) >= 0);
+    const coat = (outer && COAT_COL[outer]) || C.rail;
+    sl = slots({ S: [bodySkin(p), 0.92], P: [C.pants, 0.84], T: [C.tire, 0.8],
+                 B: [bodyShirt(p), 0.86], K: [coat, 0.9],
+                 X: [C.tlAmb, 1.0], W: [C.nWhite, 0.9] });
+    if (BODY_SL_CACHE.size >= 64)
+      BODY_SL_CACHE.delete(BODY_SL_CACHE.keys().next().value);
+    BODY_SL_CACHE.set(key, sl);
+  }
+  return { sl, art: dynBodyArt(p) };
 }
 /* Draw anybody's body where they are standing - the camjack looking back at
-   you, and everyone else in the room. */
+   you, and everyone else in the room. lift is how far off the street their
+   feet are: an ollie somebody else pops finally leaves the ground. */
 function drawBodyOf(p, x, y, yaw){
-  const key = bodyPoseOf(p);
-  const e = bodyArtFor(p, key);
-  drawModel(x, y, 0, BODY_W, BODY_H, e.art,
+  const S = poseTick(p);
+  const e = bodyArtFor(p);
+  const lift = p.local !== false ? 0 : (p.lift || 0);
+  drawModel(x, y, lift, BODY_W, BODY_H, e.art,
             p.hitT > 0 ? HIT_SB : e.sl.base, e.sl.dens, 0, yaw + Math.PI / 2,
             BODY_DEP / BODY_W, 0);
-  const P = bodyPose(key);
-  if (P && P.gun){
-    drawHeldWeapon(x, y, yaw, P);
+  const P = S.cur;
+  if (P.gun){
+    drawHeldWeapon(x, y, yaw, P, lift);
     // ours reads the same muzzle timer the first-person view uses, so the
     // camjack sees our own shots without netplay being on at all
     const fT = p.local === false ? (p.fireT || 0) : muzzleT;
-    if (fT > 0) drawMuzzleFlash(x, y, yaw, P.gun, fT, P.fire && P.fire.flash);
+    if (fT > 0) drawMuzzleFlash(x, y, yaw, P.gun, fT, P.fire && P.fire.flash, lift);
   }
 }
 /* the camjack's view of you, left standing where you walked away from */
@@ -21916,6 +22352,41 @@ function voxelize(art, depthScale, round){
     fy0: y0 / vd, fy1: (y1 + 1) / vd,
     fz0: z0 / ah, fz1: (z1 + 1) / ah });
 }
+/*------------------------- volumes that MOVE -------------------------------
+  voxelize caches a shape forever, which is right for a bench and wrong for
+  a body mid-stride. A dynamic art owns ONE volume for life: when the pose
+  engine bumps its stamp the voxels are rebuilt into the same object, its
+  true extent re-measured, and the same atlas slot re-uploaded - so an
+  animated body costs one small texSubImage a frame instead of eating a new
+  shelf of the atlas sixty times a second until nothing fits. */
+function dynVox(art, depthScale){
+  let m = art._dvox;
+  const vd = Math.max(2, Math.round(art.w * depthScale));
+  if (!m || m.vd !== vd)
+    m = art._dvox = { aw: art.w, vd, ah: art.h, vox: null, hollow: true,
+                      stamp: -1, dirty: 0 };
+  if (m.stamp !== art.stamp){
+    m.stamp = art.stamp;
+    const aw = m.aw, ah = m.ah;
+    const vox = m.vox = art.vol(aw, vd, ah);
+    // the real extent, so rays are never marched through padding
+    let x0 = aw, x1 = -1, y0 = vd, y1 = -1, z0 = ah, z1 = -1;
+    for (let z = 0; z < ah; z++)
+      for (let y = 0; y < vd; y++)
+        for (let x = 0; x < aw; x++)
+          if (vox[(z * vd + y) * aw + x]){
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+            if (z < z0) z0 = z; if (z > z1) z1 = z;
+          }
+    if (x1 < 0){ x0 = y0 = z0 = 0; x1 = aw - 1; y1 = vd - 1; z1 = ah - 1; }
+    m.fx0 = x0 / aw; m.fx1 = (x1 + 1) / aw;
+    m.fy0 = y0 / vd; m.fy1 = (y1 + 1) / vd;
+    m.fz0 = z0 / ah; m.fz1 = (z1 + 1) / ah;
+    m.dirty = 1;
+  }
+  return m;
+}
 const FACE_DIM = [1.0, 0.84, 1.14];             // side, front/back, top
 /* The whole engine mirrors about the STREET plane, which is right for a wet
    pavement and wrong for the river three metres below it. It shows on the
@@ -21933,7 +22404,7 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   // beside is not thrown away before the slab test can clip it properly
   const reach = Math.max(wW, wW * depthScale) * 0.75 + 0.3;
   if (tC < -reach || tC - 1 > viewD) return;
-  const m = voxelize(art, depthScale, !boxy);
+  const m = art.dyn ? dynVox(art, depthScale) : voxelize(art, depthScale, !boxy);
   const aw = m.aw, vd = m.vd, ah = m.ah, vox = m.vox;
   const dW = wW * depthScale;
   // the solid's true extent in its own frame
@@ -28098,7 +28569,20 @@ function glSpriteAtlas(){
   GS.px = 0; GS.py = 0; GS.rowH = 0; GS.gen++; GS.packed = 0; GS.full = 0;
 }
 function spriteSlot(m){
-  if (m._sg === GS.gen) return m._slot;
+  if (m._sg === GS.gen){
+    /* A dynamic volume keeps its shelf for life and re-uploads in place
+       when the pose engine has moved it - four kilobytes up the bus, not a
+       new slot. Everything static returns here without touching the GL. */
+    if (m.dirty && m._slot){
+      const gl = GL.gl;
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, GL.sVox);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, m._slot.x, m._slot.y, 0,
+                       m.aw, m.vd, m.ah, gl.RED_INTEGER, gl.UNSIGNED_BYTE, m.vox);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+      m.dirty = 0;
+    }
+    return m._slot;
+  }
   m._sg = GS.gen; m._slot = null;
   if (m.ah > GS.L) return null;
   if (GS.px + m.aw > GS.W){ GS.px = 0; GS.py += GS.rowH; GS.rowH = 0; }
@@ -28123,6 +28607,7 @@ function spriteSlot(m){
                    gl.RED_INTEGER, gl.UNSIGNED_BYTE, m.vox);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
   GS.packed++;
+  m.dirty = 0;
   return (m._slot = { x, y });
 }
 /*----------- the reflection target, and the per-solid data textures ---------
@@ -29717,6 +30202,7 @@ function netSampleMe(dt){
   ME.hp = player.hp;
   ME.weapon = typeof weaponId === 'function' ? weaponId() : 'fist';
   ME.using = usingNow();                        // mid-ritual, and which one
+  ME.z = liftZ;                                 // how far off the street we are
   if (len > 1e-4){ ME.dx = dx / len; ME.dy = dy / len; }
   _nmx = cam.x; _nmy = cam.y;
 }
@@ -30063,6 +30549,7 @@ function netOnMsg(m){
       if (m.skinC !== undefined) p.skinC = m.skinC;
       if (m.shirtC !== undefined) p.shirtC = m.shirtC;
       p.tx = m.x; p.ty = m.y; p.tang = m.a;
+      p.tlift = m.z || 0;                       // their feet, off their street
       p.hp = m.hp === undefined ? p.hp : m.hp;
       p.dead = p.hp !== undefined && p.hp <= 0;   // a body on the ground is not a target
       p.phase = m.ph || 0;
@@ -30318,6 +30805,10 @@ function netTick(dt){
     const k = Math.min(1, dt * 12);
     p.cam.x += (p.tx - p.cam.x) * k;
     p.cam.y += (p.ty - p.cam.y) * k;
+    /* The lift chases harder than the ground plane does: a jump lives half a
+       second, and at the position's own rate a peer's feet would still be
+       leaving the street when the real ones were already back on it. */
+    p.lift = (p.lift || 0) + ((p.tlift || 0) - (p.lift || 0)) * Math.min(1, dt * 20);
     let da = p.tang - p.cam.ang;
     while (da > Math.PI) da -= Math.PI * 2;
     while (da < -Math.PI) da += Math.PI * 2;
@@ -30347,6 +30838,7 @@ function netTick(dt){
   netSend({ t: 'me', x: +cam.x.toFixed(2), y: +cam.y.toFixed(2),
             a: +cam.ang.toFixed(3), s: netSceneId(), fl: netFlags(ME),
             ph: +(ME.phase || 0).toFixed(1), hp: player.hp,
+            z: +(ME.z || 0).toFixed(2),      // feet off the street, in metres
             w: ME.weapon, u: ME.using, tk: ME.trick,
             name: NET.name, worn: player.worn, skinC: player.skinC,
             shirtC: player.shirtC });
@@ -31360,6 +31852,8 @@ function frame(now){
   // stop you existing for everybody else, and their bodies should keep moving
   // on your screen while you read it.
   netTick(dt);
+  // the animation engine's clock: every body asks it once per drawn frame
+  poseFrame++; poseDt = Math.min(dt, 0.1);
   /* The city map takes the finest glyph grid while it is open. Its own `shut`
      gives it back, and so does closeMenus - but the stack can also be emptied
      outright from a couple of places that know nothing about it, and a grid
