@@ -1488,6 +1488,35 @@ before (no bloom, no egain at timeMode 2), interiors take the CPU-lit
 path untouched, and rain now mirrors genuinely luminous windows in the
 wet street, which is most of "reflections got better" for free.
 
+### 5m. The air itself carries light now
+
+The last gap in "volumetric everywhere": FS_LIGHT early-outed on any ray
+that ended in SKY, and compose discarded empty cells - so every glow
+sphere's light existed only painted ON geometry, and the air between the
+lines (over a shopfront, between towers, around a sign's edge) stayed
+dead. Only the lamp cones ever lived in the open air, which is why lamps
+felt volumetric and nothing else did.
+
+Two changes. FS_LIGHT shades air cells at full view distance - the chord
+loop runs, the surface term, the traced bounce and the occlusion are
+skipped (they need a surface), and the early-out writes BOTH outputs now
+(it used to leave the traced history undefined for every sky cell:
+garbage waiting to be reprojected onto a wall). And compose's empty-cell
+path paints the light texture's answer over the sky, sampled BILINEARLY
+at the pixel (air is not a glyph; it may gradient where a glyph must
+not), scaled by `GPUE.airGlow` (0.75 - a ray to the sky crosses more air
+than a ray to a wall, and the sky must stay behind the city). Compose
+went premultiplied for it (glyphs write rgb*a; air writes glow with
+ALPHA ZERO, which the ONE/ONE_MINUS_SRC_ALPHA blend turns into a pure
+add) - the glPresent comp branch swaps the blend func around the draw
+and back.
+
+Auto-gated everywhere it should be: `_lampNight` zeroes the analytic air
+by day, interiors take the pack path compose never sees, and cells whose
+air is worth under 0.002 still discard. worldPasses unmoved (4.45),
+present 1.2 -> 1.6ms - the sky cells now run the tile loop and it shows
+up as GPU pressure at the sync, nowhere else.
+
 ---
 
 ## 6. Measurement traps that have already cost time

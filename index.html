@@ -22833,6 +22833,7 @@ layout(location = 0) out vec4 o;
 layout(location = 1) out vec4 oOv;
 uniform uvec2 uEmis;         // the EMISSIVE bitmask, 64 materials in two words
 uniform float uEGain;        // how far past the ceiling an emitter is allowed
+uniform float uAirK;         // what the glow in EMPTY cells is worth on screen
 uniform sampler2D uG;        // R8, one texel per cell: glyph = atlas column
 uniform sampler2D uB;        // R8, palette row
 uniform sampler2D uLv;       // R8, distance level = atlas row
@@ -22850,7 +22851,20 @@ void main(){
   vec2 cw = floor(cf);
   ivec2 ci = ivec2(cw);
   float g = byteAt(uG, ci);
-  if (g < 0.5) discard;                       // empty cell: the sky shows through
+  if (g < 0.5){
+    /* An empty cell is not empty - it is AIR, and the light pass now knows
+       what the air along its ray is worth. Painted here, smoothly (the air
+       is not a glyph, so it may gradient where a glyph must not), added
+       over the sky by the premultiplied blend. This is the between-the-
+       lines glow: the aura above a shopfront, the wash the city throws at
+       its own smog line. */
+    if (uLightOn < 0.5 || uAirK <= 0.0) discard;
+    vec3 airC = texture(uLight, cf / uGrid).rgb * uAirK;
+    if (max(airC.r, max(airC.g, airC.b)) < 0.002) discard;
+    o = vec4(airC, 0.0);
+    oOv = vec4(0.0);
+    return;
+  }
   vec2 f = cf - cw;                           // what the quad used to interpolate
   float lv = byteAt(uLv, ci);
   vec4 col = texelFetch(uPal, ivec2(int(lv), int(byteAt(uB, ci))), 0);
@@ -22873,8 +22887,10 @@ void main(){
   } else if (emis) c *= uEGain;
   float cMax = max(c.r, max(c.g, c.b));
   vec3 disp = cMax > 1.0 ? c / cMax : c;
-  o = vec4(disp, a * col.a);
-  oOv = vec4(c - disp, a * col.a);
+  // premultiplied, so the air path above can ADD with alpha zero
+  float aa = a * col.a;
+  o = vec4(disp * aa, aa);
+  oOv = vec4((c - disp) * aa, aa);
 }`;
 
 /*===================== the lighting, moved onto the GPU =====================
@@ -23077,7 +23093,18 @@ void main(){
   vec2 cell = vT * uGrid;
   float c = floor(cell.x), r = floor(cell.y);
   float depth = texture(uDepth, (vec2(c, r) + 0.5) / uGrid).r;
-  if (depth <= 0.0 || depth > uViewD * 0.999){ o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  /* OPEN AIR IS NOT AN EARLY-OUT. A ray that ends in sky still crossed
+     every glow sphere on its way there, and that light is the atmosphere -
+     the aura over a shopfront, the wash between towers. It used to return
+     zero here, which is why the glow only ever existed painted ON things
+     and the air between the lines stayed dead. Air runs the chord loop at
+     full view distance and skips what needs a surface: the surface term,
+     the traced bounce, the occlusion. (And the early-out writes BOTH
+     outputs now - it used to leave the traced history undefined for every
+     sky cell, garbage waiting to be reprojected onto a wall.) */
+  if (depth <= 0.0){ o = vec4(0.0, 0.0, 0.0, 1.0); oT = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  bool airCell = depth > uViewD * 0.999;
+  if (airCell) depth = uViewD;
 
   float cxn = 2.0 * (c + 0.5) / uGrid.x - 1.0;
   vec3 rd = vec3(uDir.x + uPlane.x * cxn, uDir.y + uPlane.y * cxn,
@@ -23142,7 +23169,7 @@ void main(){
        THE BINNING USES THIS EXACT FORMULA: shader and tiles must agree or
        culling changes the picture. */
     float rS2 = min(rad * rad * 9.0, (ew * uTune3.x * 333.3 - 1.0) / uTune3.y);
-    if (d2 < rS2){
+    if (!airCell && d2 < rS2){
       float att = ew / (1.0 + d2 * uTune3.y);
       float sh = sSteps > 0 ? shadow(surf + vec3(0.0, 0.0, 0.05), ep, sSteps) : 1.0;
       acc += ec * att * sh * uTune3.x * night;
@@ -23168,7 +23195,7 @@ void main(){
   float giOn = uGI2.x, giSeed = uGI2.y;
   float bounceGain = uGI2.w;
   vec4 accT = vec4(0.0, 0.0, 0.0, 1.0);
-  if (giOn > 0.5){
+  if (giOn > 0.5 && !airCell){
     vec3 n = gNormal(c, r, depth, rd);
     vec3 sp = surf + n * 0.02;
     float h1 = gHash(vec3(c, r, giSeed));
@@ -23343,7 +23370,7 @@ function glInit(){
     G.pComp = mkProg(VS_FULL, FS_COMPOSE);
     G.uC = {};
     for (const k of ['uG','uB','uLv','uPal','uTex','uLight','uLightOn',
-                     'uGrid','uCell','uOrigin','uRes','uAtlas','uEmis','uEGain'])
+                     'uGrid','uCell','uOrigin','uRes','uAtlas','uEmis','uEGain','uAirK'])
       G.uC[k] = gl.getUniformLocation(G.pComp, k);
     /* which materials emit, set once - EMISSIVE never changes after boot */
     {
@@ -23816,6 +23843,12 @@ const GPUE = {
   roof:   150,
   shaft:  3.00,   // the air is what this was all for: lean on the chord
   dens:   0.42,
+  /* What the glow is worth in cells with NOTHING in them. The light pass
+     shades open air at full view distance now, and compose paints it over
+     the sky - the aura above a shopfront, the wash between towers. Below 1
+     because a ray to the sky crosses more air than a ray to a wall, and
+     the sky must stay behind the city, not in front of it. */
+  airGlow: 0.75,
   /* And a gentler ambient floor. Occlusion is now weighted by how much each
      light actually reaches the surface - see FS_LIGHT - because one vote per
      light was fine for a hundred and wrong for four thousand. */
@@ -27480,6 +27513,7 @@ function glComposeWorld(){
   /* emitters get HDR headroom only when something will spend it - with the
      bloom off, the picture should be exactly the picture */
   gl.uniform1f(GL.uC.uEGain, bloomOn && CFG.timeMode !== 2 ? BLOOMV.egain : 1);
+  gl.uniform1f(GL.uC.uAirK, GPUE.on ? GPUE.airGlow : 0);
   gl.uniform1i(GL.uC.uG, 0);     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.g : GL.cellG);
   gl.uniform1i(GL.uC.uB, 1);     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.b : GL.cellB);
   gl.uniform1i(GL.uC.uLv, 2);    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.l : GL.cellL);
@@ -27636,9 +27670,13 @@ function glPresent(){
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.enable(gl.BLEND);
   if (comp){
+    /* compose is premultiplied now, so its empty-cell AIR can add over the
+       sky with alpha zero; the glyph pass stays straight alpha */
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
     glComposeWorld();
     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   } else glDrawGlyphs(0, nw, 1);
 
   // --- to the screen, then bloom on top ---
