@@ -5879,7 +5879,7 @@ initInteriorFlavors();
 // A building's canonical floors: always the street, sometimes a low floor,
 // a couple of hash-picked mid numbers, and the top. Five layouts serve any
 // tower - the numbers are the fiction, the seed makes them real.
-function bldFloors(b){
+function bldFloorsBase(b){
   const top = Math.max(1, Math.round(b.h / 3.2));
   if (top < 3) return top === 1 ? [1] : [1, top];
   const list = [1], used = { 1: 1, [top]: 1 };
@@ -5891,6 +5891,24 @@ function bldFloors(b){
   }
   list.push(top);
   return list.sort((a, c) => a - c);
+}
+/* A condemned tower is climbed, not visited: an ordinary block's three or
+   four listed floors would make the whole tower two stairwells long. A
+   dungeon deals its own ladder - five floors as the base, up to ten in the
+   tallest towers, spread evenly through the real storeys so the numbers on
+   the landings still make sense against the building's height. (isDungeon
+   asks bldFloorsBase, never this, or the two would ask about each other
+   forever.) */
+function bldFloors(b){
+  if (!isDungeon(b)) return bldFloorsBase(b);
+  const top = Math.max(1, Math.round(b.h / 3.2));
+  const n = clamp(Math.round(top / 3), 5, 10);
+  const list = [];
+  for (let i = 0; i < n; i++){
+    const f = 1 + Math.round(i * (top - 1) / (n - 1));
+    if (list[list.length - 1] !== f) list.push(f);
+  }
+  return list;
 }
 // One door per worthwhile building, on a wall that fronts a sidewalk.
 function buildDoors(){
@@ -5960,7 +5978,7 @@ function buildDoors(){
    shim, the jammer's little cousins - so the anarchist kit finally has
    rooms built around it. */
 function isDungeon(b){
-  return !b.landmark && bldFloors(b).length >= 3 && hash3(b.id, 71, 3) < 0.06;
+  return !b.landmark && bldFloorsBase(b).length >= 3 && hash3(b.id, 71, 3) < 0.06;
 }
 const DGN_LOCKS = ['guard', 'grate', 'magseal', 'camlock'];
 function dgnLock(b, floor){
@@ -6000,8 +6018,14 @@ function buildInterior(bld, door, floor, S){
   const TF = trade && SHOP_FLAVOR[trade];
   intFloorA = TF ? TF.floorA : F.floorA;
   intFloorB = TF ? TF.floorB : F.floorB;
-  const rw = clamp(bld.x1 - bld.x0 + 3, 6, 15);
-  const rh = clamp(bld.y1 - bld.y0 + 3, 6, 15);
+  /* A hostile floor was knocked through wall to wall years ago - whoever
+     holds it took the partitions down for sightlines and the copper. Twice
+     the footprint and never small; every other room keeps the old sizes. */
+  const dgnFloor = use === 'dungeon' && floor > 1;
+  const rw = dgnFloor ? clamp((bld.x1 - bld.x0 + 3) * 2 + ((rnd() * 5) | 0), 24, 32)
+                      : clamp(bld.x1 - bld.x0 + 3, 6, 15);
+  const rh = dgnFloor ? clamp((bld.y1 - bld.y0 + 3) * 2 + ((rnd() * 5) | 0), 24, 32)
+                      : clamp(bld.y1 - bld.y0 + 3, 6, 15);
   const doorX = IOX + (rw >> 1), doorY = IOY + rh;
   const rec = { id: buildings.length, interior: 1, col: bld.col, seed: bld.seed + floor,
                 h: INT_CEIL, x0: IOX - 1, y0: IOY - 1, x1: IOX + rw, y1: IOY + rh,
@@ -6018,6 +6042,7 @@ function buildInterior(bld, door, floor, S){
     }
   const ip = [];                                    // interior props
   let slot = 0;                                     // deterministic pickup keys
+  let dgnStairSpot = null;          // a dungeon floor moves its own stairwell
   const dropItem = (x, y, z, id, qty, price) => {
     const key = floor === 1 ? 'b' + bld.id + '_' + (slot++)
                             : 'b' + bld.id + 'f' + floor + '_' + (slot++);
@@ -6350,44 +6375,107 @@ function buildInterior(bld, door, floor, S){
     const fls = bldFloors(bld);
     const depth = fls.indexOf(floor);           // 1 = first hostile floor
     const top = floor === fls[fls.length - 1];
-    // the room is a ruin of its old purpose
-    furn(IOX + 1.6, IOY + rh - 2.0, 'cratepile');
-    if (rw > 8) furn(IOX + rw - 2.2, IOY + rh - 2.0, 'pipestack', 0);
-    if (rnd() < 0.6) furn(IOX + (rw >> 1) + 0.5, IOY + rh - 2.0, 'generator');
-    if (rnd() < 0.5) furn(IOX + 1.5, IOY + Math.min(5, rh - 3) + 0.5, 'cage', Math.PI / 2);
-    for (let y = IOY + 2; y < IOY + rh - 2; y += 3)
-      for (let x = IOX + 2; x < IOX + rw - 2; x += 4)
-        if (rnd() < 0.4) ip.push({ x: x + 0.5, y: y + 0.5, k: PK_BIN, s: rnd(), r: 0.32 });
+    /* The stairwell corner is decided FIRST so the whole floor is built
+       around it: you arrive at the well, the residents hold the far end,
+       and the way up is always a walk through them. It moves floor to
+       floor; the top floor always lands you on the south wall, so the
+       warden's dais is the whole room away. */
+    const cnr = top ? 2 + ((hash3(bld.seed, floor, 57) * 2) | 0)
+                    : (hash3(bld.seed, floor, 57) * 4) | 0;   // NE NW SE SW
+    const stE2 = cnr === 0 || cnr === 2, stN2 = cnr < 2;
+    dgnStairSpot = { x: stE2 ? IOX + rw - 1.5 : IOX + 1.5,
+                     y: stN2 ? IOY + 1.5 : IOY + rh - 1.5,
+                     land: stN2 ? 1 : -1 };
+    const stX = dgnStairSpot.x, stY = dgnStairSpot.y;
+    /* A knocked-through floor still holds the tower up: a grid of columns,
+       thinned where the rot won. They block sight and bullets and charges,
+       which is what makes the room a fight instead of a corridor. */
+    const pillar = (x, y) => {
+      const id = (y | 0) * MAP + (x | 0);
+      S.tType[id] = T_BLD; S.tH[id] = INT_CEIL; S.tB[id] = rec.id; S.walkG[id] = 0;
+    };
+    for (let py = IOY + 4; py <= IOY + rh - 5; py += 5)
+      for (let px = IOX + 4; px <= IOX + rw - 5; px += 5){
+        if (Math.hypot(px - stX, py - stY) < 4.5) continue;
+        if (top && py < IOY + 7) continue;      // the dais stays open
+        if (rnd() < 0.8) pillar(px, py);
+      }
+    // half-fallen partitions: knee-high runs that stop feet, not sightlines
+    const nRuns = 3 + (((rw + rh) / 12) | 0);
+    for (let i2 = 0; i2 < nRuns; i2++){
+      const horiz = rnd() < 0.5, len = 3 + ((rnd() * 4) | 0);
+      const wx = IOX + 3 + ((rnd() * Math.max(1, rw - 6 - (horiz ? len : 0))) | 0);
+      const wy = IOY + 3 + ((rnd() * Math.max(1, rh - 6 - (horiz ? 0 : len))) | 0);
+      for (let k2 = 0; k2 < len; k2++){
+        const x = wx + (horiz ? k2 : 0), y = wy + (horiz ? 0 : k2);
+        if (Math.hypot(x - stX, y - stY) < 4.5) continue;
+        if (top && y < IOY + 7) continue;
+        lowWall(x, y);
+      }
+    }
+    // the ruin of the old purpose, scattered across the whole plan
+    const junk = ['cratepile', 'pipestack', 'generator', 'cage'];
+    const nJunk = 4 + ((rw * rh / 90) | 0);
+    for (let i2 = 0; i2 < nJunk; i2++){
+      const x = IOX + 2.5 + rnd() * (rw - 5), y = IOY + 2.5 + rnd() * (rh - 5);
+      const fid = junk[(rnd() * junk.length) | 0];
+      const yw = rnd() < 0.5 ? 0 : Math.PI / 2;
+      if (Math.hypot(x - stX, y - stY) < 4) continue;
+      if (top && y < IOY + 7) continue;
+      if (!floorAt(x, y) || !boxFree(x, y, fid, yw)) continue;
+      furn(x, y, fid, yw);
+    }
+    for (let i2 = 0; i2 < nJunk; i2++){
+      const x = IOX + 2 + ((rnd() * (rw - 4)) | 0) + 0.5;
+      const y = IOY + 2 + ((rnd() * (rh - 4)) | 0) + 0.5;
+      if (rnd() >= 0.5) continue;
+      if (Math.hypot(x - stX, y - stY) < 3 || !floorAt(x, y)) continue;
+      ip.push({ x, y, k: PK_BIN, s: rnd(), r: 0.32 });
+    }
     // the camera that owns this floor's stairwell, when the lock wants one
     if (dgnLock(bld, floor) === 'camlock')
-      ip.push({ x: IOX + rw - 2.5, y: IOY + 0.7, k: PK_CAM, s: rnd(), r: 0.16,
+      ip.push({ x: stX + (stE2 ? -1.2 : 1.2), y: stY + dgnStairSpot.land * 0.8,
+                k: PK_CAM, s: rnd(), r: 0.16,
                 dead: worldDelta.cutIn && worldDelta.cutIn['b' + bld.id + 'f' + floor] ? 1 : 0 });
-    // what is left behind is worth carrying out
-    if (rnd() < 0.7) dropItem(IOX + 1.5, IOY + rh - 2.6, 0, 'ammo', 4);
-    if (rnd() < 0.4) dropItem(IOX + rw - 1.5, IOY + 3.5, 0, 'medkit');
-    if (rnd() < 0.5) dropItem(IOX + 2.5, IOY + 2.5, 0, 'scrap', 2);
-    // the residents
-    const packs = top ? 1 : 2 + Math.min(2, depth);
+    // what is left behind is worth carrying out, and there is more of it
+    // the deeper the tower goes
+    const nLoot = 2 + ((depth / 2) | 0);
+    for (let i2 = 0; i2 < nLoot; i2++){
+      const x = IOX + 2.5 + rnd() * (rw - 5), y = IOY + 2.5 + rnd() * (rh - 5);
+      const it = ['ammo', 'scrap', 'medkit'][(rnd() * 3) | 0];
+      if (Math.hypot(x - stX, y - stY) < 3 || !floorAt(x, y)) continue;
+      dropItem(x, y, 0, it, it === 'ammo' ? 4 : it === 'scrap' ? 2 : 1);
+    }
+    /* The residents hold the end of the room diagonally opposite the well -
+       never past the halfway line - so every floor is crossed under their
+       eyes rather than walked into on top of them. */
+    const fxc = stE2 ? IOX + 3 : IOX + rw - 3;
+    const fyc = stN2 ? IOY + rh - 3 : IOY + 3;
+    const packs = top ? 0 : Math.min(2 + depth, 7);
     for (let h = 0; h < packs; h++){
-      const hx2 = IOX + 2 + ((hash3(bld.seed, floor * 7 + h, 79) * (rw - 4)) | 0);
-      const hy2 = IOY + 3 + ((hash3(bld.seed, floor * 11 + h, 83) * (rh - 5)) | 0);
-      const a = spawnClear('razor', hx2 + 0.5, hy2 + 0.5, {
-        name: 'SQUATTER', brain: 'hostile', hp: 22 + depth * 12 });
-      a.atk = 5 + depth * 2;
+      const hx2 = fxc + (IOX + rw * 0.5 - fxc) * hash3(bld.seed, floor * 7 + h, 79) * 0.85;
+      const hy2 = fyc + (IOY + rh * 0.5 - fyc) * hash3(bld.seed, floor * 11 + h, 83) * 0.85;
+      const a = spawnClear('razor', hx2, hy2, {
+        name: 'SQUATTER', brain: 'hostile', hp: Math.min(20 + depth * 8, 76) });
+      a.atk = Math.min(4 + ((depth * 3) >> 1), 13);
       a.interior = 1;
     }
     if (top){                                   // the top keeps its keeper
-      furn(IOX + (rw >> 1) + 0.5, IOY + 2.0, 'altar');
-      const w = spawnClear('razor', IOX + (rw >> 1) + 0.5, IOY + 3.6, {
-        name: 'THE WARDEN', brain: 'hostile', hp: 120 + depth * 20 });
-      w.atk = 10 + depth * 2; w.spd = 2.0;
+      const cx3 = IOX + (rw >> 1) + 0.5;
+      furn(cx3, IOY + 2.0, 'altar');
+      const w = spawnClear('razor', cx3, IOY + 4.0, {
+        name: 'THE WARDEN', brain: 'hostile', hp: 150 + fls.length * 25,
+        shirt: C.carC, skin: C.dataDk });
+      w.atk = 11 + fls.length; w.spd = 1.7;
       w.interior = 1;
+      w.boss = 1; w.chgCd = 2.5; w.slamCd = 4;  // wardenBrain runs this body
+      w.gx = stX; w.gy = stY + dgnStairSpot.land * 2.2;   // where the tower answers from
       // the hoard: a special weapon this tower has always kept, and supplies
       const prize = ['railgun', 'arcgun', 'nailer', 'katana', 'maul']
         [(hash3(bld.seed, 5, 89) * 5) | 0];
-      dropItem(IOX + (rw >> 1) + 0.5, IOY + 1.4, 0, prize, 1);
-      dropItem(IOX + (rw >> 1) - 0.8, IOY + 1.6, 0, 'medkit', 2);
-      dropItem(IOX + (rw >> 1) + 1.8, IOY + 1.6, 0, 'ammo', 12);
+      dropItem(cx3, IOY + 1.4, 0, prize, 1);
+      dropItem(cx3 - 1.3, IOY + 1.6, 0, 'medkit', 2);
+      dropItem(cx3 + 1.3, IOY + 1.6, 0, 'ammo', 12);
     }
   } else if (kind === 'casino'){
     // The house wears one of four skins, and each leads with its own game -
@@ -6621,16 +6709,17 @@ function buildInterior(bld, door, floor, S){
                 y: isWorks ? IOY + 1.6 : IOY + 2.2, k: PK_FURN,
                 fid: 'terminal', s: 0, r: 0.5, yaw: Math.PI });
   }
-  // stairs, when the building has anywhere else to go
+  // stairs, when the building has anywhere else to go. A dungeon floor has
+  // already chosen its own corner; everywhere else keeps the north-east well
   let stairs = null;
   if (bldFloors(bld).length > 1){
-    const stx = IOX + rw - 1.5, sty = IOY + 1.5;
-    for (const cy2 of [sty | 0, (sty | 0) + 1]){    // the step AND the landing
-      const id2 = cy2 * MAP + (stx | 0);
+    const st = dgnStairSpot || { x: IOX + rw - 1.5, y: IOY + 1.5, land: 1 };
+    for (const cy2 of [st.y | 0, (st.y | 0) + st.land]){   // the step AND the landing
+      const id2 = cy2 * MAP + (st.x | 0);
       S.walkG[id2] = 25; S.tType[id2] = T_INF; S.tH[id2] = 0; S.tB[id2] = -1;
     }
-    ip.push({ x: stx, y: sty, k: PK_STAIR, s: 0, r: 0 });
-    stairs = { x: stx, y: sty };
+    ip.push({ x: st.x, y: st.y, k: PK_STAIR, s: 0, r: 0 });
+    stairs = st;
   }
   /* Last look round: nothing should be talking to the plaster. Anything
      whose face has ended up against a wall or a partition is turned to the
@@ -6653,13 +6742,15 @@ function buildInterior(bld, door, floor, S){
   // let you back out of it. Run it through the same clearance the room uses
   // for everybody else it stands up.
   const spawn = floor === 1 ? clearSpot(doorX + 0.5, IOY + rh - 1.6)
-              : stairs ? clearSpot(stairs.x, stairs.y + 1.3)
+              : stairs ? clearSpot(stairs.x, stairs.y + 1.3 * (stairs.land || 1))
               : clearSpot(doorX + 0.5, IOY + rh - 1.6);
   return { props: ip, stairs,
            shop: trade,
            px: spawn[0],
            py: spawn[1],
-           ang: floor === 1 ? -Math.PI / 2 : Math.PI / 2,
+           // face off the landing INTO the room, whichever wall the well is on
+           ang: floor === 1 ? -Math.PI / 2
+              : stairs && stairs.land === -1 ? -Math.PI / 2 : Math.PI / 2,
            exit: floor === 1 ? { x: doorX + 0.5, y: doorY - 0.45 } : null };
 }
 function dgnBlocked(bld, from, to){
@@ -6712,16 +6803,29 @@ function gotoFloor(f){
   mqWorksFloor();
   inside.shop = room.shop;
   cam.x = room.px; cam.y = room.py; cam.ang = room.ang; setAim(0);
+  // a knocked-through floor is read across thirty metres, not thirteen; the
+  // eye still runs out before the far corner does, which suits the dark
+  viewD = isDungeon(bld2) && f > 1 ? 22 : 13;
   fade = 1;
   sfx('door', { rate: 1.25, vol: 0.7 });
   toast('FLOOR ' + f);
 }
 function openFloorMenu(){
-  const floors = bldFloors(buildings[inside.bld]);
+  const bldM = buildings[inside.bld];
+  const floors = bldFloors(bldM);
   const top = floors[floors.length - 1];
-  const items = [{ info: 'the stairwell hums with recycled air' }, { sep: true }];
-  for (let i = floors.length - 1; i >= 0; i--){
-    const f = floors[i];
+  /* A condemned stairwell is a shaft with one working light: you can see
+     the landing above and the landing below, and nothing past either. Every
+     locked door has to be opened in order now - no reading the whole
+     directory from the lobby. Live buildings still post theirs. */
+  const dgn = isDungeon(bldM);
+  const at = floors.indexOf(inside.floor);
+  const shown = dgn && at >= 0 ? floors.filter((f, i) => Math.abs(i - at) <= 1)
+                               : floors;
+  const items = [{ info: dgn ? 'the shaft is dark - one landing either way'
+                             : 'the stairwell hums with recycled air' }, { sep: true }];
+  for (let i = shown.length - 1; i >= 0; i--){
+    const f = shown[i];
     items.push({ label: 'FLOOR ' + f + (f === top && top > 1 ? ' - top' : f === 1 ? ' - street' : ''),
                  value: () => f === inside.floor ? 'HERE' : '',
                  act(){ gotoFloor(f); } });
@@ -16428,7 +16532,13 @@ function respawn(){
   toast('you wake on the platform, lighter');
 }
 function hostileBrain(a, dt){
-  if (a.stunT > 0){ a.stunT -= dt; a.windup = 0; return; }   // a hit interrupts the swing
+  if (a.stunT > 0){                            // a hit interrupts the swing
+    // the WARDEN shrugs a stagger off unless it earned one on the masonry
+    if (a.boss && !a.staggered) a.stunT = Math.min(a.stunT, 0.35);
+    a.stunT -= dt; a.windup = 0;
+    if (a.stunT <= 0) a.staggered = 0;
+    return;
+  }
   a.atkCool = (a.atkCool || 0) - dt;
   const tm0 = topMode();
   if ((drug && drug.fx.ghost) || jamT > 0 ||
@@ -16438,11 +16548,12 @@ function hostileBrain(a, dt){
   const rx = tgt.cam.x - a.x, ry = tgt.cam.y - a.y;
   const pr = Math.hypot(rx, ry) || 0.001;
   if (!a.aggro){
-    if (pr < 9 && sightClear(a.x, a.y, tgt.cam.x, tgt.cam.y)) a.aggro = 1;
+    if (pr < (a.boss ? 16 : 9) && sightClear(a.x, a.y, tgt.cam.x, tgt.cam.y)) a.aggro = 1;
     return;
   }
   if (pr > 30){ a.aggro = 0; return; }
   a.dx = rx / pr; a.dy = ry / pr;
+  if (a.boss){ wardenBrain(a, dt, tgt, pr); return; }
   if (pr > 1.0){
     const nx = a.x + a.dx * a.spd * dt, ny = a.y + a.dy * a.spd * dt;
     if (walkG[clamp(a.y | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]) a.x = nx;
@@ -16469,6 +16580,126 @@ function hostileBrain(a, dt){
     a.windup = 0.25;
     a.pendAtk = (a.atk || 5) + ((Math.random() * 6) | 0);
     sfx('ui_move', { rate: 0.35, vol: 0.35 });
+  }
+}
+/* THE WARDEN fights like it owns the room, because it does. Three phases,
+   two tells, and the columns matter: the charge is dodged by putting
+   masonry where you were standing, and a charge that finds masonry instead
+   of you is the only thing that puts the warden properly on its heels -
+   ordinary hits stagger it a third of a second, never more.
+     hostileBrain has already picked the target, measured the range and
+   turned the body; this runs on whichever client owns it (the host, in
+   company), and the windup and stun stream to everyone else like any
+   other actor's. The squatters it calls up are local muscle, same as a
+   run's enforcers - they never stream. */
+function wardenBrain(a, dt, tgt, pr){
+  const hurt = d => {
+    if (tgt.local){ if (player.hp > 0) damagePlayer(d); }
+    else if (actorNetSynced(a)){
+      tgt.hitT = 0.2; netBroadcastEvent('pdam', { to: tgt.id, d });
+    }
+  };
+  const hpF = a.hp / (a.maxHp || 1);
+  if (!a.ph2 && hpF <= 0.66){                  // the tower answers
+    a.ph2 = 1; a.spd += 0.45; a.chgCd = Math.min(a.chgCd || 0, 1.2);
+    for (let i = 0; i < 2; i++){
+      const sq = spawnActor('razor', (a.gx || a.x) + (i ? 0.9 : -0.9), a.gy || a.y,
+        { name: 'SQUATTER', brain: 'hostile', hp: 30, shirt: a.shirt });
+      sq.atk = 6; sq.interior = 1; sq.aggro = 1;
+    }
+    toast('the WARDEN howls - the stairwell answers');
+    sfx('hurt', { rate: 0.35, vol: 0.9 });
+  }
+  if (!a.ph3 && hpF <= 0.33){                  // past caring
+    a.ph3 = 1; a.spd += 0.5;
+    toast('the WARDEN stops pacing itself');
+    sfx('hurt', { rate: 0.3, vol: 1.0 });
+  }
+  a.chgCd = (a.chgCd || 0) - dt;
+  a.slamCd = (a.slamCd || 0) - dt;
+  if (a.chgT > 0){                             // planted: the shoulder drops
+    a.chgT -= dt;
+    a.dx = a.chgV[0]; a.dy = a.chgV[1];        // the aim IS the tell
+    a.moving = 0; a.windup = Math.max(a.chgT, 0.01);   // guests read the stream
+    if (a.chgT <= 0){
+      a.chgRun = 1.0; a.windup = 0;
+      sfx('footstep', { rate: 0.5, vol: 0.9 });
+    }
+    return;
+  }
+  if (a.chgRun > 0){                           // the charge: four times its legs
+    a.chgRun -= dt;
+    const sp = a.spd * 4.2;
+    const nx = a.x + a.chgV[0] * sp * dt, ny = a.y + a.chgV[1] * sp * dt;
+    if (!walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]){
+      a.chgRun = 0;                            // masonry. the one real opening
+      a.staggered = 1; a.stunT = 1.5;
+      addFx(a.x, a.y, 1.4);
+      addFx(a.x + a.chgV[0] * 0.5, a.y + a.chgV[1] * 0.5, 0.8);
+      sfx('hit', { rate: 0.45, vol: 0.9 });
+      return;
+    }
+    a.x = nx; a.y = ny;
+    a.phase += sp * dt * 2.2; a.moving = 1;
+    if (Math.hypot(tgt.cam.x - a.x, tgt.cam.y - a.y) < 1.3){   // caught you square
+      hurt((a.atk || 12) + 6 + ((Math.random() * 8) | 0));
+      a.chgRun = 0; a.stunT = 0.4;             // it needs a breath too
+    } else if (a.chgRun <= 0) a.stunT = 0.5;   // ran its length, winded
+    return;
+  }
+  if (a.slamT > 0){                            // both fists over its head
+    a.slamT -= dt; a.moving = 0; a.windup = Math.max(a.slamT, 0.01);
+    if (a.slamT <= 0){
+      a.windup = 0;
+      flash = Math.max(flash, 0.3);
+      for (let i = 0; i < 6; i++)
+        addFx(a.x + Math.cos(i) * 1.6, a.y + Math.sin(i) * 1.6, 0.9);
+      sfx('hit', { rate: 0.4, vol: 1.0 });
+      for (const q of PLAYERS){                // the floor answers under everybody
+        if (q.dead || q.scene !== SCENE) continue;
+        if (Math.hypot(q.cam.x - a.x, q.cam.y - a.y) > 3.4) continue;
+        if (q.local){ if (player.hp > 0) damagePlayer((a.atk || 12) + ((Math.random() * 6) | 0)); }
+        else if (actorNetSynced(a)){
+          q.hitT = 0.2;
+          netBroadcastEvent('pdam', { to: q.id, d: (a.atk || 12) });
+        }
+      }
+    }
+    return;
+  }
+  if (a.windup > 0){                           // the ordinary swing, committed
+    a.windup -= dt; a.moving = 0;
+    if (a.windup <= 0){
+      if (pr <= 2.0) hurt(a.pendAtk || 10);
+      a.windup = 0;
+    }
+    return;
+  }
+  if (a.ph2 && a.slamCd <= 0 && pr < 2.6){     // crowded: the floor answers
+    a.slamT = 0.6; a.slamCd = 7;
+    if (!a.sawSlam){ a.sawSlam = 1; toast('the WARDEN raises both fists'); }
+    sfx('ui_move', { rate: 0.25, vol: 0.6 });
+    return;
+  }
+  if (a.chgCd <= 0 && pr > 4 && pr < 15 &&
+      sightClear(a.x, a.y, tgt.cam.x, tgt.cam.y)){
+    a.chgT = 0.7; a.chgCd = a.ph3 ? 3 : 6;
+    a.chgV = [a.dx, a.dy];                     // locked NOW: move and it misses
+    if (!a.sawChg){ a.sawChg = 1; toast('the WARDEN drops a shoulder - MOVE'); }
+    sfx('ui_move', { rate: 0.2, vol: 0.7 });
+    return;
+  }
+  if (pr > 1.15){                              // it walks you down, heavier
+    const nx = a.x + a.dx * a.spd * dt, ny = a.y + a.dy * a.spd * dt;
+    if (walkG[clamp(a.y | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]) a.x = nx;
+    if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(a.x | 0, 0, MAP - 1)]) a.y = ny;
+    a.phase += a.spd * dt * 3.4;
+    a.moving = 1;
+  } else if (a.atkCool <= 0 && (tgt.local ? player.hp > 0 : tgt.hp > 0)){
+    a.atkCool = 1.4;
+    a.windup = 0.4;
+    a.pendAtk = (a.atk || 10) + ((Math.random() * 8) | 0);
+    sfx('ui_move', { rate: 0.3, vol: 0.45 });
   }
 }
 let punchLeft = false;                       // the swing alternates arms
@@ -20722,7 +20953,10 @@ function floorSample(wx, wy, ix, iy){
   if (wayOn && wayG[iy * MAP + ix]){            // the red line home, on ANY ground
     const cfx = fx - 0.5, cfy = fy - 0.5;
     if (cfx * cfx + cfy * cfy < 0.10){
-      _wb = C.camRed; _wd = 0.95; _wwet = puddleAt(ix, iy); return;
+      // dry on purpose: every mirror pass gates on the target cell's wetness,
+      // so a wet dot gets a reflection painted straight over it. The line is
+      // a UI mark, and it stays on top of whatever the street is doing.
+      _wb = C.camRed; _wd = 0.95; _wwet = 0; return;
     }
   }
   if (t === T_ROAD || t === T_CROSS){
@@ -26262,7 +26496,9 @@ float densMul(float t){ return 1.0 - uDensK * pow(t, 1.15); }
 vec4 tileAt(int ix, int iy){ return texelFetch(uTile, ivec2(ix, iy), 0); }
 int  tTypeOf(vec4 t){ return int(t.r * 255.0 + 0.5) & 15; }
 bool riverBedOf(vec4 t){ return (int(t.r * 255.0 + 0.5) & 16) != 0; }
-bool wayAt(int ix, int iy){ return texelFetch(uWay, ivec2(ix, iy), 0).r > 0.5; }
+// wayG marks its tiles with 1s and R8 arrives normalized, so the half-byte
+// threshold has to be taken in byte space - in [0,1] a 1 reads as 0.0039.
+bool wayAt(int ix, int iy){ return texelFetch(uWay, ivec2(ix, iy), 0).r * 255.0 > 0.5; }
 int  bldOf(vec4 t){ return int(t.g * 255.0 + 0.5) + (int(t.b * 255.0 + 0.5) << 8) - 1; }
 vec4 bldAt(int id, int slot){ return texelFetch(uBld, ivec2(slot, id), 0); }
 
@@ -26368,7 +26604,9 @@ void floorSample(float wx, float wy, float sx, float sy, int ix, int iy, vec4 ti
   if (uWayOn > 0.5 && wayAt(ix, iy)){             // the red line home, on ANY ground
     float cfx = fx - 0.5, cfy = fy - 0.5;
     if (cfx * cfx + cfy * cfy < 0.10){
-      _wb = int(uMat[M_CAMRED]); _wd = 0.95; _wwet = puddleAt(ix, iy); return;
+      // dry on purpose: the tail's mirror passes gate on this cell's wetness
+      // byte, so a wet dot gets a reflection painted straight over it
+      _wb = int(uMat[M_CAMRED]); _wd = 0.95; _wwet = 0; return;
     }
   }
   if (t == T_ROAD || t == T_CROSS){
