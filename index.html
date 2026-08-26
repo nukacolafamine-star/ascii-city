@@ -20112,9 +20112,23 @@ function emitVolume(){
   }
 }
 /* Path tracing lives below; declared here because worldPasses asks about it. */
+/*========================= the tracer, on the card ==========================
+  This used to be a CPU pass and an ALTERNATIVE to the GPU lighting - the two
+  could not both run, because reaching the tracer meant taking the CPU light
+  branch and that switches compose, and therefore the whole tail, off.
+
+  It is a fragment shader now (see FS_LIGHT), and additive rather than
+  alternative: the analytic loop is direct light and the shaft through its
+  glow, this is the indirect bounce and the openness, and they do not overlap.
+  `bounces` is gone with the CPU version - the old bounces-1 was direct light
+  and shadows, which is what the loop above already computes, and that overlap
+  is precisely why the two could never be layered.
+============================================================================*/
 const GIR = {
-  on:        false,  // OFF by default - this is the one that costs
-  bounces:   2,      // 1 is direct light and shadows; 2 adds a bounce of colour
+  on:        true,   // on the card now, and it costs a ray a cell
+  bounce:    1.00,   // what the traced bounce is worth against the direct term
+  clamp:     400,    // ceiling on one sample, in acc units - the firefly cap
+  bounces:   2,      // the CPU tracer's, kept only for the CPU light path
   dist:      34,     // how far a shadow or bounce ray is worth following, tiles
   falloff:   0.10,   // inverse-square, softened so a street does not go black
   albedo:    0.55,   // how much of a ray survives a bounce off a wall
@@ -22774,7 +22788,11 @@ void main(){
     vec4 L = texture(uLight, (cw + 0.5) / uGrid);
     c = c * L.a + L.rgb;
   }
-  o = vec4(min(c, vec3(1.0)), a * col.a);
+  /* The same rule at the final add: a per-channel clip whitens any bright
+     cell the light lands on. Over 1, scale the whole colour down instead. */
+  float cMax = max(c.r, max(c.g, c.b));
+  if (cMax > 1.0) c *= 1.0 / cMax;
+  o = vec4(c, a * col.a);
 }`;
 
 /*===================== the lighting, moved onto the GPU =====================
@@ -22814,6 +22832,93 @@ uniform int   uNE;
 uniform float uCap;           // the emitter texture's width
 uniform vec4  uTune;          // dens, fall, gain, roof
 uniform vec4  uTune2;         // shaftK, shadowSteps, aoK, night
+/*--------------------------- the path tracer ------------------------------
+  This is the CPU tracer's job, done here, and it is ADDITIVE rather than
+  alternative: the loop above is analytic direct light and the shaft through
+  its glow, and this is the INDIRECT bounce and the openness. They do not
+  overlap, so nothing is counted twice - which is exactly what stopped the CPU
+  one being usable alongside any of this, since its bounces-1 term IS the
+  direct light the loop above already has.
+
+  One ray per cell per frame, in a hemisphere about the surface normal, DDA'd
+  against the city's heightfield. Where it ENDS gives the colour that bounces
+  back - one randomly chosen emitter, shadowed, off the wall it landed on. How
+  FAR it got gives how shut in this point is, which is the half that reads as
+  traced: a kerb line, the inside of a doorway, the gap under a stall all go
+  dark because the sky cannot reach them.
+
+  One sample a frame is snow, so it is a RUNNING AVERAGE and never a reset -
+  the same trick the CPU version uses. Standing still the weight falls as 1/n
+  and it converges; moving, it pins at uGI.z and re-converges in about three
+  frames. Light lagging a fast turn is a far cheaper thing to look at than
+  noise.
+---------------------------------------------------------------------------*/
+uniform sampler2D uHist;      // last frame's accumulated light
+uniform vec4  uGI;            // dist, albedo, moveAlpha->alpha, aoDist
+uniform vec4  uGI2;           // on, seed, skyScale, bounceGain
+uniform vec3  uSky;
+uniform float uGIClamp;
+
+// a hash good enough for one ray a frame, denoised by the average
+float gHash(vec3 v){
+  return fract(sin(dot(v, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+}
+/* The heightfield DDA, which is giTrace. Returns the distance to the wall it
+   hit and that wall's normal, or a negative distance if the ray got away. */
+float gMarch(vec3 o, vec3 d, float maxT, out vec3 hitN){
+  hitN = vec3(0.0, 0.0, 1.0);
+  float tGround = 1e30;
+  if (d.z < -1e-6){ tGround = -o.z / d.z; if (tGround < 0.0) tGround = 1e30; }
+  vec2 m = floor(o.xy);
+  vec2 dd = vec2(d.x == 0.0 ? 1e30 : abs(1.0 / d.x),
+                 d.y == 0.0 ? 1e30 : abs(1.0 / d.y));
+  vec2 st = vec2(d.x < 0.0 ? -1.0 : 1.0, d.y < 0.0 ? -1.0 : 1.0);
+  vec2 sd = vec2(d.x < 0.0 ? (o.x - m.x) * dd.x : (m.x + 1.0 - o.x) * dd.x,
+                 d.y < 0.0 ? (o.y - m.y) * dd.y : (m.y + 1.0 - o.y) * dd.y);
+  for (int g = 0; g < 48; g++){
+    float tN; int side;
+    if (sd.x < sd.y){ tN = sd.x; sd.x += dd.x; m.x += st.x; side = 0; }
+    else            { tN = sd.y; sd.y += dd.y; m.y += st.y; side = 1; }
+    if (tN > maxT || tN > tGround) break;
+    if (m.x < 0.0 || m.y < 0.0 || m.x >= uMap || m.y >= uMap) break;
+    float h = texelFetch(uHeight, ivec2(int(m.x), int(m.y)), 0).r;
+    if (h > 0.0){
+      float z = o.z + d.z * tN;
+      if (z >= 0.0 && z <= h){
+        hitN = side == 0 ? vec3(-st.x, 0.0, 0.0) : vec3(0.0, -st.y, 0.0);
+        return tN;
+      }
+    }
+  }
+  if (tGround < maxT){ hitN = vec3(0.0, 0.0, 1.0); return tGround; }
+  return -1.0;
+}
+/* One emitter, chosen at random and weighted back up by how many there were -
+   giDirect, in a shader. Importance by count, denoised by the average. */
+vec3 gOneLight(vec3 p, vec3 n, float rnd, float dist, int steps){
+  if (uNE <= 0) return vec3(0.0);
+  int i = int(rnd * float(uNE));
+  if (i >= uNE) i = uNE - 1;
+  vec4 A = texelFetch(uEmit, ivec2(i, 0), 0);
+  vec4 B = texelFetch(uEmit, ivec2(i, 1), 0);
+  vec3 L = A.xyz - p;
+  float d2 = dot(L, L);
+  if (d2 < 1e-4 || d2 > dist * dist) return vec3(0.0);
+  float d = sqrt(d2);
+  L /= d;
+  float ndl = dot(n, L);
+  if (ndl <= 0.0) return vec3(0.0);
+  vec3 hn;
+  if (gMarch(p + n * 0.02, L, d - 0.05, hn) >= 0.0) return vec3(0.0);
+  /* One sample stands in for the whole list, so it is scaled by uNE - and
+     uNE is thousands now, not the 120 the CPU tracer had. A sample that lands
+     next to a light comes back thousands of acc units bright, and the running
+     average smears those fireflies into white patches precisely where the
+     lights are. Clamp the sample; the average converges to a slightly dimmer
+     bounce instead of a blown one, which is the right trade everywhere. */
+  float w = min(A.w * float(uNE) * ndl / (1.0 + d2 * 0.10), uGIClamp);
+  return B.rgb * w;
+}
 
 float hAt(vec2 w){
   if (w.x < 0.0 || w.y < 0.0 || w.x >= uMap || w.y >= uMap) return 0.0;
@@ -22831,6 +22936,29 @@ float shadow(vec3 p, vec3 L, int steps){
     if (q.z < hAt(q.xy)) { lit -= 1.0 / n; }
   }
   return clamp(lit, 0.0, 1.0);
+}
+/* The surface normal, which nothing in this renderer stores. Take it from the
+   depths of the neighbours - two screen tangents, crossed. Across a silhouette
+   that is nonsense, so a big jump in depth falls back to facing the eye. */
+vec3 gNormal(float c, float r, float t, vec3 rd){
+  float cR = c + 1.0 < uGrid.x ? c + 1.0 : c - 1.0;
+  float rD = r + 1.0 < uGrid.y ? r + 1.0 : r - 1.0;
+  float tR = texture(uDepth, (vec2(cR, r) + 0.5) / uGrid).r;
+  float tD = texture(uDepth, (vec2(c, rD) + 0.5) / uGrid).r;
+  if (tR >= uViewD || tD >= uViewD ||
+      abs(tR - t) > t * 0.25 || abs(tD - t) > t * 0.25) return normalize(-rd);
+  float k  = (r  + 0.5 - uHorizon) / uProjRows;
+  float kD = (rD + 0.5 - uHorizon) / uProjRows;
+  float cxR = 2.0 * (cR + 0.5) / uGrid.x - 1.0;
+  vec3 rdR = vec3(uDir.x + uPlane.x * cxR, uDir.y + uPlane.y * cxR, -k);
+  vec3 rdD = vec3(rd.x, rd.y, -kD);
+  vec3 a = rdR * tR - rd * t;
+  vec3 b = rdD * tD - rd * t;
+  vec3 n = cross(a, b);
+  float l = length(n);
+  if (l < 1e-6) return vec3(0.0, 0.0, 1.0);
+  n /= l;
+  return dot(n, rd) > 0.0 ? -n : n;
 }
 void main(){
   vec2 cell = vT * uGrid;
@@ -22894,14 +23022,56 @@ void main(){
       occ += (1.0 - sh) * att; occW += att;
     }
   }
-  // many lights add, brightness does not: roll the sum toward a ceiling
-  vec3 lit = (vec3(1.0) - exp(-acc * gain / roof)) * roof;
+  /*----------------------- the traced bounce ----------------------------*/
+  float giOn = uGI2.x, giSeed = uGI2.y;
+  float bounceGain = uGI2.w;
+  float openness = 1.0;
+  if (giOn > 0.5){
+    vec3 n = gNormal(c, r, depth, rd);
+    vec3 sp = surf + n * 0.02;
+    float h1 = gHash(vec3(c, r, giSeed));
+    float h2 = gHash(vec3(r, giSeed, c));
+    float h3 = gHash(vec3(giSeed, c, r));
+    // a cosine-ish hemisphere direction: the normal plus noise, normalised
+    vec3 jit = vec3(h1, h2, h3) * 2.0 - 1.0;
+    vec3 bd = normalize(n + jit * 0.85);
+    if (dot(bd, n) < 0.05) bd = n;
+    vec3 hn;
+    float tHit = gMarch(sp, bd, uGI.x, hn);
+    if (tHit >= 0.0){
+      openness = clamp(tHit / uGI.w, 0.0, 1.0);
+      vec3 hp = sp + bd * tHit;
+      acc += gOneLight(hp, hn, gHash(vec3(giSeed, r, c)), uGI.x, sSteps)
+             * uGI.y * bounceGain;
+    } else {
+      acc += uSky * uGI2.z * bounceGain;      // it got away to the sky
+    }
+  }
+  /* Many lights add, brightness does not: roll the sum toward a ceiling.
+     ON THE BRIGHTEST CHANNEL, NOT EACH CHANNEL. 1-exp per channel compresses
+     the ratio between channels - a cyan sign at (200,800,900) acc rolls to
+     (111,146,148) lit, which is most of the way to white - and the brighter
+     the cell the worse it gets, which is exactly "washed out next to a light".
+     Rolling the max and scaling the others by the same factor keeps the hue
+     at every brightness; only a genuinely white source stays white. */
+  float aMax = max(acc.r, max(acc.g, acc.b));
+  float aRoll = (1.0 - exp(-aMax * gain / roof)) * roof;
+  vec3 lit = aMax > 1e-4 ? acc * (aRoll / aMax) : vec3(0.0);
   float ao = occW > 0.0 ? 1.0 - aoK * (occ / occW) : 1.0;
+  if (giOn > 0.5) ao *= mix(1.0 - uTune2.z, 1.0, openness);
   if (uTune2.y < -0.5){            // debug: show the heightfield, not the light
     float hh = hAt(surf.xy) / 24.0;
     o = vec4(hh, hh, hh, 1.0); return;
   }
-  o = vec4(lit / 255.0, ao);
+  /* One sample a frame is snow. Keep the history and re-weight it: standing
+     still uGI.z falls as 1/n and this converges; moving it pins and
+     re-converges over about three frames. */
+  vec4 now = vec4(lit / 255.0, ao);
+  if (giOn > 0.5){
+    vec4 hist = texture(uHist, vT);
+    now = mix(hist, now, uGI.z);
+  }
+  o = now;
 }`;
 const VS_QUAD = `#version 300 es
 uniform vec4 uRect; uniform vec2 uRes;
@@ -22962,6 +23132,7 @@ function glInit(){
     G.pLight = mkProg(VS_FULL, FS_LIGHT);
     G.uL = {};
     for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane','uCap',
+                     'uHist','uGI','uGI2','uSky','uGIClamp',
                      'uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2'])
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
@@ -23216,19 +23387,30 @@ function glResize(){
      this renderer can never be finer than a glyph, so anything more is thrown
      away by the glyph pass a moment later. */
   if (GL.lightOK){
-    if (GL.lightT) gl.deleteTexture(GL.lightT);
-    if (GL.lightF) gl.deleteFramebuffer(GL.lightF);
-    GL.lightT = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, GL.lightT);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, R.cols, R.rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    GL.lightF = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, GL.lightF);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, GL.lightT, 0);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) GL.lightOK = false;
+    /* TWO of them, and RGBA16F rather than RGBA8. The tracer keeps a running
+       average across up to two hundred frames and eight bits cannot hold one -
+       the increments fall below a quantum and it stops converging. Ping-ponged
+       because a frame reads the last one while it writes this one. */
+    for (const t of (GL.lightTs || [])) gl.deleteTexture(t);
+    for (const f of (GL.lightFs || [])) gl.deleteFramebuffer(f);
+    GL.lightTs = []; GL.lightFs = [];
+    for (let i = 0; i < 2; i++){
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, R.cols, R.rows, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const f = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) GL.lightOK = false;
+      GL.lightTs.push(t); GL.lightFs.push(f);
+    }
+    GL.litIdx = 0;
+    GL.lightT = GL.lightTs[0]; GL.lightF = GL.lightFs[0];
+    GL.litFresh = 0;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     // depth, re-made with the grid; emitters and the heightfield are made once
     if (GL.depthT) gl.deleteTexture(GL.depthT);
@@ -24572,10 +24754,43 @@ function glLightPass(){
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R.cols, R.rows, gl.RED, gl.FLOAT, dBuf);
   }
 
+  /* Ping-pong: write the one we are not reading. GL.lightT is left pointing
+     at whatever was just written, because that is what compose samples. */
+  const cur = GL.litIdx ^ 1, prev = GL.litIdx;
+  GL.litIdx = cur;
+  GL.lightT = GL.lightTs[cur]; GL.lightF = GL.lightFs[cur];
+  /* The running average, keyed on the camera exactly as the CPU tracer keyed
+     it. Any change of pose and the weight pins at moveA and re-converges;
+     standing still it falls as 1/n and settles. */
+  const gi = GIR.on && !inside;
+  const key = gi ? (cam.x.toFixed(2) + ',' + cam.y.toFixed(2) + ',' + cam.z.toFixed(2) + ',' +
+                    cam.ang.toFixed(4) + ',' + cam.pitch + ',' + R.cols + 'x' + R.rows) : '';
+  let alpha = 1;
+  if (gi){
+    if (key !== GL.litKey || !GL.litFresh){ GL.litKey = key; GL.litN = 1; alpha = GIR.moveA; }
+    else { if (GL.litN < GIR.maxFrames) GL.litN++; alpha = 1 / GL.litN; }
+    if (alpha < 1 / GIR.maxFrames) alpha = 1 / GIR.maxFrames;
+    GL.litFresh = 1;
+  } else { GL.litFresh = 0; }
   gl.bindFramebuffer(gl.FRAMEBUFFER, GL.lightF);
   gl.viewport(0, 0, R.cols, R.rows);
   gl.disable(gl.BLEND);
   gl.useProgram(GL.pLight);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GL.lightTs[prev]);
+  gl.uniform1i(GL.uL.uHist, 3);
+  gl.uniform4f(GL.uL.uGI, GIR.dist, GIR.albedo, alpha, GIR.aoDist);
+  /* The seed comes off its own counter. It was keyed to litN, which RESETS
+     to 1 on any camera change - so a moving camera fired the exact same ray
+     from every cell every frame, and the average had nothing new to average.
+     A structured error instead of noise, and it never converged. */
+  GL.litTick = ((GL.litTick || 0) + 1) % 4096;
+  gl.uniform4f(GL.uL.uGI2, gi ? 1 : 0, (GL.litTick * 0.6180339887) % 1.0,
+                           GIR.sky, GIR.bounce);
+  gl.uniform1f(GL.uL.uGIClamp, GIR.clamp);
+  {
+    const T = curTime();
+    gl.uniform3f(GL.uL.uSky, T.sky[0] / 255, T.sky[1] / 255, T.sky[2] / 255);
+  }
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, dTex || GL.depthT);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, GL.heightT);
@@ -29373,7 +29588,12 @@ function worldPasses(){
        keep the list we already have rather than rebuilding it out of a clear
        screen. */
     if (GW.fresh !== 0 || !EMIT) harvestEmitters();
-  } else if (LIGHTV.on || GIR.on || FOGV.on){
+  } else if (LIGHTV.on || FOGV.on){
+    /* GIR is NOT in this condition any more. It used to be, and that is what
+       made "full GPU and path tracing" a contradiction: reaching the tracer
+       meant taking the CPU light branch, which sets _cpuLitFrame, which sends
+       the frame down the pack path and switches the entire tail off. The
+       tracer lives in FS_LIGHT now and costs the card a ray a cell. */
     _cpuLitFrame = true;
     hlR.fill(0); hlG.fill(0); hlB.fill(0); hlA.fill(1);
     harvestEmitters();

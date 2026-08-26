@@ -1208,6 +1208,45 @@ half-res buffer and letting a linear sampler do the upsample skips
 
 ---
 
+### 5h. Path tracing moved onto the card, and the whitewash
+
+The CPU tracer was an ALTERNATIVE to the GPU lighting, not a layer - reaching
+it took the CPU light branch, which sets `_cpuLitFrame` and turns off compose
+and the whole tail (38.8ms against 2.72). It is a fragment shader now, inside
+`FS_LIGHT`, and additive: the analytic loop is direct light and the shafts,
+the tracer is the INDIRECT bounce and the openness, and they do not overlap -
+the old `bounces: 1` was direct light, which is why the two could never stack.
+
+One ray per cell per frame against the heightfield (`gMarch` = `giTrace` in
+GLSL), one randomly-chosen emitter at the hit (`gOneLight` = `giDirect`),
+normals from neighbouring depths, and a running average in a ping-ponged
+RGBA16F pair - 8 bits cannot hold a 1/240 increment. `GIR.on` now costs about
+a millisecond and defaults on.
+
+**Four colour bugs came out in the same pass, and the first two predate the
+tracer - they are why everything washed out white near lights:**
+
+- **The rolloff was per-channel.** `1-exp(-c)` compresses channel RATIOS, so
+  bright acc rolls every channel toward the roof - bright equals white, by
+  construction, worst exactly beside a light. It rolls the BRIGHTEST channel
+  now and scales the others by the same factor: hue survives any brightness.
+- **Compose clipped per-channel too** - `min(c, 1.0)` after the light is
+  added. Over 1 it scales the whole colour down instead.
+- **The GI sample is scaled by uNE, which is ~7,000 now, not 120.** One sample
+  landing beside a light came back thousands of acc units bright and the
+  average smeared those fireflies into white patches at the sources. Clamped
+  per sample (`GIR.clamp`, 400).
+- **The GI seed was keyed to the average's frame count, which RESETS on any
+  camera move** - so a moving camera fired the identical ray from every cell
+  every frame: structured error, never converging. It has its own counter.
+
+Measured at the shopfront: lit cells that were desaturated-to-white went
+**27% to 0%**, still and moving, with the mean held. The judge for colour work
+is `whiteOfLit` - lit cells whose min/max channel ratio exceeds 0.75 - read
+straight off `GL.lightF` (which is RGBA16F now: read it as FLOAT, not bytes).
+
+---
+
 ## 6. Measurement traps that have already cost time
 
 - **A dead property in the harness is worth thirty times the thing you are
