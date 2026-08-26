@@ -1551,6 +1551,32 @@ Light-buffer saturation (weak lens, see 5j's note): 0.21 -> 0.25 global,
 but the per-region look is the judge and the streets now carry their
 nearest light's hue visibly.
 
+### 5o. The city tints its own atmosphere (CTINT)
+
+5n made the LIGHTS rich and the player still saw grey, and they were
+right: the canvas under the lights stayed neutral. Three reservoirs of
+grey-blue cover most of any frame - the fog colour every distant
+surface's palette fades toward, the background gradient behind every
+empty cell, and the GI's sky fill - and no amount of per-light richness
+touches any of them.
+
+`CTINT` is the city's own colour: the harvested lights' weighted mean
+hue, normalised to carry colour and not brightness, eased at 0.02/frame
+so it drifts as the district changes around the player. At night
+(through `_lampNight`, so dawn unwinds all of it) it leans the three
+reservoirs by their own knobs on GPUE: `fogTint` 0.45 into the palette
+bake's fog mix (bakeKey carries `CTINT.q`, so the bake follows the
+drift), `bgTint` 0.55 into the backdrop's horizon band and ground (the
+zenith keeps most of its dark sky so up still reads as up), and
+`skyTint` 0.60 into the GI escape fill - a night ray does not see black
+space, it sees the smog the city lights from below. Tinted fogs run
+slightly brighter than the neutral they replace (x1.2-1.3): lit smog
+glows.
+
+With them: `airGlow` 0.75 -> 1.0 and `lightSat` 1.35 -> 1.45. The
+pitched-up canyon vantage - the densest thing the game can frame -
+measures worldPasses 5.77ms; the level street 5.2.
+
 ---
 
 ## 6. Measurement traps that have already cost time
