@@ -1619,6 +1619,130 @@ the four sky regions the player marked now agree in normalised hue to
 within 0.1 per channel, and the upper sky holds ZERO empty cells in
 1,715 sampled.
 
+### 5q. The bounce finds the lights where it landed (commit 2a634b9)
+
+Path tracing WORKED and was invisible: on-vs-off moved the frame mean
++1.7 to +2.6 of 255 - exactly as tuned, and imperceptible. Two causes,
+one structural, one of scale:
+
+1. **The estimator sampled the camera's lights, not the hit's.**
+   `gOneLight` picked uniformly from the camera-nearest `GIR.pick` 384,
+   so a bounce ray landing twenty tiles away almost always drew a light
+   standing near the CAMERA, which the `1/(1+d²·falloff)` at the HIT then
+   discarded. Unbiased, converged, and almost every sample wasted - plus
+   a real bias: local lights past index 384 contributed zero to far hits.
+   Now a WORLD-SPACE GRID (`GIR.grid`, 24×24 cells of 4×4 world tiles,
+   camera-centred, rebuilt on cell-crossing or every 4th frame): each
+   cell holds its strongest 8 lights - SELF-CONTAINED, position+colour,
+   never indices, because the emitter list re-sorts every frame and a
+   stale index through a 4-frame-stale texture is a DIFFERENT light -
+   plus a per-cell RESIDUAL of every light that missed a slot (8 slots
+   truncate a downtown cell badly; the dropped energy measured as the
+   grid DIMMING the street against the old estimator, 0.0642 vs 0.0704
+   mean, until the residual recovered it to 0.0764). The shader
+   (`gGridLight`) weighs the 8 at the hit, importance-picks by weight,
+   shadow-marches ONLY the pick, scales by the summed weight; the
+   residual rides the ray's own openness ×0.5, so shut-in corners keep
+   their dark. Out-of-grid hits fall back to `gOneLight`.
+
+2. **The scale.** Through `aRoll ≈ aMax·gain` (gain 0.26) a converged
+   bounce of 4-6 acc units is ONE lit unit of 255. `GIR.bounce` 3.5→16,
+   bought by: `GIR.rays` 2 (independent hemisphere rays averaged - the
+   history is pinned at moveA while walking, so nothing else averages
+   the noise) and `GIR.denoise` (a cross blur of the reprojected PAST,
+   DISPLAY ONLY - what is kept is never blurred, so it cannot compound;
+   the CPU tracer's litUpsample doubled as its denoiser and the GPU
+   path shipped without one; every tap is healed like the centre or one
+   poisoned neighbour smears five cells). Walking noise in dark cells
+   at bounce 16: raw 9.6/255 → 5.2 (analytic floor 1.2). The
+   max-channel rolloff is self-limiting above - bright cells sit deep
+   in the exp curve, so hot stays 0%.
+
+The menu's DIRECT state is honest now: it passes bounceGain 0 (traced
+openness + sky escape, no emitter bounce); the GPU tracer used to ignore
+`GIR.bounces` entirely, so DIRECT and BOUNCE were the same picture -
+which is why "left in the default state" read as broken against a
+freshly-toggled BOUNCE.
+
+Two clamp corrections that followed (57216e6, c32beb4), both worth
+remembering as RULES: `GIR.clamp` is in acc units, so it clamps AFTER
+albedo·bounceGain (clamping the raw sample let bounce 16 pass 3,500-unit
+fireflies through a "400" ceiling - the soak watcher caught the history
+near bright walls at 874); and it clamps BY THE MAX CHANNEL, because a
+per-channel min is a hue press - (300,600,620) becomes (300,400,400) and
+the bounce field greys exactly where it is brightest (caught as the
+history's r/b ratio creeping 0.57→0.88 over an hour of play). Every
+ceiling in this renderer follows the max-channel rule now: the acc
+rolloff (5h), the bloom knee (5l), the GI sample clamp (here).
+
+**Perf at the target grid** (483×258 = 124,614 cells, everything on,
+GI full): worldPasses **4.45ms** EMA vs the 5.56ms budget; old estimator
+4.23, GI off entirely 4.36 - the whole new pipeline is ~0.2ms and inside
+the noise of a composited page. rays 2 measures the same as rays 1.
+
+### 5r. An occluded sign no longer haunts the puddles (commit e981037)
+
+Player-reported "reflections show signs through buildings": the sign
+MIRROR - drawSignPlane's block that reflects the rows of a sign standing
+above the top of the frame - never asked whether the sign was visible.
+The direct draw depth-tests per cell; above the frame there is no depth
+buffer, and the emitted mirror points carry x/y/glyph/palette and NO
+DEPTH, so the card draws them with the test off (`sgM`, kind 0). A
+billboard entirely BEHIND a tower still laid its reflection into the wet
+street.
+
+Fix where the question can be asked: every occluder is planted on the
+ground, so anything covering above-frame rows at a column covers ROW 0
+too - row 0's depth answers for the whole overhang, one compare per
+column, both modes. Under the deferred read dBuf can be a CLEARED
+not-this-frame copy (the harvest trap of §5i all over again), so
+signCollect snapshots row 0 only on fresh frames and the gate reads the
+snapshot. Repro: sign 10, an 8.6-unit billboard fully blocked at 10.5 of
+24 tiles, emitted 117 mirror points pitched-down over wet tarmac; after,
+0, with the other signs' 444 legitimate points standing.
+
+Still open in the same family: mirror points among THEMSELVES resolve by
+draw order (no depth), and the reflect pass scatters over seeded sign
+mirrors unconditionally - a farther wall's reflection can beat a nearer
+sign's. Both need the sign mirror joining the reflect pass's GREATER
+depth scheme; not yet observed as a visible artefact at street vantages
+(the above-frame mirror only engages for MID-distance tall signs under a
+pitched-down camera - close up, mb = 2·horizon + 2·camZ·ur pushes the
+mirror rows below the frame).
+
+### 5s. What the two-client soak found (commit b9435ca)
+
+Two Claude clients in one multiplayer room, hours of patrol, combat,
+deaths, interiors, weather and a full day cycle, with a 60Hz in-page
+watcher on each (rig/visual.js - pass timers, GI/light texture health,
+region stats, an in-window A/B, a driver pause for clean screenshots).
+
+- **ECACHE's ttl aged in harvests, not time.** The counter advanced once
+  per harvest; on a readback-starved client (a backgrounded tab - but
+  also any slow-readback condition) the harvest runs a few times a
+  second and the 90s bound stretched to ~45 minutes. Measured: 120,895
+  cached lights, ~5MB, iterated WHOLE in every ecacheEmit - that
+  client's 14-20ms worldPasses spikes. Fixed: advance by real elapsed
+  frames, clamped 600. Re-measured bounded at ~15k on the same client.
+- **The fronted client's cache is write-rate × ttl** - fast patrol
+  discovers 1-3k quanta/s, so it stabilises around 100k entries and the
+  every-frame ecacheEmit walk of it costs ~1-2ms. Pre-existing, not a
+  regression; the next perf lever is making that walk not O(cache): a
+  coarse spatial bucket over the cache so emit only touches entries
+  within GPUE.range.
+- **World clocks DRIFT between clients.** Synced at join, then each
+  ticks its own; after ~an hour one client sat at 05:19 against the
+  host's 03:30 - one player in night lighting, the other in dawn. Not a
+  GPU matter; needs a periodic clock re-sync on the wire.
+- **The city legitimately goes near-dark at 3-5am** (litP thins) - a
+  light-health monitor must gate on _lampNight and use a near-zero
+  threshold, or it files the small hours as a bug. Ours did, twice.
+- **Two players at one corner see differently-lit streets** until the
+  cache warms: the light list is what each client has SEEN (walked
+  routes harvest distant/high windows a teleported camera never met).
+  By design ("the city remembers its lights"), self-correcting in
+  seconds, but worth knowing when comparing screenshots across clients.
+
 ---
 
 ## 6. Measurement traps that have already cost time
