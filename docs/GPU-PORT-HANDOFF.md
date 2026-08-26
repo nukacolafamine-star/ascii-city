@@ -1294,6 +1294,81 @@ goal.** Blocks 4.71 / 4.76 / 4.80 / 5.08. The pinned 480x256 stretch grid is
 ~7.2ms; the fat there is per-tile counts (~600 average) and the next lever is
 16-cell tiles, measured not guessed.
 
+### 5j. The light stopped depending on where you look
+
+Reported from play with two screenshots: the frame reads right only in its
+top half, the camera moving paints 32x32 boxes, pitching the view brightens
+and darkens buildings, and the same street is lit well from one spot and
+barely from another. Four causes, none of them the tuning:
+
+**1. The pair budget was still blowing, and the failure mode is geometric.**
+`off[]` is assigned in tile order, top row first, so every pair past
+`PAIR_CAP` silently empties a tile at the BOTTOM of the screen - the street
+goes out from the feet up, on some headings and not others. Measured at the
+reported vantage with a warm cache: demand swings **195k-345k with heading**
+against the 262,144 cap - `pairsOver` hit 82,758 at heading 113. That is
+"only the top half looks right" and the flickering boxes, both. The cap is
+1,048,576 now (`tidxT` 2048x512), worst measured demand since is 465k, and
+running out no longer empties tiles: whole lights are dropped from the tail
+of the list instead (`GPUL.trimmed`), which is the farthest light, uniformly
+across the screen - the walk stops short of the appended off-screen lamps.
+
+**2. The running average never moved with the camera.** `FS_LIGHT` blends
+70% of last frame's buffer in AT THE SAME SCREEN CELL, and a turning or
+pitching camera slides the world across the screen - so the whole light
+field (direct included, not just the traced term) dragged three frames
+behind every rotation and smeared facade light onto sky and street. In this
+projection the fix is exact: pitch is a row shift by the horizon delta, yaw
+is a shift in the tangent of the column angle (`uHR`; plane is dir rotated
++90, so column angle = atan(cx*planeLen)). Verified against the depth
+buffer: a 0.05rad step moves content 12 columns, predicted 12. A cell whose
+past left the frame keeps its fresh value rather than clamping to the edge.
+
+**3. The cache took every observation at face value, and observations are
+screen-shaped.** Weight is harvested cell count - the same window counts
+less seen from further, from an oblique pitch, or half-clipped by the frame
+edge, and REPLACE semantics wrote that straight over the memory. Plus two
+subtler leaks: entries the camera had not FACED in 30s expired even though
+they were being emitted every frame (the street behind you died while your
+back was turned), and when `emitMax` truncated inside a ring, what survived
+was cache insertion order - two visits to one corner kept two different
+subsets. Now: a smaller observation drifts the memory at `partA` (6%) per
+frame instead of replacing it (`keepFrac` gates which); ttl is 90s and is
+only the memory bound, because a light whose spot is on screen, in front of
+everything (projected against the HARVEST BASIS camera and its dBuf, not the
+current one), and not harvested is really off and decays out in ~1s
+(`decay`); and the one ring the cap cuts is sorted by distance, so the kept
+set is "the nearest emitMax of everything cached" every time. The windows
+churn on their own 25-90s cycles (`litP` re-rolls per time block), so total
+cached weight is SUPPOSED to move with the hour - standing still, wSum holds
+to ~1% over seconds while ghost duplicates reap out.
+
+**4. The surface term was decorative, and the air term is ray-length.**
+The chord accumulates with how far a ray travels through lit air, so a frame
+of near street is dark and the same block seen down its length is bright -
+that is most of the settled pitch swing (mean 36 looking down, 53 up, same
+spot). The surface term is the half that cannot depend on the ray, and at
+its old 0.06 a 50x knob sweep moved the frame mean 9%: invisible. It has
+its own knobs now (`GPUE.surf` 0.60, `surfFall` 1.2, legacy values kept on
+`GPUL` for the sparse path), and the reach gate is DERIVED from them in the
+shader and the binning both - retuning the term retunes the culling with it.
+The pavement under a shopfront now carries its colour; hot cells (>150) stay
+at zero.
+
+What it measures after: matched-content brightness across a 60-row pitch
+change is **1.001** (content shifted by the horizon delta, 18.6k cells);
+a full spin peaks at 465k pairs, zero over, zero trimmed; the lap test goes
+42.6 -> 45.3 the frame you are back -> 49.1 settled, no snap and no decay;
+and `worldPasses` is **4.79ms** at the busy vantage against the shipped
+4.80 - the sort, the decay projections and the wider gates cost nothing the
+block noise can see.
+
+Two instrument notes that cost an hour: the frame MEAN is the wrong lens for
+either local term - GI ambient is ~19 of a mean of ~29 at the shopfront, so
+air and surface tuning drowns in it; read the term in isolation or by eye.
+And knob A/Bs at a still pose converge at 1/n up to `GIR.maxFrames` (240) -
+drop it to 8 while comparing or the second screenshot is 45% the first one.
+
 ---
 
 ## 6. Measurement traps that have already cost time

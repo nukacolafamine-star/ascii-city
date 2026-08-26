@@ -19986,7 +19986,21 @@ function harvestEmitters(){
     if (!DEN){ E.idx[n++] = bi; continue; }
     ecacheWrite(E.x[bi], E.y[bi], E.z[bi], E.r[bi], E.g[bi], E.b[bi], w);
   }
-  if (DEN) n = ecacheEmit(E);
+  if (DEN){
+    /* The dead-light test inside ecacheEmit projects cache entries against
+       dBuf, and dBuf belongs to the BASIS camera when the read is deferred -
+       so the view it is handed is rebuilt from the basis rays, not from
+       wherever the camera is now. dir is the mean of the two centre rays;
+       the plane length falls out of the ray spacing. */
+    const m = cols >> 1;
+    const bDx = (hRx[m] + hRx[m - 1]) * 0.5, bDy = (hRy[m] + hRy[m - 1]) * 0.5;
+    const bPl = Math.hypot((hRx[m] - hRx[m - 1]) * cols * 0.5,
+                           (hRy[m] - hRy[m - 1]) * cols * 0.5);
+    n = ecacheEmit(E, { cx: hCx, cy: hCy, cz: hCz, dx: bDx, dy: bDy,
+                        pl: Math.max(0.05, bPl), hz: hHz, pr: hPr,
+                        cols, rows });
+  }
+  E.nCache = n;
   /* Too many still, on a street that is all shopfront. Keep the biggest -
      brightness is what the eye follows, and a hundred one-window sources
      read as the ambient the fog is already doing. */
@@ -22869,6 +22883,15 @@ uniform vec4  uGI;            // dist, albedo, moveAlpha->alpha, aoDist
 uniform vec4  uGI2;           // on, seed, skyScale, bounceGain
 uniform vec3  uSky;
 uniform float uGIClamp;
+uniform vec4  uTune3;         // surf, surfFall - the surface term's own knobs
+/* Where THIS cell's ray was last frame. The history buffer is a screen, and
+   a camera that turns or pitches slides the whole world across it - blending
+   yesterday's screen in at today's coordinates is light smearing off every
+   surface whenever the view moves, which is most of "the lighting changes as
+   I look around". In this projection the fix is exact and cheap: pitch is a
+   pure row shift (the horizon delta), and yaw is a shift in the tangent of
+   the column angle. x: dAng, y: dRow, z: planeLen. */
+uniform vec4  uHR;
 
 // a hash good enough for one ray a frame, denoised by the average
 float gHash(vec3 v){
@@ -23031,17 +23054,19 @@ void main(){
     // --- and what it puts on the surface itself ----------------------------
     vec3 toL = ep - surf;
     float d2 = dot(toL, toL);
-    /* The reach is where the attenuation drops below sight (att < 0.05),
-       not a multiple of the glow radius - at three radii of a big source the
-       contribution is thousandths, and the old gate made every light's
-       footprint three times wider than anything it could put on a surface.
+    /* The reach is where the attenuation drops below sight (the surface add
+       falls under ~0.003), not a multiple of the glow radius - at three radii
+       of a big source the contribution is thousandths, and the old gate made
+       every light's footprint three times wider than anything it could put on
+       a surface. Solved from the same surf/surfFall the term itself uses, so
+       retuning the term retunes the reach with it.
        THE BINNING USES THIS EXACT FORMULA: shader and tiles must agree or
        culling changes the picture. */
-    float rS2 = min(rad * rad * 9.0, ew * 40.0 - 2.0);
+    float rS2 = min(rad * rad * 9.0, (ew * uTune3.x * 333.3 - 1.0) / uTune3.y);
     if (d2 < rS2){
-      float att = ew / (1.0 + d2 * 0.5);
+      float att = ew / (1.0 + d2 * uTune3.y);
       float sh = sSteps > 0 ? shadow(surf + vec3(0.0, 0.0, 0.05), ep, sSteps) : 1.0;
-      acc += ec * att * sh * 0.06 * night;
+      acc += ec * att * sh * uTune3.x * night;
       /* Weighted by how much this light actually reaches the surface, not one
          vote per light. Unweighted it was fine for a hundred hand-picked
          sources and wrong for four thousand: nearly all of them are occluded
@@ -23094,11 +23119,20 @@ void main(){
   }
   /* One sample a frame is snow. Keep the history and re-weight it: standing
      still uGI.z falls as 1/n and this converges; moving it pins and
-     re-converges over about three frames. */
+     re-converges over about three frames.
+     The history is fetched where this ray WAS, not where this cell is: pitch
+     shifts every row by the horizon delta exactly, and yaw shifts the tangent
+     of the column angle. A cell whose past fell off the screen has no
+     history and keeps its fresh value. */
   vec4 now = vec4(lit / 255.0, ao);
   if (giOn > 0.5){
-    vec4 hist = texture(uHist, vT);
-    now = mix(hist, now, uGI.z);
+    float phi = atan(cxn * uHR.z);
+    float cxp = tan(phi + uHR.x) / uHR.z;
+    vec2 hUV = vec2((cxp + 1.0) * 0.5, vT.y + uHR.y / uGrid.y);
+    if (hUV.x >= 0.0 && hUV.x <= 1.0 && hUV.y >= 0.0 && hUV.y <= 1.0){
+      vec4 hist = texture(uHist, hUV);
+      now = mix(hist, now, uGI.z);
+    }
   }
   o = now;
 }`;
@@ -23161,7 +23195,7 @@ function glInit(){
     G.pLight = mkProg(VS_FULL, FS_LIGHT);
     G.uL = {};
     for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane','uCap',
-                     'uHist','uGI','uGI2','uSky','uGIClamp','uTiles','uTIdx',
+                     'uHist','uGI','uGI2','uSky','uGIClamp','uTiles','uTIdx','uTune3','uHR',
                      'uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2'])
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
@@ -23498,7 +23532,9 @@ const GPUL = {
   roof:   140,    // the ceiling many overlapping sources roll off toward
   shaft:  1.35,   // what the in-air chord is worth against the surface term
   shadow: 5,      // taps along the line to the light; 0 turns shafts off
-  ao:     0.55    // how dark a fully shut-in cell goes
+  ao:     0.55,   // how dark a fully shut-in cell goes
+  surf:     0.06, // the dense path retuned these; this path keeps its look
+  surfFall: 0.50
 };
 /* Whether the world is composed from textures or packed into a vertex
    buffer. The pack path applies the CPU light buffers as it copies, and the
@@ -23595,9 +23631,39 @@ const GPUE = {
   lodT:   24,     // tiles; nearer than this buckets fine, past it coarse
   lodBlock: 6,
   radMax: 6.0,    // no glow sphere wider than this, however heavy the bucket
-  ttl:    1800,   // frames a cached light survives unseen (~30s)
+  /* ttl is a memory bound now, not the mechanism that turns lights off. A
+     light that is VISIBLE and not emitting decays in about a second (decay,
+     below); ttl only reaps what the camera has not faced in a minute and a
+     half. At 1800 the street behind you died while your back was turned,
+     which is the exact bug the cache was built to fix. */
+  ttl:    5400,   // frames a cached light survives unseen (~90s)
   range:  44,     // tiles; how far from the eye the cached list reaches
-  emitMax: 4096   // the most the shader is ever handed, nearest rings first
+  emitMax: 4096,  // the most the shader is ever handed, nearest rings first
+  /*--- the surface term, and why it has its own knobs -----------------------
+    The air term scales with the chord a ray cuts, which scales with how far
+    the ray travels - so a frame full of near street is dark and the same
+    street seen down its length is bright. That is most of "the lighting
+    changes when I look up or down". The surface term is the half that does
+    NOT depend on the ray, and at 0.06 it was decorative: the pavement under
+    a lit shopfront read black. surf is its strength, surfFall its 1/(1+k*d^2)
+    falloff, and the reach gate in the shader AND the tile binning are both
+    derived from them (att < ~0.003 is out of sight), so culling cannot
+    disagree with the picture. */
+  surf:     0.60,
+  surfFall: 1.20,
+  /*--- how the cache forgets ---------------------------------------------
+    Weights come off the screen, so they are screen-coverage numbers: the
+    same window observed from further, or half-clipped by the frame edge,
+    harvests smaller. A cached light therefore never takes a SMALLER
+    observation at face value: at keepFrac of the cached weight or better it
+    replaces outright, below that it drifts at partA per frame. And a light
+    whose spot is on screen, unoccluded, and NOT harvested this frame is a
+    light that is really off - it decays by `decay` per frame and is dropped
+    when it falls under half of minW. Occluded or off-screen lights keep
+    shining from memory, which is the point of having a cache at all. */
+  decay:    0.90,
+  keepFrac: 0.75,
+  partA:    0.06
 };
 /* The cache itself: flat arrays plus a Map from quantised world key to slot,
    swap-deleted on expiry. Quantised at a quarter tile in x/y and two units in
@@ -23609,6 +23675,7 @@ function ecacheInit(){
   C.x = new Float32Array(cap); C.y = new Float32Array(cap); C.z = new Float32Array(cap);
   C.r = new Float32Array(cap); C.g = new Float32Array(cap); C.b = new Float32Array(cap);
   C.w = new Float32Array(cap); C.key = new Float64Array(cap); C.seen = new Int32Array(cap);
+  C.d2 = new Float32Array(cap);
 }
 function ecacheWrite(x, y, z, r, g, b, w){
   const C = ECACHE;
@@ -23627,11 +23694,24 @@ function ecacheWrite(x, y, z, r, g, b, w){
     C.x[i] += (x - C.x[i]) * a; C.y[i] += (y - C.y[i]) * a; C.z[i] += (z - C.z[i]) * a;
     C.r[i] += (r - C.r[i]) * a; C.g[i] += (g - C.g[i]) * a; C.b[i] += (b - C.b[i]) * a;
     C.w[i] = W; return;
+  } else if (w < C.w[i] * GPUE.keepFrac){
+    /* A later frame re-observed this quantum SMALLER. Weight is screen
+       coverage, so smaller usually means "seen from further" or "clipped by
+       the frame edge", not "the window dimmed" - taking it at face value is
+       what made a building change brightness with the camera's pitch. Keep
+       the stronger memory and drift toward the observation; a window that
+       really went dark converges in about a second, and one that is merely
+       half off-screen never loses more than a few percent. */
+    const a = GPUE.partA;
+    C.x[i] += (x - C.x[i]) * a; C.y[i] += (y - C.y[i]) * a; C.z[i] += (z - C.z[i]) * a;
+    C.r[i] += (r - C.r[i]) * a; C.g[i] += (g - C.g[i]) * a; C.b[i] += (b - C.b[i]) * a;
+    C.w[i] += (w - C.w[i]) * a;
+    C.seen[i] = C.frame; return;
   }
   C.x[i] = x; C.y[i] = y; C.z[i] = z; C.r[i] = r; C.g[i] = g; C.b[i] = b; C.w[i] = w;
   C.seen[i] = C.frame;
 }
-function ecacheEmit(E){
+function ecacheEmit(E, VIS){
   /* NEAREST RINGS FIRST, capped. The first version emitted everything within
      range in cache order, and a lap of one block put 12,967 lights in the
      list - which blew the tile-pair budget fivefold, and overflow drops whole
@@ -23647,9 +23727,34 @@ function ecacheEmit(E){
   const ttl = GPUE.ttl, rng = GPUE.range, rng2 = rng * rng;
   const q = rng / 4, q1 = q * q, q2 = q * q * 4, q3 = q * q * 9;
   const RG = C.ring, RN = C.ringN; RN[0] = RN[1] = RN[2] = RN[3] = 0;
+  const decay = GPUE.decay, dropW = GPUE.minW * 0.5;
   let i = 0;
   while (i < C.n){
-    if (C.frame - C.seen[i] > ttl){
+    let drop = C.frame - C.seen[i] > ttl;
+    const dx = C.x[i] - cam.x, dy = C.y[i] - cam.y, d2 = dx * dx + dy * dy;
+    /* A light whose spot is ON SCREEN, in front of everything, and not
+       harvested this frame is a light that is really off - a window that
+       went dark, a sign that died. It cannot wait for ttl: from memory it
+       would keep painting the wall for a minute. Project it against the
+       SAME buffers the harvest just read (the deferred-read basis, not the
+       current camera) and decay it out over about a second. Anything
+       occluded or outside the frame is exactly what the cache exists to
+       remember, and is left alone. */
+    if (!drop && VIS && d2 <= rng2 && C.seen[i] !== C.frame){
+      const ox = C.x[i] - VIS.cx, oy = C.y[i] - VIS.cy;
+      const fwd = ox * VIS.dx + oy * VIS.dy;
+      if (fwd > 0.5){
+        const cc = VIS.cols * 0.5 * (1 - (VIS.dy * ox - VIS.dx * oy) / (fwd * VIS.pl));
+        const rr = VIS.hz + (VIS.cz - C.z[i]) * VIS.pr / fwd;
+        const ci = cc | 0, ri = rr | 0;
+        if (ci >= 0 && ci < VIS.cols && ri >= 0 && ri < VIS.rows &&
+            dBuf[ri * VIS.cols + ci] >= fwd - 0.9){
+          C.w[i] *= decay;
+          if (C.w[i] < dropW) drop = true;
+        }
+      }
+    }
+    if (drop){
       const last = C.n - 1;
       C.map.delete(C.key[i]);
       if (i !== last){
@@ -23660,15 +23765,33 @@ function ecacheEmit(E){
       }
       C.n = last; continue;
     }
-    const dx = C.x[i] - cam.x, dy = C.y[i] - cam.y, d2 = dx * dx + dy * dy;
     if (d2 <= rng2){
       const ring = d2 < q1 ? 0 : d2 < q2 ? 1 : d2 < q3 ? 2 : 3;
-      RG[ring][RN[ring]++] = i;
+      RG[ring][RN[ring]++] = i; C.d2[i] = d2;
     }
     i++;
   }
   let n = 0;
   const cap = Math.min(GPUE.emitMax, E.cap);
+  /* If the cap lands INSIDE a ring, what got kept from that ring used to be
+     cache insertion order - which is the order the camera happened to see
+     things in, so two visits to the same corner kept two different subsets
+     and the street lit differently for no reason a player could see. Sort
+     the one ring the cap cuts; the kept set becomes "the nearest emitMax
+     lights of everything cached", the same set every time. */
+  {
+    let cum = 0;
+    for (let ring = 0; ring < 4; ring++){
+      const m = RN[ring];
+      if (cum + m > cap && m > 1){
+        const cut = RG[ring].subarray(0, m);
+        cut.sort((a, b) => C.d2[a] - C.d2[b]);
+        break;
+      }
+      cum += m;
+      if (cum >= cap) break;
+    }
+  }
   for (let ring = 0; ring < 4 && n < cap; ring++){
     const list = RG[ring], m = RN[ring];
     for (let j = 0; j < m && n < cap; j++){
@@ -24888,7 +25011,16 @@ function glLightPass(){
     camera plane for the projection to be stable, goes into every tile. */
   {
     const TS = 32, tw = Math.ceil(R.cols / TS), th = Math.ceil(R.rows / TS), nt = tw * th;
-    const PAIR_CAP = 262144;
+    /* 262,144 was not enough, and the way it failed was the worst artefact in
+       the game: offsets are assigned in tile order, top row first, so every
+       pair past the cap silently emptied a tile at the BOTTOM of the screen.
+       Downtown at night the demand measured 195k-345k as the camera turned -
+       the street went dark from the feet up on some headings and not others,
+       and the boundary tiles flickered as 32x32 boxes. Four times the budget
+       covers every measured vantage, and the trim below makes running out
+       degrade to "the farthest lights go missing" instead of "the bottom of
+       the screen goes out". */
+    const PAIR_CAP = 1048576;
     if (!GL.tileT || GL.tileW !== tw || GL.tileH !== th){
       GL.tileW = tw; GL.tileH = th;
       GL.tileT = glTailTex(GL.tileT, gl.RGBA32F, gl.RGBA, gl.FLOAT, tw, th);
@@ -24898,7 +25030,7 @@ function glLightPass(){
       GPUL._tRect = new Int32Array(LIGHT_CAP * 4);
     }
     if (!GL.tidxT){
-      GL.tidxT = glTailTex(null, gl.R32F, gl.RED, gl.FLOAT, 2048, 128);
+      GL.tidxT = glTailTex(null, gl.R32F, gl.RED, gl.FLOAT, 2048, 512);
       GPUL._pairs = new Float32Array(PAIR_CAP);
     }
     const cnt = GPUL._tCnt, off = GPUL._tOff, rect = GPUL._tRect;
@@ -24912,7 +25044,10 @@ function glLightPass(){
          with the picture. rad*3 bounded it at ~21 tiles and pushed nearly
          every light down the all-tiles path: 780,932 pairs a frame. */
       const rad1 = T[o1 + 3];
-      const R3 = Math.max(rad1, Math.min(rad1 * 3, Math.sqrt(Math.max(0.01, T[o0 + 3] * 40 - 2))));
+      /* the same att < ~0.003 cut FS_LIGHT gates the surface term on */
+      const sGate = (T[o0 + 3] * (DEN ? GPUE.surf : GPUL.surf) * 333.3 - 1)
+                    / (DEN ? GPUE.surfFall : GPUL.surfFall);
+      const R3 = Math.max(rad1, Math.min(rad1 * 3, Math.sqrt(Math.max(0.01, sGate))));
       const fwd = relX * dirX + relY * dirY;
       let t0x = 0, t1x = tw - 1, t0y = 0, t1y = th - 1;
       /* The bisect: every light into every tile, which is the brute-force loop
@@ -24943,8 +25078,31 @@ function glLightPass(){
         for (let tx = t0x; tx <= t1x; tx++) cnt[ty * tw + tx]++;
     }
     let run = 0;
-    for (let i = 0; i < nt; i++){ off[i] = run; run += cnt[i]; }
+    for (let i = 0; i < nt; i++) run += cnt[i];
     GPUL.pairsUsed = run; GPUL.pairsOver = Math.max(0, run - PAIR_CAP);
+    GPUL.trimmed = 0;
+    /* Over budget, drop WHOLE LIGHTS from the tail of the list until it
+       fits. The list is nearest-rings-first, so the tail is the farthest
+       light - the one the eye misses least - and the walk stops short of
+       E.nCache's end so the appended off-screen lamps (mirrors and near
+       glow behind the eye) are never the ones to go. What must not happen
+       is the alternative: pairs past the cap used to vanish tile by tile,
+       bottom of the screen first. */
+    if (run > PAIR_CAP && DEN && !GPUL.noTile){
+      const nc = Math.min(n, E.nCache || n);
+      for (let k = nc - 1; k >= 0 && run > PAIR_CAP; k--){
+        const t0x = rect[k * 4], t1x = rect[k * 4 + 1];
+        if (t1x < t0x) continue;
+        const t0y = rect[k * 4 + 2], t1y = rect[k * 4 + 3];
+        for (let ty = t0y; ty <= t1y; ty++)
+          for (let tx = t0x; tx <= t1x; tx++) cnt[ty * tw + tx]--;
+        run -= (t1x - t0x + 1) * (t1y - t0y + 1);
+        rect[k * 4] = 1; rect[k * 4 + 1] = 0;
+        GPUL.trimmed++;
+      }
+    }
+    run = 0;
+    for (let i = 0; i < nt; i++){ off[i] = run; run += cnt[i]; }
     const pairs = GPUL._pairs, fill = GPUL._tCnt; fill.fill(0);
     for (let k = 0; k < n; k++){
       const t0x = rect[k * 4], t1x = rect[k * 4 + 1];
@@ -24961,7 +25119,7 @@ function glLightPass(){
     gl.bindTexture(gl.TEXTURE_2D, GL.tileT);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, tw, th, gl.RGBA, gl.FLOAT, TB);
     gl.bindTexture(gl.TEXTURE_2D, GL.tidxT);
-    const rowsUsed = Math.min(128, Math.ceil(Math.max(1, run) / 2048));
+    const rowsUsed = Math.min(512, Math.ceil(Math.max(1, run) / 2048));
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 2048, rowsUsed, gl.RED, gl.FLOAT, pairs.subarray(0, rowsUsed * 2048));
   }
   /* The depth this pass needs is already on the card whenever the tail owns
@@ -25035,6 +25193,21 @@ function glLightPass(){
                             DEN ? GPUE.gain : GPUL.gain, DEN ? GPUE.roof : GPUL.roof);
   gl.uniform4f(GL.uL.uTune2, DEN ? GPUE.shaft : GPUL.shaft, GPUL.shadow,
                              DEN ? GPUE.ao : GPUL.ao, _lampNight);
+  gl.uniform4f(GL.uL.uTune3, DEN ? GPUE.surf : GPUL.surf,
+                             DEN ? GPUE.surfFall : GPUL.surfFall, 0, 0);
+  /* Where the history's camera was, so the shader fetches each ray's own
+     past. Pure rotation is exact; a translation is not a screen shift and
+     leans on the pinned alpha as before. litPrev* always describes the
+     frame that drew GL.lightTs[prev], because this pass runs every frame
+     it is on at all. */
+  {
+    let da = cam.ang - (GL.litPrevAng !== undefined ? GL.litPrevAng : cam.ang);
+    da = ((da + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+    const dr = (GL.litPrevHz !== undefined ? GL.litPrevHz : horizon) - horizon;
+    gl.uniform4f(GL.uL.uHR, GL.litFresh ? da : 0, GL.litFresh ? dr : 0,
+                 Math.max(0.05, planeLen), 0);
+    GL.litPrevAng = cam.ang; GL.litPrevHz = horizon;
+  }
   gl.uniform1f(GL.uL.uCap, LIGHT_CAP);
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
