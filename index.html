@@ -20032,7 +20032,20 @@ function harvestEmitters(){
   const hHz = BS ? BS.hz : horizon, hPr = BS ? BS.pr : projRows;
   const hVd = BS ? BS.vd : viewD;
   const hRx = BS ? BS.rx : rayX, hRy = BS ? BS.ry : rayY;
-  if (DEN){ if (!ECACHE.x) ecacheInit(); ECACHE.frame++; }
+  if (DEN){
+    if (!ECACHE.x) ecacheInit();
+    /* The ttl is in FRAMES, and this counter used to advance once per
+       HARVEST - which is once per frame only when the readback keeps up.
+       On a starved client (a backgrounded tab; a slow readback at a fine
+       grid) the harvest runs a few times a second, the 90-second memory
+       bound stretched to three quarters of an hour, and the cache was
+       measured at 120,895 lights - a 5MB light memory iterated whole on
+       every harvest. Advance by the frames that actually PASSED. */
+    const nowH = performance.now();
+    const el = ECACHE.lastT ? Math.max(1, Math.min(600, Math.round((nowH - ECACHE.lastT) / 16.7))) : 1;
+    ECACHE.lastT = nowH;
+    ECACHE.frame += el;
+  }
   for (let row = 0; row < rows; row++){
     const off = row * cols, br = ((row / B) | 0) * bw;
     const brF = DEN ? nbN + ((row / BF) | 0) * bwF : 0;
