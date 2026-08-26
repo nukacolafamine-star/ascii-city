@@ -19424,7 +19424,7 @@ let bloomOn = true, weather = 0, flash = 0, nextBolt = 5, fade = 0;
    half-float scene, a cell must be genuinely bright to glow and a cell past
    the display ceiling glows hard. k is the strength of each chain level as
    it is laid back over the frame, fine to coarse. */
-const BLOOMV = { knee: 0.55, span: 0.85, gain: 1.2, ov: 1.5, egain: 1.55,
+const BLOOMV = { knee: 0.55, span: 0.85, gain: 1.2, ov: 1.5, egain: 1.55, ana: 0.5,
                  k: [0.07, 0.12, 0.16, 0.20] };
 /* THE CITY'S OWN COLOUR, and where the grey was hiding. The lights were
    rich, but the canvas under them stayed neutral: the fog every distant
@@ -23649,12 +23649,23 @@ void main(){
       c = c * k * k * uB.y + ov * uB2.x;
     }
     o = vec4(c, 1.0);
-  } else {
+  } else if (mode < 3.5){
     // the lay-back: all four chain levels in ONE pass, weighted fine to coarse
     o = vec4(texture(uTex,  vT).rgb * uB.y
            + texture(uTex2, vT).rgb * uB2.y
            + texture(uTex3, vT).rgb * uB2.z
            + texture(uTex4, vT).rgb * uB2.w, 1.0);
+  } else if (mode < 4.5){
+    /* the anamorphic smear: a horizontal 6-tap, weights summing to one so
+       two passes of it stretch a bright core into a flare without gaining
+       it - the neon lens streak */
+    vec2 tx = vec2(uTexel.x, 0.0);
+    o = vec4(texture(uTex, vT).rgb * 0.30
+           + (texture(uTex, vT + tx).rgb + texture(uTex, vT - tx).rgb) * 0.20
+           + (texture(uTex, vT + tx * 2.35).rgb
+            + texture(uTex, vT - tx * 2.35).rgb) * 0.15, 1.0);
+  } else {
+    o = vec4(texture(uTex, vT).rgb * uB.y, 1.0);   // gained additive lay-back
   }
 }`;
 
@@ -24029,6 +24040,9 @@ function glResize(){
             mkTarget(GL.tap && GL.tap[1], Math.max(2, R.W >> 3), Math.max(2, R.H >> 3)),
             mkTarget(GL.tap && GL.tap[2], Math.max(2, R.W >> 4), Math.max(2, R.H >> 4)),
             mkTarget(GL.tap && GL.tap[3], Math.max(2, R.W >> 5), Math.max(2, R.H >> 5))];
+  // two scratch targets at the second tap's size, for the anamorphic smear
+  GL.anaA = mkTarget(GL.anaA, Math.max(2, R.W >> 3), Math.max(2, R.H >> 3));
+  GL.anaB = mkTarget(GL.anaB, Math.max(2, R.W >> 3), Math.max(2, R.H >> 3));
   if (GL.compOK){
     const mkCell = (old) => {
       if (old) gl.deleteTexture(old);
@@ -28352,6 +28366,21 @@ function glPresent(){
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       src = tp;
     }
+    /* the anamorphic flare: smear the second tap horizontally, twice, so a
+       bright neon core stretches into a lens streak. Two 6-tap passes at
+       an eighth of the frame - the cost does not register. */
+    if (BV.ana > 0){
+      gl.uniform4f(GL.uP.uB, 4, 0, 0, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, GL.anaA.f);
+      gl.viewport(0, 0, GL.anaA.w, GL.anaA.h);
+      gl.uniform2f(GL.uP.uTexel, 2 / GL.tap[1].w, 0);
+      gl.bindTexture(gl.TEXTURE_2D, GL.tap[1].t);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, GL.anaB.f);
+      gl.uniform2f(GL.uP.uTexel, 6 / GL.anaA.w, 0);
+      gl.bindTexture(gl.TEXTURE_2D, GL.anaA.t);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, R.W, R.H);
     gl.enable(gl.BLEND);
@@ -28369,6 +28398,11 @@ function glPresent(){
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GL.tap[3].t);
     gl.activeTexture(gl.TEXTURE0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (BV.ana > 0){
+      gl.uniform4f(GL.uP.uB, 5, BV.ana, 0, 0);
+      gl.bindTexture(gl.TEXTURE_2D, GL.anaB.t);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.BLEND);
   }
