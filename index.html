@@ -12163,14 +12163,11 @@ function refreshWear(){
     if ((d.price || 0) > best){ best = d.price || 0; outer = id; }
   }
   player.outfit = outer;
-  const col = outer ? OUTFIT_COL[outer] : H_JKT;
-  CM_ARM.j = CM_GUN.j = CM_MELEE.j = col;
-  for (const k in VANIM)
-    if (VANIM[k] && VANIM[k].cmap && VANIM[k].cmap.j !== undefined) VANIM[k].cmap.j = col;
+  /* The viewmodel colour maps this used to repaint died with the ASCII
+     arms: the rig reads the wardrobe live through rigSlots, so putting on
+     a coat re-sleeves your own hands with no help from here. */
   const gold = isWorn('chain') || isWorn('watch');
   player.bling = isWorn('shades') ? 'shades' : gold ? 'chain' : isWorn('ring') ? 'ring' : null;
-  CM_ARM['='] = CM_MELEE['='] = gold ? H_YEL : H_DRK;
-  CM_ARM['@'] = isWorn('ring') ? H_YEL : H_SKIN;
 }
 function drugTick(dt){
   if (!drug) return;
@@ -13512,6 +13509,525 @@ function drawPlayerBody(){
   if (inside && !camjackInside) return;
   const yaw = cam.bodyAng !== undefined ? cam.bodyAng : cam.ang;
   drawBodyOf(ME, player.bx, player.by, yaw);
+}
+/*================ FIRST PERSON, MADE OF THE SAME STUFF =====================
+  The viewmodel was a second art style: hand-drawn ASCII forearms pasted
+  over a voxel city, and the seam between the two was the most visible line
+  in the game. Now your own hands are what everything else is - a voxel
+  volume, built by the same slab-and-role machinery the body outside uses,
+  wearing the same coat, lit by the same palette, marched by the same rays,
+  occluded by the same walls, riding the same GPU path.
+
+  The rig is one dynamic volume hung half a metre in front of the camera
+  and rebuilt every frame from a continuous pose: two forearms reaching in
+  from the bottom corners, the hands, and whatever the hands are on - the
+  gun with its recoil, the blade mid-arc, the bowl with its steam, the
+  cigarette with its ember. Because the projection is a shear, a solid
+  anchored to the camera tracks the crosshair exactly through every pitch,
+  and because it is rebuilt anyway, every flicker of steam or muzzle light
+  is simply this frame's voxels.
+===========================================================================*/
+const RIG_W = 1.00, RIG_H = 0.62, RIG_D = 0.90;   // the box, metres
+const RIG_GW = 50, RIG_GH = 31;                   // and its grid
+const RIG_FWD = 0.50;                             // box centre ahead of the eye
+const RIG_TOP = 0.10;                             // box top over the eye line
+const FP_GUN_SCALE = 1.08;        // a whisper over true scale: at half a
+                                  // metre from the eye, true is already big
+let rigRP = null;                 // this frame's rig pose, sampler to builder
+let rigLag = 0, rigRaiseT = 0, rigLastW = null, _rigPrevAng = 0;
+const RIG_ART = { w: RIG_GW, h: RIG_GH, data: new Uint8Array(RIG_GW * RIG_GH),
+                  dyn: 1, stamp: 0, vol: null };
+RIG_ART.vol = (aw, vd, ah) => fpRigVol(aw, vd, ah);
+/*---- the rig's palette: the body's cloth on the arms, the armoury's metal
+      on the weapon, and one slot that takes whatever is being eaten ------*/
+let _rigSl = null, _rigSlKey = '';
+function rigSlots(itemCol){
+  const worn = player.worn || [];
+  const outer = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
+                  .find(id => worn.indexOf(id) >= 0);
+  const coat = (outer && COAT_COL[outer]) || null;
+  const skin = player.skinC || C.skinA || C.metal;
+  const shirt = player.shirtC || C.nWhite;
+  const key = (coat || -1) + '|' + skin + '|' + shirt + '|' + (itemCol || -1);
+  if (_rigSl && _rigSlKey === key) return _rigSl;
+  _rigSlKey = key;
+  return (_rigSl = slots({ S: [skin, 0.92], K: [coat || skin, 0.9],
+                           B: [shirt, 0.86], T: [C.carC, 0.92],
+                           H: [C.metal, 0.88], W: [C.nWhite, 0.95],
+                           L: [C.shirtC, 0.9],   // matte white: paper, tin
+                           X: [C.tlAmb, 1.0], G: [C.nGreen, 1.0],
+                           V: [C.nCyan, 1.0],
+                           M: [itemCol || C.nWhite, 0.92] }));
+}
+/*---- what the hands are doing this frame ---------------------------------
+  One sample per frame, in rig space: u right, f forward, h up from the eye
+  line (so almost everything is negative). The whole-rig sway - the walk
+  bob, the turn lag, the raise after a weapon switch, the flinch - is a
+  translation applied to everything at once, which is what a camera bolted
+  to a torso would do. */
+function fpRigSample(dt){
+  const wt = worldTime;
+  const RP = { L: null, R: null, gun: null, item: null, flash: 0,
+               du: 0, dh: 0 };
+  // the sway: bob with the stride, lag behind a fast turn, dip on a switch
+  const moving = ME.moving;
+  RP.du = (moving ? Math.sin(cam.walkPhase) * 0.014 : 0);
+  RP.dh = (moving ? -Math.abs(Math.cos(cam.walkPhase)) * 0.010 : 0) +
+          Math.sin(wt * 1.5) * 0.004;
+  let dA = cam.ang - _rigPrevAng;
+  while (dA > Math.PI) dA -= Math.PI * 2;
+  while (dA < -Math.PI) dA += Math.PI * 2;
+  _rigPrevAng = cam.ang;
+  rigLag += (dA / Math.max(dt, 1e-3) - rigLag) * Math.min(1, dt * 10);
+  RP.du += clamp(rigLag * -0.02, -0.07, 0.07);
+  const w = weaponId();
+  if (w !== rigLastW){ rigLastW = w; rigRaiseT = 0.24; }
+  if (rigRaiseT > 0){
+    rigRaiseT = Math.max(0, rigRaiseT - dt);
+    RP.dh -= Math.sin(Math.PI * rigRaiseT / 0.24) * 0.30;   // down and back up
+  }
+  if (typeof hurtT !== 'undefined' && hurtT > 0)
+    RP.dh -= Math.min(hurtT, 0.3) * 0.20;
+  // what owns the hands, in the order the old view resolved it
+  if (vAnim) fpRitual(RP, vAnim.id, vAnim.t, vAnim.d.dur, !!vAnim.loop);
+  else if (punchT > 0) fpSwing(RP, w);
+  else if (GUNS[w]) fpGunHold(RP, w);
+  else if (WEAPON_HOLD[w] && WEAPON_HOLD[w].gun) fpMeleeHold(RP, w);
+  else if (!skating) fpGuard(RP, wt);
+  // riding empty-handed, the arms are out at your sides for balance -
+  // which is to say out of frame; the deck is the whole viewmodel
+  return RP;
+}
+/* the boxer guard: both fists framing the reticle, breathing */
+function fpGuard(RP, wt){
+  const b = Math.sin(wt * 1.6) * 0.006;
+  RP.L = { u: -0.17, f: 0.44, h: -0.21 + b };
+  RP.R = { u: 0.17, f: 0.44, h: -0.22 - b };
+}
+function fpGunHold(RP, w){
+  const H = WEAPON_HOLD[w] || WEAPON_HOLD.pistol;
+  const G = H.gun;
+  const long = (G.len || 0.3) > 0.4;             // a forestock to hold
+  const kick = clamp(muzzleT / 0.12, 0, 1);
+  const k2 = easeIO(kick);
+  /* offset off the eye line and toed a hair inward, the way every first
+     person ever holds one: seen dead-on a pistol is only its own butt,
+     seen from a shoulder it is a WEAPON */
+  const gf = 0.40 - 0.08 * k2;                   // the buck, back into you
+  const gh = -0.155 + 0.025 * k2;
+  RP.gun = { id: w, f: gf, h: gh, u: long ? 0.10 : 0.075,
+             pitch: 0.10 * k2, dyaw: long ? -0.14 : -0.26, kick: k2 };
+  RP.R = { u: RP.gun.u + 0.02, f: gf - 0.02, h: gh - 0.05 };   // trigger hand
+  RP.L = long ? { u: RP.gun.u - 0.06, f: gf + G.len * FP_GUN_SCALE * 0.5,
+                  h: gh - 0.045 }
+              : { u: RP.gun.u - 0.05, f: gf + 0.05, h: gh - 0.06 };
+  if (muzzleT > 0) RP.flash = clamp(muzzleT / 0.09, 0, 1);
+}
+function fpMeleeHold(RP, w){
+  const G = (WEAPON_HOLD[w] || {}).gun;
+  const up = G && G.up;
+  // a blade rests high over the right shoulder; a one-hander sits low right
+  if (up){
+    RP.gun = { id: w, u: 0.21, f: 0.34, h: -0.26, pitch: 1.15, dyaw: -0.10 };
+    RP.R = { u: 0.21, f: 0.35, h: -0.25 };
+    RP.L = { u: 0.14, f: 0.30, h: -0.30 };
+  } else {
+    RP.gun = { id: w, u: 0.18, f: 0.36, h: -0.24, pitch: 0.45, dyaw: -0.06 };
+    RP.R = { u: 0.18, f: 0.36, h: -0.24 };
+    RP.L = { u: -0.19, f: 0.42, h: -0.24 };      // off hand keeps the guard
+  }
+}
+/* the swing: wind, strike, follow-through, on the same clock the damage
+   lands by - strikeAt is the exact beat the world feels it */
+function fpSwing(RP, w0){
+  /* the swing you see is the swing the damage table rolls: holding a rifle
+     and pressing punch throws a FIST, exactly as it always hit */
+  const w = meleeStats().id;
+  const e = clamp(punchDur - punchT, 0, punchDur);
+  const b1 = strikeAt || punchDur * 0.35;
+  const env = e < b1 ? easeIn(e / b1)
+            : 1 - easeIO(Math.min(1, (e - b1) / Math.max(0.10, punchDur - b1)));
+  if (!WEAPON_HOLD[w] || !WEAPON_HOLD[w].gun){
+    // bare knuckles: the lead fist drives past the reticle, the off hand
+    // holds the guard - and the lead alternates, as thrown
+    const s = punchLeft ? -1 : 1;
+    const lead = { u: s * (0.16 - 0.19 * env), f: 0.44 + 0.34 * env,
+                   h: -0.21 + 0.09 * env };
+    const off = { u: -s * 0.17, f: 0.42, h: -0.23 };
+    if (punchLeft){ RP.L = lead; RP.R = off; } else { RP.R = lead; RP.L = off; }
+    return;
+  }
+  const G = WEAPON_HOLD[w].gun;
+  const up = G.up;
+  /* the weapon starts where the hold keeps it and comes down and ACROSS:
+     pitch falls out of the guard, the yaw sweeps through the reticle */
+  const pit = (up ? 1.15 : 0.45) * (1 - env) + 0.05 * env;
+  const dy2 = (-0.10) * (1 - env) + (up ? -0.9 : -0.7) * env * (punchLeft && w === 'pipe' ? -1 : 1);
+  const gu = 0.21 - 0.30 * env, gf = 0.34 + 0.16 * env, gh = -0.26 + 0.10 * env;
+  RP.gun = { id: w, u: gu, f: gf, h: gh, pitch: pit, dyaw: dy2 };
+  RP.R = { u: gu + 0.01, f: gf + 0.01, h: gh + 0.01 };
+  RP.L = up ? { u: gu - 0.06, f: gf - 0.05, h: gh - 0.04 }
+            : { u: -0.19, f: 0.42, h: -0.24 };
+}
+/*---- the rituals, first person: the point of purchase ---------------------
+  Every consumable is a small ceremony at the face, on its own clock: the
+  raise, the taking - bites, sips, drags, a press, a plunge - and the put
+  away. The item itself is built at the hand, in its own colour, with its
+  own signature: steam off a bowl, fizz over a can, the ember brightening
+  on a draw. q runs 0..1 over the whole ritual. */
+function fpRitual(RP, id, t, dur, loop){
+  const cls = consumeClass(id);
+  const q = loop ? ((t / dur) % 1) : clamp(t / dur, 0, 1);
+  const up = 0.14, down = 0.88;
+  const m = loop ? 1
+          : q < up ? easeIO(q / up)
+          : q > down ? easeIO((1 - q) / (1 - down))
+          : 1;
+  const item = { cls, id, bite: 0, tip: 0, press: 0 };
+  RP.item = item;
+  if (cls === 'eat'){
+    // both hands cup the bowl under the chin; the free beats of the right
+    // hand ferry between bowl and mouth
+    const bowlF = 0.30, bowlH = -0.20 + 0.09 * m;
+    item.u = 0; item.f = bowlF; item.h = bowlH;
+    const bite = m >= 1 ? (0.5 + 0.5 * Math.sin(t * 6.2)) : 0;
+    item.bite = bite;
+    RP.L = { u: -0.09, f: bowlF + 0.01, h: bowlH - 0.05 };
+    RP.R = { u: 0.09 - 0.07 * bite, f: bowlF - 0.06 * bite,
+             h: bowlH - 0.05 + 0.11 * bite };
+  } else if (cls === 'drink'){
+    // one hand, and the can tips further back the emptier it gets
+    const tip = m * (0.25 + 0.55 * q);
+    item.tip = tip;
+    item.u = 0.06; item.f = 0.36 - 0.05 * m; item.h = -0.25 + 0.12 * m;
+    RP.R = { u: 0.07, f: item.f + 0.01, h: item.h - 0.05 };
+    RP.L = { u: -0.20, f: 0.46, h: -0.26 };      // the other arm stays down
+  } else if (cls === 'smoke'){
+    // the long loop: up for the draw, down to rest, back again
+    const c = 0.5 + 0.5 * Math.sin((t / dur) * Math.PI * 2 - Math.PI / 2);
+    item.draw = c;                                // 1 = at the lips
+    item.u = 0.055 + 0.13 * (1 - c); item.f = 0.30 + 0.06 * (1 - c);
+    item.h = -0.115 - 0.17 * (1 - c);
+    RP.R = { u: item.u + 0.015, f: item.f + 0.01, h: item.h - 0.045 };
+    RP.L = null;                                  // out of frame entirely
+  } else if (cls === 'pill'){
+    // palm up, the flick, the swallow
+    const fl = q < 0.45 ? 0 : easeIO(Math.min(1, (q - 0.45) / 0.2));
+    item.u = 0.05 * (1 - fl); item.f = 0.30 - 0.05 * fl;
+    item.h = (-0.26 + 0.13 * m) + 0.12 * fl;
+    item.gone = q > 0.68;                         // swallowed
+    RP.R = { u: 0.06, f: 0.30, h: -0.26 + 0.13 * m };
+    RP.L = { u: -0.20, f: 0.46, h: -0.26 };
+  } else if (cls === 'inhale'){
+    // both hands press it to the face and HOLD; the press is visible
+    const pr = m >= 1 ? 0.5 + 0.5 * Math.sin(t * 3.1) : 0;
+    item.press = pr;
+    item.u = 0; item.f = 0.26 - 0.02 * pr; item.h = -0.13 + 0.10 * m;
+    RP.L = { u: -0.07, f: item.f + 0.01, h: item.h - 0.045 };
+    RP.R = { u: 0.07, f: item.f + 0.01, h: item.h - 0.045 };
+  } else { // jab: the forearm presented, the needle brought down into it
+    const ph = clamp((q - 0.30) / 0.25, 0, 1);    // the approach
+    const press2 = clamp((q - 0.58) / 0.2, 0, 1); // the plunge
+    item.press = press2;
+    RP.L = { u: -0.06, f: 0.36, h: -0.24, bare: 1 };   // the arm, offered
+    item.u = -0.04 + 0.02 * press2;
+    item.f = 0.36;
+    item.h = (-0.02 - 0.16 * easeIO(ph) * m) - 0.02 * press2;
+    RP.R = { u: item.u + 0.03, f: item.f - 0.02, h: item.h + 0.05 };
+  }
+}
+/*---- and the volume itself ------------------------------------------------
+  Rebuilt whole every frame it is on screen. Everything here is stamped in
+  metric rig space and quantised at the last moment, so the pose code above
+  never thinks about voxels. */
+function fpRigVol(aw, vd, ah){
+  const v = new Uint8Array(aw * vd * ah);
+  const RP = rigRP;
+  if (!RP) return v;
+  const R2 = ROLE;
+  const worn = player.worn || [];
+  const hasCoat = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
+                    .some(id => worn.indexOf(id) >= 0);
+  const sleeveR = hasCoat ? R2.K : R2.S;
+  const du = RP.du || 0, dh = RP.dh || 0;
+  /* metric -> voxel. u is centred on the eye line, f runs away from the
+     camera (the box's LOW y, like every weapon's muzzle), h hangs from the
+     eye line at RIG_TOP under the box top. */
+  const vx = RIG_W / aw, vy = RIG_D / vd, vz = RIG_H / ah;
+  const set = (x, y, z, r) => {
+    if (x < 0 || y < 0 || z < 0 || x >= aw || y >= vd || z >= ah) return;
+    v[(z * vd + y) * aw + x] = r;
+  };
+  const X = u => Math.round((u + du) / vx + (aw - 1) / 2);
+  const Y = f => Math.round(vd - 1 - (f - 0.05) / vy);      // f 0.05 at the near face
+  const Z = h => Math.round((RIG_TOP - (h + dh)) / vz);
+  const blob = (u, f, h, r, role) => {
+    const x0 = X(u), y0 = Y(f), z0 = Z(h);
+    const rx = Math.max(1, Math.round(r / vx)), ry = Math.max(1, Math.round(r / vy));
+    const rz = Math.max(1, Math.round(r / vz));
+    for (let z = z0 - rz; z <= z0 + rz; z++)
+      for (let y = y0 - ry; y <= y0 + ry; y++)
+        for (let x = x0 - rx; x <= x0 + rx; x++){
+          const nx = (x - x0) / (rx + 0.4), ny = (y - y0) / (ry + 0.4),
+                nz = (z - z0) / (rz + 0.4);
+          if (nx * nx + ny * ny + nz * nz <= 1) set(x, y, z, role);
+        }
+  };
+  const beam = (u0, f0, h0, u1, f1, h1, r, role) => {
+    const n = Math.ceil(Math.hypot(u1 - u0, f1 - f0, h1 - h0) / Math.min(vx, vz)) + 1;
+    for (let i = 0; i <= n; i++){
+      const t = i / n;
+      blob(u0 + (u1 - u0) * t, f0 + (f1 - f0) * t, h0 + (h1 - h0) * t, r, role);
+    }
+  };
+  /* a forearm: from its low corner anchor to the hand, sleeve then cuff
+     then skin - the wardrobe reads from your own point of view too */
+  const arm = (side, Hd) => {
+    if (!Hd) return;
+    const au = side * 0.36, af = 0.10, ahh = -0.52;
+    const cu = au + (Hd.u - au) * 0.72, cf = af + (Hd.f - af) * 0.72,
+          ch = ahh + (Hd.h - ahh) * 0.72;
+    beam(au, af, ahh, cu, cf, ch, 0.046, Hd.bare ? R2.S : sleeveR);
+    // the sliver of shirt at the wrist, when a coat is over it
+    if (!Hd.bare && hasCoat)
+      beam(cu, cf, ch, cu + (Hd.u - cu) * 0.3, cf + (Hd.f - cf) * 0.3,
+           ch + (Hd.h - ch) * 0.3, 0.042, R2.B);
+    beam(cu + (Hd.u - cu) * 0.3, cf + (Hd.f - cf) * 0.3,
+         ch + (Hd.h - ch) * 0.3, Hd.u, Hd.f, Hd.h, 0.038,
+         Hd.bare ? R2.S : sleeveR);
+    blob(Hd.u, Hd.f, Hd.h, 0.048, R2.S);          // the fist itself
+  };
+  arm(-1, RP.L);
+  arm(1, RP.R);
+  if (RP.gun) rigWeapon(v, aw, vd, ah, RP, X, Y, Z, set);
+  if (RP.item) rigItem(RP, blob, beam, set, X, Y, Z);
+  return v;
+}
+/* the weapon, stamped from the same authored box list the streets see,
+   pitched and swept by the swing, scaled for presence */
+function rigWeapon(v, aw, vd, ah, RP, X, Y, Z, set){
+  const G = RP.gun;
+  const W = WEAPON_HOLD[G.id];
+  const GM = (W && W.gun) || { len: 0.3, w: 0.08, h: 0.12 };
+  const boxes = WEAPON_MODEL[G.id] || WEAPON_MODEL.pipe;
+  const sc = FP_GUN_SCALE;
+  const len = (GM.len || 0.3) * sc;
+  const wid = Math.max(0.06, (GM.w || 0.08) * sc);
+  const hgt = Math.max(0.08, (GM.h || GM.th || 0.1) * sc);
+  const cp = Math.cos(G.pitch || 0), sp = Math.sin(G.pitch || 0);
+  const cy = Math.cos(G.dyaw || 0), sy = Math.sin(G.dyaw || 0);
+  const vx = RIG_W / aw, vzM = RIG_H / ah;
+  const step = Math.min(vx, vzM) * 0.6;
+  // walk the weapon's own frame and stamp world-side voxels: cheaper to
+  // scatter fine steps than to inverse-test the whole rig box
+  for (let s = 0; s < len; s += step){
+    const fv = s / len;
+    for (let t = 0; t < hgt; t += step){
+      const fw = t / hgt;
+      for (let u2 = 0; u2 < wid; u2 += step){
+        const fu = u2 / wid;
+        let role = 0;
+        for (let n = 0; n < boxes.length; n++){
+          const b = boxes[n];
+          if (fu >= b.u0 && fu <= b.u1 && fv >= b.v0 && fv <= b.v1 &&
+              fw >= b.w0 && fw <= b.w1){ role = ROLE[b.r]; break; }
+        }
+        if (!role) continue;
+        if (role === ROLE.K) role = ROLE.H;       // grips keep the armoury's
+        // butt at the anchor; pitch lifts the muzzle, the sweep carries it
+        const lu = u2 - wid * 0.5, lf = s, lh = t - hgt * 0.5;
+        const pf = lf * cp - lh * sp, phh = lf * sp + lh * cp;
+        const wu = G.u + lu * cy + pf * sy, wf = G.f + pf * cy - lu * sy;
+        set(X(wu), Y(wf), Z(G.h + phh), role);
+      }
+    }
+  }
+  if (GUNS[G.id]){
+    // one lit element of its own, the way everything in this city has one:
+    // an amber pip riding the receiver, so the gun belongs to the palette
+    const lf = len * 0.12, lh = hgt * 0.38;
+    const pf = lf * cp - lh * sp, phh = lf * sp + lh * cp;
+    set(X(G.u + pf * sy), Y(G.f + pf * cy), Z(G.h + phh), ROLE.X);
+  }
+  if (RP.flash > 0){
+    // light leaving the bore, and a few sparks that live one frame each
+    const mf = G.f + len * cp * cy, mh = G.h + len * sp, mu = G.u + len * cp * sy;
+    const r = 0.030 + 0.045 * RP.flash;
+    for (let i = 0; i < 26; i++){
+      const a = Math.random() * Math.PI * 2, rr = Math.random() * r * 2.2;
+      const z2 = (Math.random() - 0.35) * r * 2;
+      set(X(mu + Math.cos(a) * rr), Y(mf + Math.random() * r * 3),
+          Z(mh + z2 + Math.sin(a) * rr * 0.4),
+          Math.random() < 0.6 ? ROLE.X : ROLE.W);
+    }
+  }
+}
+/* what is being taken, by class, in the item's own colour */
+function rigItem(RP, blob, beam, set, X, Y, Z){
+  const it = RP.item;
+  const R2 = ROLE;
+  if (it.gone) return;
+  if (it.cls === 'eat'){
+    /* the cup: a wall of its own colour with a thin bright sheet on top -
+       what is in it - and the steam standing off that. The first cut drew
+       the contents as a ball, and a ball of emissive white at thirty
+       centimetres is a small moon with hands round it. */
+    const cr2 = 0.046;
+    for (let a2 = 0; a2 < Math.PI * 2; a2 += 0.35){
+      const wu = it.u + Math.cos(a2) * cr2, wf = it.f + Math.sin(a2) * cr2 * 0.6;
+      beam(wu, wf, it.h - 0.035, wu, wf, it.h + 0.012, 0.011, R2.M);
+    }
+    for (let a2 = 0; a2 < Math.PI * 2; a2 += 0.4)
+      for (let rr = 0; rr < cr2; rr += 0.016)
+        set(X(it.u + Math.cos(a2) * rr), Y(it.f + Math.sin(a2) * rr * 0.6),
+            Z(it.h + 0.016), R2.L);
+    for (let i = 0; i < 3; i++){
+      const ph = (worldTime * 0.9 + i * 0.7) % 1;
+      set(X(it.u - 0.03 + i * 0.03), Y(it.f - 0.01),
+          Z(it.h + 0.05 + ph * 0.10), R2.W);
+    }
+    if (it.bite > 0.4)                             // the ferrying morsel
+      blob(it.u + 0.06 - 0.06 * it.bite, it.f - 0.05 * it.bite,
+           it.h + 0.10 * it.bite, 0.014, R2.L);
+  } else if (it.cls === 'drink'){
+    /* aluminium first, neon second: the can is grey tin with one glowing
+       label band - a whole can of lit colour bloomed into a brick */
+    const tip = it.tip || 0;
+    const st = Math.sin(tip), ct = Math.cos(tip);
+    const top = { u: it.u, f: it.f - st * 0.072, h: it.h + ct * 0.072 };
+    beam(it.u, it.f, it.h, top.u, top.f, top.h, 0.021, R2.T);
+    // the label, riding the middle of it
+    blob(it.u + (top.u - it.u) * 0.5, it.f + (top.f - it.f) * 0.5,
+         it.h + (top.h - it.h) * 0.5, 0.022, R2.M);
+    blob(top.u, top.f, top.h, 0.013, R2.L);        // the lid
+    if (tip > 0.4 && Math.random() < 0.5)          // a spit of fizz
+      set(X(it.u + (Math.random() - 0.5) * 0.04), Y(it.f - 0.06),
+          Z(it.h + 0.11), R2.W);
+  } else if (it.cls === 'smoke'){
+    // the cigarette, and the ember answering the draw
+    beam(it.u, it.f, it.h, it.u - 0.045, it.f - 0.015, it.h + 0.008,
+         0.009, R2.L);
+    set(X(it.u - 0.05), Y(it.f - 0.02), Z(it.h + 0.01),
+        (it.draw || 0) > 0.75 ? R2.X : R2.M);
+    if ((it.draw || 0) > 0.75 && Math.random() < 0.7)   // smoke, leaving
+      set(X(it.u - 0.05 + (Math.random() - 0.5) * 0.03), Y(it.f - 0.03),
+          Z(it.h + 0.04 + Math.random() * 0.06), R2.T);
+  } else if (it.cls === 'pill'){
+    blob(it.u, it.f, it.h + 0.015, 0.014, R2.M);
+  } else if (it.cls === 'inhale'){
+    // the inhaler body and its nozzle, pressed
+    blob(it.u, it.f, it.h - 0.01, 0.030, R2.M);
+    blob(it.u, it.f - 0.03, it.h + 0.02, 0.016, R2.L);
+    if ((it.press || 0) > 0.6)                     // the huff, briefly lit
+      blob(it.u, it.f - 0.05, it.h + 0.02, 0.012, R2.V);
+  } else { // jab: the syringe over the offered arm
+    beam(it.u, it.f, it.h, it.u, it.f, it.h + 0.06, 0.010, R2.L);
+    beam(it.u, it.f, it.h + 0.015, it.u, it.f, it.h + 0.045, 0.007, R2.M);
+    beam(it.u, it.f, it.h, it.u, it.f, it.h - 0.025, 0.004, R2.L);
+    // the plunger going home
+    blob(it.u, it.f, it.h + 0.065 - 0.028 * (it.press || 0), 0.012, R2.L);
+  }
+}
+/*---- the deck, seen from on it -------------------------------------------
+  Feet are a metre and a half under an eye line the projection cannot look
+  down to, so the board rides closer to the camera than the world would put
+  it - the same cheat every viewmodel is - and earns it back by really
+  rotating: the ollie noses up, a kickflip rolls clean over its own length,
+  a shove-it spins flat, and the carve banks it. */
+const DECK_ART = { w: 26, h: 16, data: new Uint8Array(26 * 16),
+                   dyn: 1, stamp: 0, vol: null };
+const DECK_W = 0.30, DECK_H = 0.20, DECK_D = 0.54;
+let deckPose = null;
+DECK_ART.vol = (aw, vd, ah) => {
+  const v = new Uint8Array(aw * vd * ah);
+  const P = deckPose || { roll: 0, pitch: 0, yaw: 0 };
+  const vx = DECK_W / aw, vy = DECK_D / vd, vz = DECK_H / ah;
+  const cr = Math.cos(P.roll), sr = Math.sin(P.roll);
+  const cp = Math.cos(P.pitch), sp = Math.sin(P.pitch);
+  const cy = Math.cos(P.yaw), sy = Math.sin(P.yaw);
+  const L = 0.24, W2 = 0.105, T2 = 0.016;         // half extents of the board
+  for (let z = 0; z < ah; z++){
+    const dz = (0.5 - (z + 0.5) / ah) * DECK_H;
+    for (let y = 0; y < vd; y++){
+      const dy2 = (0.5 - (y + 0.5) / vd) * DECK_D;   // + toward the nose
+      for (let x = 0; x < aw; x++){
+        const dx = ((x + 0.5) / aw - 0.5) * DECK_W;
+        // out of the spin, then the pitch, then the roll
+        const u1 = dx * cy + dy2 * sy, f1 = -dx * sy + dy2 * cy;
+        const f2 = f1 * cp + dz * sp, h2 = -f1 * sp + dz * cp;
+        const u3 = u1 * cr + h2 * sr, h3 = -u1 * sr + h2 * cr;
+        if (Math.abs(f2) > L) continue;
+        if (Math.abs(u3) <= W2 && Math.abs(h3) <= T2){
+          // grip up top with a lit nose, gold sheet below - so the flip
+          // reads as a colour turning over, which is how flips read at all
+          v[(z * vd + y) * aw + x] =
+            h3 > T2 * 0.2 ? (f2 > L * 0.72 ? ROLE.W : ROLE.T) : ROLE.M;
+          continue;
+        }
+        // trucks and wheels, two axles under the sheet
+        const ax = Math.abs(Math.abs(f2) - L * 0.62) < 0.028;
+        if (ax && h3 < -T2 && h3 > -T2 - 0.045 && Math.abs(u3) < W2 * 0.85)
+          v[(z * vd + y) * aw + x] = Math.abs(u3) > W2 * 0.45 ? ROLE.H : ROLE.T;
+      }
+    }
+  }
+  return v;
+};
+let _deckSl = null;
+function deckSlots(){
+  return _deckSl || (_deckSl = slots({ T: [C.deck, 0.92], M: [C.carF, 0.95],
+                                       W: [C.nWhite, 1.0],
+                                       H: [C.shirtC, 0.9] }));
+}
+/*---- the draw: one solid, hung on the camera -----------------------------*/
+function fpRigVisible(){
+  if (topMode() || cam.riding) return false;
+  if (typeof scopeUp === 'function' && scopeUp()) return false;
+  return true;
+}
+let _rigF = -1;
+function drawFpRig(){
+  if (_rigF !== poseFrame){
+    _rigF = poseFrame;
+    rigRP = fpRigSample(poseDt);
+    RIG_ART.stamp++;
+    if (skating){
+      // carve bank, crouch dip, ollie pitch, and the live trick's spin
+      let roll = -skLean * 0.22, pitch = 0, yawB = 0;
+      if (airT > 0){
+        const ph = clamp(1 - airT / Math.max(0.01, airDur), 0, 1);
+        pitch = 0.5 * Math.sin(Math.PI * Math.min(1, ph * 1.2));
+        if (skTrick){
+          const q = clamp(skTrick.t / skTrick.dur, 0, 1);
+          const base = skTrick.base;
+          if (base === 'kickflip') roll -= Math.PI * 2 * q;
+          else if (base === 'heelflip') roll += Math.PI * 2 * q;
+          else if (base === 'shove-it') yawB = Math.PI * q;
+          else if (base === 'bigspin') yawB = Math.PI * 2 * q;
+          else if (base === 'impossible'){ roll += Math.PI * 2 * q; yawB = Math.PI * q; }
+        }
+      } else if (crouchT > 0 || ollieHold >= 0) pitch = -0.10;
+      else if (landT > 0) pitch = -0.16 * (landT / 0.18);
+      deckPose = { roll, pitch, yaw: yawB };
+      DECK_ART.stamp++;
+    }
+  }
+  const item = rigRP && rigRP.item;
+  const icol = item && ITEMS[item.id] ? ITEMS[item.id].pcol : null;
+  const sl = rigSlots(icol);
+  const fx = Math.cos(cam.ang), fy = Math.sin(cam.ang);
+  _noRef = 1;                    // your own arms have no business in a puddle
+  if (rigRP && (rigRP.L || rigRP.R || rigRP.gun || rigRP.item))
+    drawModel(cam.x + fx * RIG_FWD, cam.y + fy * RIG_FWD,
+              cam.z + RIG_TOP - RIG_H, RIG_W, RIG_H, RIG_ART,
+              sl.base, sl.dens, 0, cam.ang + Math.PI / 2, RIG_D / RIG_W, 0);
+  if (skating){
+    const dsl = deckSlots();
+    drawModel(cam.x + fx * 0.55, cam.y + fy * 0.55,
+              cam.z - 0.44, DECK_W, DECK_H, DECK_ART,
+              dsl.base, dsl.dens, 0, cam.ang + Math.PI / 2, DECK_D / DECK_W, 0);
+  }
+  _noRef = 0;
 }
 let camjackInside = false;
 function openCamJack(){
@@ -17322,1806 +17838,23 @@ function hudCell(cx, cy2, ch, ci){
   const i = cy2 * R.cols + cx;
   hGlyph[i] = code; hCol[i] = ci;
 }
-function viewW(rows){ let w = 0; for (const r of rows) w = Math.max(w, r.length); return w; }
-/* solid defaults on: what you are holding is opaque. The one caller that
-   passes false is the muzzle flash, which is light leaving the bore - a
-   black plate behind THAT would be a box round the flash. */
-/* `hole` leaves a disc of the art undrawn - glyphs AND the opaque backing -
-   so something mounted on the gun can be seen THROUGH. Without it a ring
-   painted on the viewmodel is a ring painted on a wall: the backing that
-   stops the street showing through the gun also stops it showing through
-   the glass. */
-function drawViewArt(rows, ax, ay, tr, cmap, solid, hole){
-  rows = groundArt(rows);                    // always planted on the screen edge
-  const ah = rows.length, aw = viewW(rows);
-  const want = tr;
-  tr = Math.min(tr, Math.round(ah * 3.5));   // chunky upscale beats a crushed one
-  ay += want - tr;                           // a clamped pose still meets the floor
-  const tc = Math.max(2, Math.round(tr * aw / ah));
-  for (let y = 0; y < tr; y++){
-    const sr = rows[(y * ah / tr) | 0];
-    let run = -1;                              // start column of the span
-    for (let x = 0; x < tc; x++){
-      const ch = sr[(x * aw / tc) | 0];
-      let cut = false;
-      if (hole){
-        const dx = (ax + x - hole.cx) / hole.rad;
-        const dy = (ay + y - hole.cy) / (hole.rad * (R.cellW / R.cellH));
-        cut = dx * dx + dy * dy <= 1;
-      }
-      if (!ch || ch === ' ' || cut){
-        if (run >= 0){ if (solid !== false) hudSolidRun(ax + run, ay + y, x - run);
-                       run = -1; }
-        continue;
-      }
-      if (run < 0) run = x;
-      hudCell(ax + x, ay + y, ch, cmap[ch] !== undefined ? cmap[ch] : H_DRK);
-    }
-    if (run >= 0 && solid !== false) hudSolidRun(ax + run, ay + y, tc - run);
-  }
-  return tc;
-}
-// the width drawViewArt will actually paint, once the art is grounded and
-// the upscale clamp has had its say - anchoring needs the real number
-function drawnW(art, tr){
-  const g = groundArt(art), gh = g.length, gw = viewW(g);
-  return Math.max(2, Math.round(Math.min(tr, Math.round(gh * 3.5)) * gw / gh));
-}
-function shiftArt(rows, dx, dy){              // slide a pose for an in-between
-  const w = viewW(rows), out = [];
-  for (let i = 0; i < rows.length; i++){
-    let src = i - dy;
-    if (src < 0){ out.push(' '.repeat(w)); continue; }   // sky above is fine
-    if (src >= rows.length) src = rows.length - 1;       // but never float the arms
-    const r = rows[src].padEnd(w);
-    out.push(dx >= 0 ? ' '.repeat(dx) + r.slice(0, w - dx)
-                     : r.slice(-dx) + ' '.repeat(-dx));
-  }
-  return out;
-}
-// the body is drawn bottom-anchored, so any blank rows under the last real
-// one would hang it in mid-air. Trim them once and remember the result.
-function groundArt(rows){
-  if (rows._g) return rows._g;
-  let n = rows.length;
-  while (n > 1 && !rows[n - 1].trim()) n--;
-  const g = n === rows.length ? rows : rows.slice(0, n);
-  try { Object.defineProperty(rows, '_g', { value: g, enumerable: false }); }
-  catch (e){ /* frozen art: just use the trim */ }
-  return g;
-}
-// twice the frames at the same tempo: between every authored pose, the next
-// one arriving a row low - the eye reads the travel instead of a cut
-function tweenFrames(frames){
-  if (!frames || frames.length < 2) return frames;
-  const out = [];
-  for (let i = 0; i < frames.length; i++){
-    out.push(frames[i]);
-    // the next pose arriving a row low, or - on the last - this one settling
-    out.push(shiftArt(frames[i + 1] || frames[i], 0, 1));
-  }
-  return out;                                 // exactly twice the frames
-}
-function mirrorView(rows){
-  const w = viewW(rows);
-  const M = { '/': '\\', '\\': '/', '(': ')', ')': '(', '[': ']', ']': '[' };
-  return rows.map(r => r.padEnd(w).split('').reverse().map(c => M[c] || c).join(''));
-}
-const CM_ARM = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT };
-/* The gun's own palette. Grey body, dark seams, white pins - and one entry
-   per ACCENT, so a weapon can carry a light without needing its own colour
-   map: amber for anything counting rounds, blue for heat and coils, violet
-   for stored charge, red for a barrel that has been working, green for
-   glass. Anything not named here falls to H_DRK, which is what draws the
-   outlines. */
-const CM_GUN = { s: H_SKIN, '@': H_SKIN, j: H_JKT,
-                 '%': H_GRY, '=': H_GRY, '.': H_GRY, '#': H_DRK, o: H_WHT,
-                 a: H_YEL, c: H_BLU, v: H_PUR, r: H_RED, g: H_GRN,
-                 '~': H_BLU, '*': H_WHT };
-const CM_MUZ = { '\\': H_YEL, '|': H_YEL, '/': H_YEL, '-': H_YEL, '*': H_YEL };
-
-/*========================= what is in your hands ===========================
-  The viewmodel was sixty percent of the screen, thirty characters across,
-  and sixteen of its twenty-six rows were the player's own forearms. On the
-  finer grids that is most of the lower half of the frame spent on a grey
-  shape you already know the shape of - and the street you are aiming into
-  is the thing you actually need to see.
-
-  So: narrower arms, shorter models, and forty-two percent of the height
-  instead of sixty. That buys back a third of the screen with no loss of
-  legibility, because what reads at this size was always the SILHOUETTE and
-  never the interior detail.
-
-  What goes into the room the shrink made is flair. Every weapon now carries
-  one light of its own - an amber round counter, a blue heat vent, a violet
-  capacitor, a red-hot shield, a green reticle - drawn in the same neon the
-  city is lit by. A gun in this game should look like it came from THIS
-  world, not like a grey rectangle held up in front of one, and one lit
-  element per weapon is what separates the two at eight characters wide.
-===========================================================================*/
-/* The two-hand grip, and the sleeves it comes out of. Every gun is stacked
-   on this: the grip does not change, the thing gripped does. */
-const VM_GUN_ARMS = [
-  '      ___________       ',
-  '     /#%%%%%%%%%#\\      ',
-  '    (ss#%%%%%%%#ss)     ',
-  '   (@s@s#%%%%%#s@s@)    ',
-  '   (ssss(#%%%#)ssss)    ',
-  '   |ssss|_____|ssss|    ',
-  '   (ssss)     (ssss)    ',
-  '  /jjss/       \\ssjj\\   ',
-  ' /jjjj/         \\jjjj\\  ',
-  '/jjjj/           \\jjjj\\ ',
-  'jjj~/             \\~jjj ',
-  'jj/                 \\jj '
-];
-const gunArt = (top) => top.concat(VM_GUN_ARMS);
-/* Row 0 carries the .|. front sight the reticle code aligns to. Nothing else
-   in a top is load-bearing, so a new weapon is nine lines of drawing. */
-const VM_GUN = gunArt([
-  '          .|.           ',
-  '         (===)          ',
-  '        |=====|         ',
-  '        |=%a%=|         ',      // the round counter, lit
-  '       /#=====#\\        ',
-  '       |%%===%%|        ',
-  '      |%%%[o]%%%|       '
-]);
-const GUN_SIGHT_COL = VM_GUN[0].indexOf('|');   // the front sight post
-const VM_GUNS = {
-  pistol: VM_GUN,
-  // a pocket gun: barely clears the fist, one amber pip and nothing else
-  holdout: gunArt([
-  '          .|.           ',
-  '         (=#=)          ',
-  '        |==a==|         ',
-  '       |%%===%%|        ']),
-  // the cylinder is the whole silhouette, so it gets the width
-  revolver: gunArt([
-  '          .|.           ',
-  '         (===)          ',
-  '        |=====|         ',
-  '      ((#o===o#))       ',
-  '      ((a%===%a))       ',
-  '       ((%[=]%))        ',
-  '       |%%[o]%%|        ']),
-  // stubby, top-railed, and venting heat where the bolt runs
-  smg: gunArt([
-  '          .|.           ',
-  '      ____(=)____       ',
-  '     |===========|      ',
-  '     |=[ccc]=====|      ',
-  '     |#==========|      ',
-  '      |%%#===#%%|       ',
-  '      |%%[###]%%|       ',
-  '       |%%[#]%%|        ']),
-  // twin bores over a heat shield that glows where it has been working
-  shotgun: gunArt([
-  '         .|.            ',
-  '        (O)(O)          ',
-  '        (O)(O)          ',
-  '       |======|         ',
-  '       |=r##r=|         ',
-  '      |#======#|        ',
-  '      |%%%==%%%|        ',
-  '       |%%[o]%%|        ']),
-  // glass on top, and the reticle inside it lit green
-  rifle: gunArt([
-  '          .|.           ',
-  '          (=)           ',
-  '          |=|           ',
-  '         |===|          ',
-  '      [o=|===|=o]       ',
-  '      [g=|===|=g]       ',
-  '     a  |#===#|  a      ',
-  '       |%%===%%|        ',
-  '      |%%%[=]%%%|       ',
-  '       |%%[o]%%|        ']),
-  // capacitor stack: two coils, and the charge sitting in them
-  railgun: gunArt([
-  '          .|.           ',
-  '       ~~(===)~~        ',
-  '      ((c=====c))       ',
-  '       ~~|===|~~        ',
-  '      ((c=====c))       ',
-  '       ~~|===|~~        ',
-  '       |#=====#|        ',
-  '      |%%v===v%%|       ',
-  '       |%%[v]%%|        ']),
-  // it arcs before it fires, and the arc is the point of owning one
-  arcgun: gunArt([
-  '      *   .|.   *       ',
-  '       \\ (=v=) /        ',
-  '      ~*~|=v=|~*~       ',
-  '        \\|=v=|/         ',
-  '       |#=vvv=#|        ',
-  '       |#======#|       ',
-  '        |%%vv%%|        ',
-  '       |%%[v]%%|        ']),
-  // the magazine IS the gun: a bar of nails lying along the top
-  nailer: gunArt([
-  '          .|.           ',
-  '    ______(=)______     ',
-  '   |===============|    ',
-  '   |==aaaaaaaaa====|    ',
-  '   |===============|    ',
-  '      |#=======#|       ',
-  '      |%%=====%%|       ',
-  '       |%%[oo]%%|       '])
-};
-const GUN_SIGHTS = {};
-for (const gid in VM_GUNS) GUN_SIGHTS[gid] = VM_GUNS[gid][0].indexOf('|');
-/*--------------------------- new blades and hammers ------------------------
-  The boxcutter works like the pipe - one hand, a forehand and a distinct
-  backhand. The vibro katana is two-handed and leaves its own light behind:
-  the ~ trail rides the smear frames. The shock maul is all wind-up and
-  consequence. Anchor tables are shared where the arc shape matches.
-============================================================================*/
-const VM_KNIFE_HOLD = [
-  '                      /#/     ',
-  '                     /=/      ',
-  '                    /=/       ',
-  '                   /=/        ',
-  '                 _(=/_        ',
-  '               _(n@nn@n)_     ',
-  '              (n@n@#n@n@n)    ',
-  '              (ss)ss)ss)ss)   ',
-  '               (jj.jjjj.jj)   ',
-  '               |jj/jj,jjjj|   ',
-  '               |jjjjjjjjjj|   ',
-  '               |jjjjjjjjjj|   '
-];
-const VM_KNIFE_WIND = [
-  '               ____/#=====/   ',
-  '           _(n@nn@n)/         ',
-  '          (n@n@#n@n@n)        ',
-  '          (ss)ss)ss)ss)       ',
-  '          (jj.jjjjj.jj)       ',
-  '          |jj/jj,jjjjj|       ',
-  '          |jjjjjjjjjjj|       '
-];
-const VM_KNIFE_SMEAR = [
-  '   -- ---- ----               ',
-  '  ---- /#=====/ ----          ',
-  '   -- _(n@nn@n)_  --          ',
-  '     (n@n@#n@n@n)             ',
-  '     (ss)ss)ss)ss)            ',
-  '     (jjjjjjjjjj)_            ',
-  '      (jjj,jjjjjjj)           ',
-  '      |jjjjjjjjjjj|           '
-];
-const VM_KNIFE_HIT = [
-  '  \\  *  /                     ',
-  ' =*=/#========-               ',
-  '  /  *  \\   _(n@nn@n)_        ',
-  '           (n@n@#n@n@n)       ',
-  '           (ss)ss)ss)ss)      ',
-  '           (jjjj,jjjjj)_      ',
-  '            (jjjjjjjjjjj)     ',
-  '            |jjjj,jjjjjj|     ',
-  '            |jjjjjjjjjjj|     '
-];
-const VM_KNIFE_REC = [
-  '        ______                ',
-  '     __(nnnnnn)__             ',
-  '    (n@n@n@n@n@nn)            ',
-  '    (ss)ss)ss)ss)s)           ',
-  '   _(sssssssssss,s)           ',
-  ' _(=/jj.jjjjjjj.jj)           ',
-  ' /#/ |jj,jjjj\\jjjj|           ',
-  '     (jjj/jjjjjjjj)           ',
-  '     |jjjjjjjjjjjj|           '
-];
-const VM_KAT_HOLD = [
-  '                        __//  ',
-  '                      _//~    ',
-  '                    _//~      ',
-  '                  _//~        ',
-  '                _//~          ',
-  '              _//~            ',
-  '            _//~              ',
-  '           |=|                ',
-  '          _(#)_               ',
-  '        _(n@ww@n)_            ',
-  '       (n@n@##n@n@n)          ',
-  '       (ss)ss)ss)ss)          ',
-  '      _(n@n@ww@n@n@n)_        ',
-  '     (n@n@n@##n@n@n@nn)       ',
-  '     (ss)ss)ss)ss)ss)s)       ',
-  '     (jj.jjjjjjjjj.jjj)       ',
-  '     |jj/jjjj,jjjjjjjj|       ',
-  '     |jjjjjjjjjjjjjjjj|       '
-];
-const VM_KAT_WIND = [
-  '            _____//========// ',
-  '        __//~~~~~~~~~~~//     ',
-  '       |=|_//                 ',
-  '      _(#)_                   ',
-  '    _(n@ww@n)_                ',
-  '   (n@n@##n@n@n)              ',
-  '   (ss)ss)ss)ss)              ',
-  '  _(n@n@ww@n@n@n)_            ',
-  ' (n@n@n@##n@n@n@nn)           ',
-  ' (ss)ss)ss)ss)ss)s)           ',
-  ' (jj.jjjjjjjjj.jjj)           ',
-  ' |jj/jjjj,jjjjjjjj|           ',
-  ' |jjjjjjjjjjjjjjjj|           '
-];
-const VM_KAT_SMEAR = [
-  ' ~~~~ ~~~~~~ ~~~~~~ ~~~~      ',
-  '  ~~~~~~ ~~~~~~ ~~~~~~ ~~~    ',
-  ' ~~ __//==============//_ ~~  ',
-  '  ~//~~~~~~~~~~~~~~~//  ~~~   ',
-  '   |=|_                       ',
-  '  _(#)_                       ',
-  '_(n@ww@n)_                    ',
-  '(n@n@##n@n)                   ',
-  '(ss)ss)ss)s)                  ',
-  '(jjjjjjjjjj)_                 ',
-  ' (jjj,jjjjjjj)_               ',
-  '  (jjjjjjjjjjjj)              ',
-  '  |jjjjj,jjjjjj|              '
-];
-const VM_KAT_HIT = [
-  '  \\   ~   /                   ',
-  ' ~*~ //==========================//',
-  '  /  ~~~~~~~~~~~~~~~~~~~~~~~~~//  ',
-  '   ~   ~    _(n@ww@n)_        ',
-  '    ~      (n@n@##n@n@n)      ',
-  '           (ss)ss)ss)ss)      ',
-  '          _(n@n@ww@n@n@n)_    ',
-  '         (n@n@n@##n@n@n@nn)   ',
-  '         (ss)ss)ss)ss)ss)s)   ',
-  '         (jjjjjjj,jjjjjjjj)_  ',
-  '          (jjjj/jjjjjjjjjjjj) ',
-  '          |jjjj,jjjjjjjjjjjj| ',
-  '          |jjjjjjjjjjjjjjjjj| '
-];
-const VM_KAT_REC = [
-  '              ______          ',
-  '           __(nnnnnn)__       ',
-  '          (n@n@n@n@n@nn)      ',
-  '          (ss)ss)ss)ss)s)     ',
-  '     ____(sssssssssss,ss)     ',
-  '  _//~~~#ssssssssssss:ss)     ',
-  ' //~ |=|/jj.jjjjjjjjj.jj)     ',
-  '     (#) |jj,jjjjjj/jjjj|     ',
-  '         (jjjj/jjjjjjjjj)     ',
-  '         |jjjjjjjjjjjjjj|     ',
-  '         |jjjjjjjjjjjjjj|     '
-];
-const VM_MAUL_HOLD = [
-  '                  [======]    ',
-  '                  [=~~~~=]    ',
-  '                  [=~##~=]    ',
-  '                  [=~~~~=]    ',
-  '                  [======]    ',
-  '                    |==|      ',
-  '                    |==|      ',
-  '                    |==|      ',
-  '                  _(|==|)_    ',
-  '                _(n@ww@n)_    ',
-  '               (n@n@##n@n@n)  ',
-  '               (ss)ss)ss)ss)  ',
-  '              _(n@n@ww@n@n)_  ',
-  '             (n@n@n@##n@n@nn) ',
-  '             (ss)ss)ss)ss)ss) ',
-  '             (jj.jjjjjj.jjjj) ',
-  '             |jj/jjj,jjjjjjj| ',
-  '             |jjjjjjjjjjjjjj| '
-];
-const VM_MAUL_WIND = [
-  '        [======]              ',
-  '        [=~~~~=]___           ',
-  '        [=~##~=]===|__        ',
-  '        [=~~~~=]      |==__   ',
-  '        [======]        _(n@ww@n)_',
-  '                       (n@n@##n@n@n)',
-  '                       (ss)ss)ss)ss)',
-  '                      _(n@n@ww@n@n)_ ',
-  '                     (n@n@n@##n@n@nn)',
-  '                     (ss)ss)ss)ss)ss)',
-  '                     (jj.jjjjjj.jjjj)',
-  '                     |jj/jjj,jjjjjjj|',
-  '                     |jjjjjjjjjjjjjj|'
-];
-const VM_MAUL_SMEAR = [
-  '   ----- ------- ------       ',
-  ' ------- ------- --------     ',
-  ' --- [======]__ -------       ',
-  ' --  [=~~~~=]==|__  ----      ',
-  '  -- [=~##~=]     |==_  --    ',
-  '     [======]  _(n@ww@n)_     ',
-  '              (n@n@##n@n@n)   ',
-  '              (ss)ss)ss)ss)   ',
-  '              (jjjjjjjjjjj)_  ',
-  '               (jjj,jjjjjjjj) ',
-  '               |jjjjjjjjjjjj| ',
-  '               |jjjjjjjjjjjj| '
-];
-const VM_MAUL_HIT = [
-  ' \\\\   *    //                 ',
-  '  [======] *  * ~ *           ',
-  ' =[=~##~=]= ~ * ~ *           ',
-  '  [======] * ~  *             ',
-  ' //  |==|_ \\\\                 ',
-  '        |====|__              ',
-  '          _(n@ww@n)_          ',
-  '         (n@n@##n@n@n)        ',
-  '         (ss)ss)ss)ss)        ',
-  '         (jjjjjj,jjjjj)_      ',
-  '          (jjjj/jjjjjjjj)_    ',
-  '           (jjjjjjjjjjjjjj)   ',
-  '           |jjjj,jjjjjjjjj|   ',
-  '           |jjjjjjjjjjjjjj|   '
-];
-const VM_MAUL_REC = [
-  '             ______           ',
-  '          __(nnnnnn)__        ',
-  '         (n@n@n@n@n@nn)       ',
-  '         (ss)ss)ss)ss)s)      ',
-  '    _____(sssssssssss,s)      ',
-  ' [======]sssssssssss:ss)      ',
-  ' [=~##~=]jj.jjjjjjjj.jj)      ',
-  ' [======]|jj,jjjjj/jjjj|      ',
-  '   |==|  (jjjj/jjjjjjjj)      ',
-  '   |==|  |jjjjjjjjjjjjj|      ',
-  '         |jjjjjjjjjjjjj|      '
-];
-const KNIFE_SET = [VM_KNIFE_WIND, shiftArt(VM_KNIFE_WIND, 2, -1),
-                   VM_KNIFE_SMEAR, shiftArt(VM_KNIFE_SMEAR, -3, 0),
-                   VM_KNIFE_HIT, shiftArt(VM_KNIFE_HIT, -1, 1),
-                   VM_KNIFE_REC, shiftArt(VM_KNIFE_REC, -2, 1)];
-const KNIFE_SET_B = KNIFE_SET.map(a => mirrorView(a));
-const KAT_SET = [VM_KAT_WIND, shiftArt(VM_KAT_WIND, 2, -1),
-                 VM_KAT_SMEAR, shiftArt(VM_KAT_SMEAR, -4, 0),
-                 VM_KAT_HIT, shiftArt(VM_KAT_HIT, -1, 1),
-                 VM_KAT_REC, shiftArt(VM_KAT_REC, -2, 1)];
-const MAUL_SET = [VM_MAUL_WIND, shiftArt(VM_MAUL_WIND, 2, -1),
-                  VM_MAUL_SMEAR, shiftArt(VM_MAUL_SMEAR, -4, 0),
-                  VM_MAUL_HIT, shiftArt(VM_MAUL_HIT, -1, 1),
-                  VM_MAUL_REC, shiftArt(VM_MAUL_REC, -2, 1)];
-
-const VM_FIST_R = [
-  '       ______       ',
-  '    __(nnnnnn)_     ',
-  '   (n@n@n@n@n@n)    ',
-  '  (s)ss)ss)ss)ss)   ',
-  '  |s)ss)ss)ss)ss|   ',
-  '  (ssssssssssss~)   ',
-  '   (sss~~ssssss~s)  ',
-  '   |sssssssssss|s)  ',
-  '  (:ssssssss:ss)    ',
-  '  (jj=jjjjjj=jjj)   ',
-  '  |jj/jjj~jjj\\jj|  ',
-  '  |jjjjj/jjjjjjj|   ',
-  '  (jjjj~jjjjjjjj)   ',
-  '  |jjjjjjjjjjjjj|   '
-];
-const VM_FIST_L = mirrorView(VM_FIST_R);
-/* the swing, four beats: wind up big, smear across, hit at the reticle,
-   recover loose - the right-hand set; lefts are mirrors */
-const VM_PUNCH_WIND = [
-  '     _______        ',
-  '  __(nnnnnnn)__     ',
-  ' (n@n@n@n@n@n@n)    ',
-  ' (s)ss)ss)ss)ss)    ',
-  ' |ssssssssssss~s)   ',
-  ' (sssssssssssss~s)  ',
-  '  (:ssssssss:sss)   ',
-  '  (jj=jjjjjjj=jj)   ',
-  '  |jjj/jjj~jjjjj|   ',
-  '  (jjjjjjj/jjjjj)   ',
-  '  |jjjjjjjjjjjjj|   '
-];
-const VM_PUNCH_SMEAR = [
-  '        ____            ',
-  '    ===(nnnn)==         ',
-  '  == =(ssssss)= ==      ',
-  ' ==  =(ssssss)=  ==     ',
-  '   == (jjjjjj)_ ==      ',
-  '  ==   (j~jjjjj)_  ==   ',
-  '        (jjjjjjjj)_     ',
-  '          (jjjj/jjj)_   ',
-  '           (jjjjjjjjj)  ',
-  '            |jjjjjjjj|  '
-];
-const VM_PUNCH_HIT = [
-  '   \\   *   /        ',
-  '  * _(n@n@)_ *      ',
-  '   (n@n@n@n@)       ',
-  '  *(ssssssss)*      ',
-  '   (ssssssss)       ',
-  '   /  *   (jj)_     ',
-  '           (jjjj)_  ',
-  '           (j~jjjj)_',
-  '            (jjjjjjj)_    ',
-  '             (jjjjjjjj)_  ',
-  '              (jjjj/jjjj)_',
-  '               (jjjjjjjjjj)_',
-  '                (jjjj~jjjjjj)_',
-  '                 (jjjjjjjjjjjj)',
-  '                 |jjjjj/jjjjjj|',
-  '                 |jjjjjjjjjjjj|'
-];
-const VM_PUNCH_REC = [
-  '   ______           ',
-  '  (nnnnnn)__        ',
-  ' (ssssssssss)       ',
-  ' (ssss~sssss)       ',
-  '  (:sssssss:)       ',
-  '  (jj=jjjjj=j)      ',
-  '  |jjjj~jjjjj|      ',
-  '  (jjj/jjjjjj)      ',
-  '  |jjjjjjjjjj|      '
-];
-const VM_PUNCH_WIND_L = mirrorView(VM_PUNCH_WIND);
-const VM_PUNCH_SMEAR_L = mirrorView(VM_PUNCH_SMEAR);
-const VM_PUNCH_HIT_L = mirrorView(VM_PUNCH_HIT);
-const VM_PUNCH_REC_L = mirrorView(VM_PUNCH_REC);
-const PUNCH_SET = [VM_PUNCH_WIND, shiftArt(VM_PUNCH_WIND, 2, -1),
-                   VM_PUNCH_SMEAR, shiftArt(VM_PUNCH_SMEAR, -3, 0),
-                   VM_PUNCH_HIT, shiftArt(VM_PUNCH_HIT, -1, 1),
-                   VM_PUNCH_REC, shiftArt(VM_PUNCH_REC, -2, 1)];
-const PUNCH_SET_L = [VM_PUNCH_WIND_L, shiftArt(VM_PUNCH_WIND_L, -2, -1),
-                     VM_PUNCH_SMEAR_L, shiftArt(VM_PUNCH_SMEAR_L, 3, 0),
-                     VM_PUNCH_HIT_L, shiftArt(VM_PUNCH_HIT_L, 1, 1),
-                     VM_PUNCH_REC_L, shiftArt(VM_PUNCH_REC_L, 2, 1)];
-/* bludgeons ride in the right hand: a rest pose and a full swing each */
-const CM_MELEE = { s: H_SKIN, '@': H_SKIN, n: H_SKIN, '~': H_SKIN, j: H_JKT,
-                   '%': H_GRY, '#': H_DRK, w: H_YEL, '-': H_GRY, '*': H_YEL };
-const CM_KAT  = Object.assign({}, CM_MELEE, { '~': H_PUR, '/': H_GRY, '=': H_GRY });
-const CM_MAUL = Object.assign({}, CM_MELEE, { '~': H_BLU, '[': H_GRY, ']': H_GRY });
-/* which art set and anchor table each swing uses; B sets alternate */
-const MELEE_VM = {
-  bat:    { set: () => BAT_SET,   ax: () => BAT_AX,  cm: () => CM_MELEE, tr: 0.62 },
-  pipe:   { set: () => punchLeft ? PIPE_SET_B : PIPE_SET,
-            ax:  () => punchLeft ? PIPE_AX_B : PIPE_AX, cm: () => CM_MELEE, tr: 0.56 },
-  knife:  { set: () => punchLeft ? KNIFE_SET_B : KNIFE_SET,
-            ax:  () => punchLeft ? PIPE_AX_B : PIPE_AX, cm: () => CM_MELEE, tr: 0.50 },
-  katana: { set: () => KAT_SET,  ax: () => BAT_AX,  cm: () => CM_KAT,  tr: 0.60 },
-  maul:   { set: () => MAUL_SET, ax: () => BAT_AX,  cm: () => CM_MAUL, tr: 0.62 }
-};
-const MELEE_HOLD = {
-  bat:    { art: () => VM_BAT_HOLD,   tr: 0.62, anchor: 'c', off: -0.44, cm: () => CM_MELEE },
-  pipe:   { art: () => VM_PIPE_HOLD,  tr: 0.54, anchor: 'r', off: 0.03,  cm: () => CM_MELEE },
-  knife:  { art: () => VM_KNIFE_HOLD, tr: 0.44, anchor: 'r', off: 0.05,  cm: () => CM_MELEE },
-  katana: { art: () => VM_KAT_HOLD,   tr: 0.62, anchor: 'c', off: -0.40, cm: () => CM_KAT },
-  maul:   { art: () => VM_MAUL_HOLD,  tr: 0.62, anchor: 'c', off: -0.42, cm: () => CM_MAUL }
-};
-/* the kickdeck, seen down its own length: the nose narrows away from
-   you, the tail flares near, and every trick has its own motion */
-const CM_DECK = { '=': H_DRK, '%': H_PUR, '#': H_DRK, o: H_GRY, x: H_JKT,
-                  '<': H_GRY, '>': H_GRY, "'": H_GRY, '`': H_GRY,
-                  '*': H_YEL, '\\': H_GRY, '/': H_GRY, '-': H_GRY,
-                  '|': H_GRY, '(': H_GRY, ')': H_GRY, '[': H_GRY, ']': H_GRY,
-                  '_': H_GRY };
-const VM_DECK_FLAT = [   // rolling: your shoes, the graphic, the trucks
-  '            __            ',
-  '          /=====\\         ',
-  '         /=======\\        ',
-  '         |=======|        ',
-  '        |=========|       ',
-  '        |==%%%%%==|       ',
-  '       xxx=======xxx      ',
-  '       xxx=======xxx      ',
-  '       |===%%%%%===|      ',
-  '      xxx=========xxx     ',
-  '      xxx=========xxx     ',
-  '      (=============)     ',
-  '     [o]===========[o]    ',
-  "      '`'         '`'     "
-];
-const VM_DECK_PUSH = [   // back foot off, kicking
-  '            __            ',
-  '          /=====\\         ',
-  '         /=======\\        ',
-  '         |=======|        ',
-  '        |=========|       ',
-  '        |==%%%%%==|       ',
-  '       xxx=======xxx      ',
-  '       xxx=======xxx      ',
-  '       |===%%%%%===|      ',
-  '       |===========|      ',
-  '       |===========|      ',
-  '       (===========)      ',
-  '      [o]=========[o]   x ',
-  "       '`'       '`'  xxx "
-];
-const VM_DECK_CROUCH = [   // weight down, tail loaded
-  '           ______         ',
-  '         /========\\       ',
-  '        /==========\\      ',
-  '        |==========|      ',
-  '       |============|     ',
-  '       |===%%%%%%===|     ',
-  '      xxxx========xxxx    ',
-  '      xxxx========xxxx    ',
-  '      |====%%%%%%====|    ',
-  '     xxxx==========xxxx   ',
-  '     xxxx==========xxxx   ',
-  '     (===============)    ',
-  '    [o]=============[o]   ',
-  "     '`'           '`'    "
-];
-const VM_DECK_AIR = [   // off the ground, trucks showing
-  '             __           ',
-  '           /====\\         ',
-  '          /======\\        ',
-  '          |======|        ',
-  '         /========\\       ',
-  '        /==%%%%%==\\       ',
-  '       xxx=======xxx      ',
-  '       xxx=======xxx      ',
-  '       \\===%%%%%===/      ',
-  '        \\=========/       ',
-  '         <o>=====<o>      ',
-  '          `-`   `-`       '
-];
-const VM_DECK_LAND = [   // compression, dust off the wheels
-  '           ______         ',
-  '         /========\\       ',
-  '        |==========|      ',
-  '       |============|     ',
-  '       |===%%%%%%===|     ',
-  '      xxxx========xxxx    ',
-  '      xxxx========xxxx    ',
-  '      |====%%%%%%====|    ',
-  '      (===============)   ',
-  '     [o]=============[o]  ',
-  "   '-' '`'         '`' '-'"
-];
-/* every trick reads as its own motion, not a generic blur */
-const DT_KICKFLIP = [
-  [
-    '             /|           ',
-    '            /||           ',
-    '            |%|           ',
-    '            |=|           ',
-    '            |%|           ',
-    '            |=|           ',
-    '           xx|%|          ',
-    '            |=|           ',
-    '            |%|           ',
-    '            (=)           ',
-    '           [o|o]          '
-  ],
-  [
-    '            ____          ',
-    '          /######\\        ',
-    '         /########\\       ',
-    '         |########|       ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        (##########)      ',
-    '       [o]========[o]     '
-  ],
-  [
-    '           |\\             ',
-    '           ||\\            ',
-    '           |%|            ',
-    '           |=|            ',
-    '           |%|            ',
-    '           |=|            ',
-    '           |%|xx          ',
-    '           |=|            ',
-    '           |%|            ',
-    '           (=)            ',
-    '          [o|o]           '
-  ],
-  [
-    '            __            ',
-    '          /=====\\         ',
-    '         /=======\\        ',
-    '         |=======|        ',
-    '        |=========|       ',
-    '        |==%%%%%==|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '      xxx=========xxx     ',
-    '      xxx=========xxx     ',
-    '      (=============)     ',
-    '     [o]===========[o]    ',
-    "      '`'         '`'     "
-  ],
-];
-const DT_HEELFLIP = [
-  [
-    '           |\\             ',
-    '           ||\\            ',
-    '           |%|            ',
-    '           |=|            ',
-    '           |%|            ',
-    '           |=|            ',
-    '           |%|xx          ',
-    '           |=|            ',
-    '           |%|            ',
-    '           (=)            ',
-    '          [o|o]           '
-  ],
-  [
-    '            ____          ',
-    '          /######\\        ',
-    '         /########\\       ',
-    '         |########|       ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        |##########|      ',
-    '        (##########)      ',
-    '       [o]========[o]     '
-  ],
-  [
-    '             /|           ',
-    '            /||           ',
-    '            |%|           ',
-    '            |=|           ',
-    '            |%|           ',
-    '            |=|           ',
-    '           xx|%|          ',
-    '            |=|           ',
-    '            |%|           ',
-    '            (=)           ',
-    '           [o|o]          '
-  ],
-  [
-    '            __            ',
-    '          /=====\\         ',
-    '         /=======\\        ',
-    '         |=======|        ',
-    '        |=========|       ',
-    '        |==%%%%%==|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '      xxx=========xxx     ',
-    '      xxx=========xxx     ',
-    '      (=============)     ',
-    '     [o]===========[o]    ',
-    "      '`'         '`'     "
-  ],
-];
-const DT_SHOVEIT = [
-  [
-    '        ____              ',
-    '      /=====\\__           ',
-    '     /=========\\_         ',
-    '     |===%%%%===\\         ',
-    '    xxx==========\\        ',
-    '    xxx===%%%%====|       ',
-    '     |=============|      ',
-    '      (============)      ',
-    '      [o]========[o]      '
-  ],
-  [
-    '                          ',
-    '     ________________     ',
-    '    (================)    ',
-    '    |==%%%%%%%%%%%%==|    ',
-    '   xxx==============xxx   ',
-    '   xxx==============xxx   ',
-    '    (================)    ',
-    '    [o]            [o]    ',
-    "     '`'            '`'   "
-  ],
-  [
-    '              ____         ',
-    '           __/=====\\       ',
-    '         _/=========\\      ',
-    '         /===%%%%===|      ',
-    '        /==========xxx     ',
-    '       |====%%%%===xxx     ',
-    '      |=============|      ',
-    '      (============)       ',
-    '      [o]========[o]       '
-  ],
-  [
-    '            __            ',
-    '          /=====\\         ',
-    '         /=======\\        ',
-    '         |=======|        ',
-    '        |=========|       ',
-    '        |==%%%%%==|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '      xxx=========xxx     ',
-    '      xxx=========xxx     ',
-    '      (=============)     ',
-    '     [o]===========[o]    ',
-    "      '`'         '`'     "
-  ],
-];
-const DT_NOLLIE = [
-  [
-    '          |=====|         ',
-    '          |==%==|         ',
-    '          |=====|         ',
-    '         /=======\\        ',
-    '        |=========|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '       (===========)      ',
-    '      [o]=========[o]     '
-  ],
-  [
-    '        ___________       ',
-    '       |###########|      ',
-    '       |###########|      ',
-    '       |###########|      ',
-    '        \\=========/       ',
-    '        xx=======xx       ',
-    '        |==%%%%%==|       ',
-    '        (=========)       ',
-    '       <o>=======<o>      '
-  ],
-  [
-    '             __           ',
-    '           /====\\         ',
-    '          /======\\        ',
-    '          |======|        ',
-    '         /========\\       ',
-    '        /==%%%%%==\\       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       \\===%%%%%===/      ',
-    '        \\=========/       ',
-    '         <o>=====<o>      ',
-    '          `-`   `-`       '
-  ],
-  [
-    '            __            ',
-    '          /=====\\         ',
-    '         /=======\\        ',
-    '         |=======|        ',
-    '        |=========|       ',
-    '        |==%%%%%==|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '      xxx=========xxx     ',
-    '      xxx=========xxx     ',
-    '      (=============)     ',
-    '     [o]===========[o]    ',
-    "      '`'         '`'     "
-  ],
-];
-const DT_BIGSPIN = [
-  [
-    '   -                      ',
-    '    --  ____              ',
-    '      /=====\\__     -     ',
-    '     /=========\\_  --     ',
-    '     |===%%%%===\\ -       ',
-    '    xxx==========\\        ',
-    '    xxx===%%%%====|       ',
-    '     |=============|      ',
-    '      (============)      ',
-    '      [o]========[o]      '
-  ],
-  [
-    '  --                 --   ',
-    ' -   ________________   - ',
-    '    (================)    ',
-    '    |==%%%%%%%%%%%%==|    ',
-    '   xxx==============xxx   ',
-    '    (================)    ',
-    ' -  [o]            [o]  - ',
-    '  --                 --   '
-  ],
-  [
-    '                      -   ',
-    '     -            ____ -- ',
-    '     --        __/=====\\  ',
-    '      -      _/=========\\ ',
-    '            /===%%%%===|  ',
-    '           /==========xxx ',
-    '          |====%%%%===xxx ',
-    '         |=============|  ',
-    '         (============)   ',
-    '         [o]========[o]   '
-  ],
-  [
-    '            __            ',
-    '          /=====\\         ',
-    '         /=======\\        ',
-    '         |=======|        ',
-    '        |=========|       ',
-    '        |==%%%%%==|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '      xxx=========xxx     ',
-    '      xxx=========xxx     ',
-    '      (=============)     ',
-    '     [o]===========[o]    ',
-    "      '`'         '`'     "
-  ],
-];
-const DT_IMPOSSIBLE = [
-  [
-    '        ___________       ',
-    '       (===========)      ',
-    '       |==%%%%%%%==|      ',
-    '       (===========)      ',
-    '        [o]     [o]       ',
-    '                          ',
-    '       xxx       xxx      ',
-    '       xxx       xxx      '
-  ],
-  [
-    '                          ',
-    '      _______________     ',
-    '     (===============)    ',
-    '      ---------------     ',
-    '                          ',
-    '       xxx       xxx      ',
-    '       xxx       xxx      '
-  ],
-  [
-    '        [o]     [o]       ',
-    '       (###########)      ',
-    '       |###########|      ',
-    '       (###########)      ',
-    '        -----------       ',
-    '       xxx       xxx      ',
-    '       xxx       xxx      '
-  ],
-  [
-    '            __            ',
-    '          /=====\\         ',
-    '         /=======\\        ',
-    '         |=======|        ',
-    '        |=========|       ',
-    '        |==%%%%%==|       ',
-    '       xxx=======xxx      ',
-    '       xxx=======xxx      ',
-    '       |===%%%%%===|      ',
-    '      xxx=========xxx     ',
-    '      xxx=========xxx     ',
-    '      (=============)     ',
-    '     [o]===========[o]    ',
-    "      '`'         '`'     "
-  ],
-];
-const DECK_TRICKS = { kickflip: DT_KICKFLIP, heelflip: DT_HEELFLIP, ollie: DT_NOLLIE,
-                      'shove-it': DT_SHOVEIT, nollie: DT_NOLLIE,
-                      bigspin: DT_BIGSPIN, impossible: DT_IMPOSSIBLE };
-/*--------------------------- bludgeons -------------------------------------
-  A pipe is a one-handed tool: the off hand stays out of frame, the grip sits
-  low and small on the right, and the pipe itself is a long elbowed length of
-  conduit - a hard L, the horizontal run reaching away across the top. A bat
-  is the opposite: both fists stacked on the grip, and a swing that carries
-  the barrel across nearly the whole screen.
-============================================================================*/
-const VM_PIPE_HOLD = [
-  '     _______________________     ',
-  '    (%%%%%%%%%%%%%%%%%%%%%%#)    ',
-  '    (#%%##%%%%##%%%%##%%%%%%)    ',
-  '    (______________%%%%%%%%%)    ',
-  '                   (%%%##%%%)    ',
-  '                   (%%%%%%%%)    ',
-  '                   (%%##%%%%)    ',
-  '                   (%%%%%%%%)    ',
-  '                   (%%##%%%%)    ',
-  '                   (%%%%%%%%)    ',
-  '                  _(%%%%%%%%)_   ',
-  '                _(n@n%%%%%n@n)_  ',
-  '               (n@n@n@##n@n@n@n) ',
-  '               (ss)ss)ss)ss)ss)  ',
-  '                (jj.jjjjjj.jjj)  ',
-  '                |jj/jjjj,jjjjj|  ',
-  '                |jjjjjjjjjjjjj|  ',
-  '                |jjjjjjjjjjjjj|  '
-];
-/* forehand: the elbow leads, the run sweeps down and across to the left */
-const VM_PIPE_WIND = [
-  '            ______________%%%%%%%%%__ ',
-  '        ___(%%%%%%%%%%%%%%%%%%%%%%%#) ',
-  '       (##%%%%##%%%%##%%%%##%%%%%%%%) ',
-  '       (__________________%%%%%%%%%/  ',
-  '                      _(%%%%%%%%%/    ',
-  '                    _(n@n%%%%n@n)_    ',
-  '                   (n@n@n@#n@n@n@n)   ',
-  '                   (ss)ss)ss)ss)ss)   ',
-  '                   (jj.jjjjjj.jjjj)   ',
-  '                   |jj/jjjj,jjjjjj|   ',
-  '                   |jjjjjjjjjjjjjj|   ',
-  '                   |jjjjjjjjjjjjjj|   '
-];
-const VM_PIPE_SMEAR = [
-  '     ---- ------ ------ -----           ',
-  '   ----- ------ ------ ------ ---       ',
-  '  --- ____________________%%%%__ ---    ',
-  '  -- (%%%%%%%%%%%%%%%%%%%%%%%%%#)  --   ',
-  '  -- (#%%##%%%%##%%%%##%%%%%%%%/   --   ',
-  '   -- (______________%%%%%%%%/    ---   ',
-  '           _(n@n%%%%%n@n)_              ',
-  '          (n@n@n@##n@n@n@n)             ',
-  '          (ss)ss)ss)ss)ss)              ',
-  '          (jjjjjjjjjjjjjj)_             ',
-  '           (jjj,jjjjjjjjjj)_            ',
-  '            (jjjjjjjjjjjjjjj)           ',
-  '            |jjjjjjjjjjjjjjj|           '
-];
-const VM_PIPE_HIT = [
-  '    \\    *    /                            ',
-  '   *  __________________________________   ',
-  '  =*=(%##%%%%##%%%%%##%%%%%##%%%%%%%%%%)---',
-  '   *  \\  *  /             (%%%%%%%%%%%/    ',
-  '    *    *           _(n@n%%%%%%n@n)_      ',
-  '                    (n@n@n@##n@n@n@n)      ',
-  '                    (ss)ss)ss)ss)ss)       ',
-  '                    (jjjjjjj,jjjjjj)_      ',
-  '                     (jjjj/jjjjjjjjj)_     ',
-  '                      (jjjjjjjjjjjjjjj)    ',
-  '                      |jjjj,jjjjjjjjjj|    ',
-  '                      |jjjjjjjjjjjjjjj|    '
-];
-const VM_PIPE_REC = [
-  '               ______            ',
-  '            __(nnnnnn)__         ',
-  '           (n@n@n@n@n@nn)        ',
-  '           (ss)ss)ss)ss)s)       ',
-  '       ____(sssssssssss,s)       ',
-  '    _(%%%%#sssssssssss:sss)      ',
-  '  _(%%##%%/j.jjjjjjjjj.jjj)      ',
-  ' (%%%%%%/  |jj,jjjjjj/jjjj|      ',
-  ' (%%##%/   (jjjj/jjjjjjjjj)      ',
-  ' (%%%/     |jjjjjjjjjjjjjj|      ',
-  ' (#/       |jjjjjjjjjjjjjj|      '
-];
-/* backhand: the whip back the other way - the shaft leads low, the elbow
-   trails, and the run finishes high and right. Not a mirror of the forehand:
-   the hand never changes sides, only the arc does. */
-const VM_PIPE_WIND_B = [
-  '    __%%%%%%%%%%%______________       ',
-  '   (#%%%%%%%%%%%%%%%%%%%%%%%%%#)__    ',
-  '   (%%%%%%##%%%%##%%%%##%%%%%%%%%)    ',
-  '    (%%%%%%%%%_________________)      ',
-  '     (%%%%%%%%)_                      ',
-  '       _(n@n%%%%n@n)_                 ',
-  '      (n@n@n@#n@n@n@n)                ',
-  '      (ss)ss)ss)ss)ss)                ',
-  '      (jj.jjjjjj.jjjj)                ',
-  '      |jj/jjjj,jjjjjj|                ',
-  '      |jjjjjjjjjjjjjj|                ',
-  '      |jjjjjjjjjjjjjj|                '
-];
-const VM_PIPE_SMEAR_B = [
-  '        ----- ------ ------ ----        ',
-  '     --- ------ ------ ------ -----     ',
-  '    --- __%%%%____________________ ---  ',
-  '    -- (#%%%%%%%%%%%%%%%%%%%%%%%%%) --  ',
-  '    --  (%%%%%%%%##%%%%##%%%%%%%%/  --  ',
-  '     ---   (%%%%%%%%%______________) -- ',
-  '              _(n@n%%%%%n@n)_           ',
-  '             (n@n@n@##n@n@n@n)          ',
-  '             (ss)ss)ss)ss)ss)           ',
-  '            _(jjjjjjjjjjjjjj)           ',
-  '           _(jjjjjjjjjj,jjj)            ',
-  '          (jjjjjjjjjjjjjjj)             ',
-  '          |jjjjjjjjjjjjjjj|             '
-];
-const VM_PIPE_HIT_B = [
-  '                             \\    *    /   ',
-  '   __________________________________  *   ',
-  '---(%%%%%%%%%##%%%%%##%%%%%##%%%%##%)=*=   ',
-  '    \\%%%%%%%%%%%)             /  *  /      ',
-  '      _(n@n%%%%%%n@n)_      *    *         ',
-  '     (n@n@n@##n@n@n@n)     *               ',
-  '      (ss)ss)ss)ss)ss)                     ',
-  '     _(jjjjjj,jjjjjjj)                     ',
-  '    _(jjjjjjjjj/jjjj)                      ',
-  '   (jjjjjjjjjjjjjjj)                       ',
-  '   |jjjjjjjjjj,jjjj|                       ',
-  '   |jjjjjjjjjjjjjjj|                       '
-];
-const VM_PIPE_REC_B = [
-  '        ______                   ',
-  '     __(nnnnnn)__                ',
-  '    (n@n@n@n@n@nn)               ',
-  '   (s)ss)ss)ss)ss)               ',
-  '   (s,sssssssssss)____           ',
-  '   (sss:sssssssss#%%%%)_         ',
-  '   (jj.jjjjjjjjj/%%##%%)_        ',
-  '   |jjjj/jjjjjj|  /%%%%%%)       ',
-  '   (jjjjjjjj/jjj)   /%##%%)      ',
-  '   |jjjjjjjjjjjj|     /%%%)      ',
-  '   |jjjjjjjjjjjj|       /#)      '
-];
-/* the bat: two fists stacked on the grip, and a barrel that goes everywhere */
-const VM_BAT_HOLD = [
-  '                       ___wwww___  ',
-  '                     _(wwwww##www) ',
-  '                    (wwww##wwwww/  ',
-  '                   (wwwwwwwww/     ',
-  '                  (www##www/       ',
-  '                 (wwwwwww/         ',
-  '                (www##ww/          ',
-  '               (wwwwww/            ',
-  '              (www##w/             ',
-  '             (wwwww/               ',
-  '            (www#w/                ',
-  '           (wwwww/                 ',
-  '          _(ww#w/_                 ',
-  '        _(n@n@ww@n@n)_             ',
-  '       (n@n@n@n##n@n@n@n)          ',
-  '       (ss)ss)ss)ss)ss)ss)         ',
-  '        (jjj)jj##jj)jjjjj)         ',
-  '      _(n@n@n@ww@n@n@n)_           ',
-  '     (n@n@n@n@n##n@n@n@n@n)        ',
-  '     (ss)ss)ss)ss)ss)ss)ss)        ',
-  '     (jj.jjjjjjjjjjjj.jjjjj)       ',
-  '     |jj/jjjjj,jjjjjjj/jjjjj|      ',
-  '     |jjjjjjj/jjjjjjjjjjjjjj|      ',
-  '     (jjjj,jjjjjjjjjjjjjjjjj)      ',
-  '     |jjjjjjjjjjjjjjjjjjjjjj|      ',
-  '     |jjjjjjjjjjjjjjjjjjjjjj|      '
-];
-const VM_BAT_WIND = [
-  '               _____wwwwwwwwwww___   ',
-  '           ___(#####wwww##wwww##www) ',
-  '         _(www##wwwwwwwwww##wwww/    ',
-  '       _(wwww##wwwww/                ',
-  '     _(wwwww/                        ',
-  '   _(n@n@ww@n@n)_                    ',
-  '  (n@n@n@n##n@n@n)                   ',
-  '  (ss)ss)ss)ss)ss)                   ',
-  '   (jjj)jj##jj)jjj)                  ',
-  '  _(n@n@n@ww@n@n@n)_                 ',
-  ' (n@n@n@n@n##n@n@n@n)                ',
-  ' (ss)ss)ss)ss)ss)ss)                 ',
-  ' (jj.jjjjjjjjjjjj.jj)                ',
-  ' |jj/jjjjj,jjjjjjj/jj|               ',
-  ' |jjjjjjj/jjjjjjjjjjj|               ',
-  ' (jjjj,jjjjjjjjjjjjjj)               ',
-  ' |jjjjjjjjjjjjjjjjjjj|               ',
-  ' |jjjjjjjjjjjjjjjjjjj|               '
-];
-const VM_BAT_SMEAR = [
-  '    ----- ------ ------- --------             ',
-  '  ------ ------- ------- ------ -----         ',
-  ' ----- _______wwwwwwwwwwwwww______ ------     ',
-  ' --- (www##wwwww##wwwwww##wwwwwwww#) ------   ',
-  ' -- (#wwwwww##wwwwwww##wwwwww##www/   -----   ',
-  ' --- (____wwwww/                       ----   ',
-  '   _(n@n@ww@n@n)_                       ---   ',
-  '  (n@n@n@n##n@n@n)                       --   ',
-  '  (ss)ss)ss)ss)ss)                             ',
-  '  _(n@n@n@ww@n@n@n)_                           ',
-  ' (n@n@n@n@n##n@n@n@n)_                         ',
-  ' (ss)ss)ss)ss)ss)ss)jj)_                       ',
-  ' (jj.jjjjjjjjjjjj.jjjjjjj)_                    ',
-  ' |jj/jjjjj,jjjjjjj/jjjjjjjj)                   ',
-  ' |jjjjjjj/jjjjjjjjjjjjjjjjjj)                  ',
-  ' |jjjjjjjjjjjjjjjjjjjjjjjjjj|                  '
-];
-const VM_BAT_HIT = [
-  '   \\\\     *      //                                ',
-  '  *   ______________________________________       ',
-  ' =*=(w###wwww##wwwwww##wwwwww##wwwwww##wwwww)------',
-  '  *   \\\\   *     //                                ',
-  '   *      *          _(n@n@ww@n@n)_                ',
-  '    *        *       (n@n@n@##n@n@n)               ',
-  '                     (ss)ss)ss)ss)s)               ',
-  '                     _(n@n@n@ww@n@n@n)_            ',
-  '                    (n@n@n@n@##n@n@n@n)            ',
-  '                    (ss)ss)ss)ss)ss)ss)            ',
-  '                    (jjjjjjjj,jjjjjjjj)_           ',
-  '                     (jjjjj/jjjjjjjjjjjj)_         ',
-  '                      (jjjjjjjjjjjjjjjjjjj)        ',
-  '                      |jjjj,jjjjjjjjjjjjjj|        ',
-  '                      |jjjjjjjjjjjjjjjjjjj|        '
-];
-const VM_BAT_REC = [
-  '                     ______             ',
-  '                  __(nnnnnn)__          ',
-  '                 (n@n@n@n@n@nn)         ',
-  '                 (ss)ss)ss)ss)s)        ',
-  '           _____(ssssssssssss,s)        ',
-  '       _(wwwww#ssssssssssss:sss)        ',
-  '    _(wwww##ww/jj.jjjjjjjjj.jjj)        ',
-  '  _(www##wwww/  |jj,jjjjjj/jjjj|        ',
-  ' (wwwww##ww/    (jjjj/jjjjjjjjj)        ',
-  ' (w##ww/        |jjjjjjjjjjjjjj|        ',
-  ' (ww#/          |jjjjjjjjjjjjjj|        ',
-  ' (#/            |jjjjjjjjjjjjjj|        '
-];
-// each swing runs coil -> deeper coil -> smear -> smear travelling ->
-// impact -> impact settling -> follow-through -> follow-through dropping
-const PIPE_SET = [VM_PIPE_WIND, shiftArt(VM_PIPE_WIND, 2, -1),
-                  VM_PIPE_SMEAR, shiftArt(VM_PIPE_SMEAR, -3, 0),
-                  VM_PIPE_HIT, shiftArt(VM_PIPE_HIT, -1, 1),
-                  VM_PIPE_REC, shiftArt(VM_PIPE_REC, -2, 1)];
-const PIPE_SET_B = [VM_PIPE_WIND_B, shiftArt(VM_PIPE_WIND_B, -2, -1),
-                    VM_PIPE_SMEAR_B, shiftArt(VM_PIPE_SMEAR_B, 3, 0),
-                    VM_PIPE_HIT_B, shiftArt(VM_PIPE_HIT_B, 1, 1),
-                    VM_PIPE_REC_B, shiftArt(VM_PIPE_REC_B, 2, 1)];
-const BAT_SET = [VM_BAT_WIND, shiftArt(VM_BAT_WIND, 2, -1),
-                 VM_BAT_SMEAR, shiftArt(VM_BAT_SMEAR, -4, 0),
-                 VM_BAT_HIT, shiftArt(VM_BAT_HIT, -1, 1),
-                 VM_BAT_REC, shiftArt(VM_BAT_REC, -2, 1)];
-/* Where each beat of a swing sits. The pose art alone cannot carry a
-   full-width arc, so the travel lives here - but anchoring by raw column
-   would break the moment the grid resized, because a wide pose is clamped
-   by its own row count rather than scaled to the screen. So each beat names
-   an EDGE of its own inked area and where on the screen that edge belongs:
-   'r' pins the far end of the swing to the right flank, 'l' to the left,
-   'm' centres it. The arc reads the same at 60 columns as at 200.
-
-   The bat is a two-handed haymaker: the barrel starts cocked off the right
-   shoulder and finishes past the left hip. The pipe runs the same shape over
-   a shorter, faster arc, and its backhand runs that arc the other way. */
-const BAT_AX    = [['r', 0.93], ['r', 0.95], ['r', 0.88], ['r', 0.80],
-                   ['m', 0.50], ['m', 0.49], ['l', 0.08], ['l', 0.10]];
-const PIPE_AX   = [['r', 0.92], ['r', 0.94], ['r', 0.86], ['r', 0.74],
-                   ['m', 0.52], ['m', 0.50], ['l', 0.12], ['l', 0.14]];
-const PIPE_AX_B = [['l', 0.08], ['l', 0.06], ['l', 0.14], ['l', 0.26],
-                   ['m', 0.48], ['m', 0.50], ['r', 0.88], ['r', 0.86]];
-// how far into its drawn columns a pose actually has ink, so a swing can be
-// hung by its blade rather than by the blank margin around it
-function inkSpan(art, tr){
-  const g = groundArt(art), gh = g.length, gw = viewW(g);
-  const t = Math.min(tr, Math.round(gh * 3.5));
-  const tc = Math.max(2, Math.round(t * gw / gh));
-  if (!art._ink) art._ink = {};
-  const hit = art._ink[tc];
-  if (hit) return hit;
-  let l = tc, r = -1;
-  for (let y = 0; y < t; y++){
-    const sr = g[(y * gh / t) | 0];
-    for (let x = 0; x < tc; x++){
-      const ch = sr[(x * gw / tc) | 0];
-      if (!ch || ch === ' ') continue;
-      if (x < l) l = x;
-      if (x > r) r = x;
-    }
-  }
-  if (r < 0){ l = 0; r = tc - 1; }
-  return (art._ink[tc] = { l, r });
-}
-// A swing pose is far wider than it is tall, and drawViewArt sizes it from
-// its HEIGHT - so on a small grid the barrel runs off both edges and most of
-// the pose is painted into nothing. Cap the request so the drawn art fits the
-// screen it is on. At full resolution this never binds.
-function fitTr(art, tr, cols){
-  const g = groundArt(art);
-  return Math.min(tr, Math.floor(cols * 1.02 * g.length / viewW(g)));
-}
-function swingAX(art, tr, rule, cols){
-  const k = inkSpan(art, tr), at = cols * rule[1];
-  return Math.round(rule[0] === 'r' ? at - k.r
-                  : rule[0] === 'l' ? at - k.l
-                                    : at - (k.l + k.r) * 0.5);
-}
-/* consuming, at full body scale - each item its own silhouette and grip:
-   squat corrugated cup / slim tilted can / flat latched case */
-const VANIM = {
-  noodles: { dur: 1.5, cmap: { W: H_WHT, '"': H_WHT, '=': H_WHT, r: H_RED,
-                               n: H_YEL, '~': H_WHT, s: H_SKIN, j: H_JKT }, frames: [
-    [ '        ~       ~     ~     ',
-      '     ~      ~      ~        ',
-      '        ~       ~           ',
-      '                   \\ \\    ',
-      '                  \\ \\     ',
-      '   ________________\\_\\_   ',
-      '  (===================~=)   ',
-      '  |W"W"W"W"W"W"W"W"W"W"W|   ',
-      '   \\=)=)=)=)=)=)=)=)=)/    ',
-      ' (ss\\rrrrrrrrrrrrrrrr/ss)  ',
-      '(ssss\\=)=)=)=)=)=)=)/ssss) ',
-      '|sssss(______________)sssss|',
-      ' (ssssssssssssssssssssssss) ',
-      ' |jjssssssssssssssssssssjj| ',
-      ' |jjjj.jjjjj,jjjjjj.jjjjjj| ',
-      ' (jjjjjj/jjjjjjjj\\jjjjjjj) ' ],
-    [ '   ~ ~    ~~    ~ ~    ~    ',
-      '  ~    \\ \\  ~~    ~       ',
-      '        \\n\\               ',
-      '        n\\ \\n             ',
-      '        n n  n              ',
-      '   ______n_n__n_______      ',
-      '  (nnn~nnnnnnnn~nnnnn)      ',
-      '  |W"W"W"W"W"W"W"W"W"|      ',
-      '   \\=)=)=)=)=)=)=)=/       ',
-      ' (ss\\rrrrrrrrrrrrr/ss)     ',
-      '(ssss\\=)=)=)=)=)=/ssss)    ',
-      '|sssss(____________)sssss|  ',
-      ' (ssssssssssssssssssssss)   ',
-      ' |jjssssssssssssssssssjj|   ',
-      ' |jjjj.jjjj,jjjjj.jjjjjj|   ',
-      ' (jjjjj/jjjjjjjj\\jjjjjj)   ' ] ] },
-  soda: { dur: 1.2, cmap: { '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT,
-                            C: H_BLU, '!': H_WHT, "'": H_WHT, '*': H_WHT,
-                            s: H_SKIN, j: H_JKT }, frames: [
-    [ '        __ __          ',
-      '       (=[o]=)         ',
-      '       |!CCC:|         ',
-      '       |!CCC:|         ',
-      '       |!C/C:|         ',
-      '       |!CCC:|         ',
-      "       |!C'C:|         ",
-      '       |!CCC:|         ',
-      "       |!CC':|         ",
-      '       |=====|         ',
-      '    ___(_____)___      ',
-      '  (sss(       )sss)    ',
-      ' (ssss(_______)ssss)   ',
-      ' |ssssssssssssssssss|  ',
-      ' (jjss,ssssssss.sjj)   ',
-      ' |jjjjjsss/sssjjjjj|   ',
-      ' (jjjjjjjjjjjjjjjjj)   ' ],
-    [ "        * ' *  '       ",
-      "      '  * __*_        ",
-      '         _(=[o]=)      ',
-      '        /!CCC:/        ',
-      '        /!CCC:/        ',
-      '       /!C/C:/         ',
-      '       /!CCC:/         ',
-      '      /!CCC:/          ',
-      '      /=====/          ',
-      '    __(_____)__        ',
-      '  (sss(      )sss)     ',
-      ' (ssss(______)ssss)    ',
-      ' |ssssssssssssssssss|  ',
-      ' (jjss,ssssssss.sjj)   ',
-      ' |jjjjjsss/sssjjjjj|   ',
-      ' (jjjjjjjjjjjjjjjjj)   ' ] ] },
-  medkit: { dur: 1.6, cmap: { W: H_WHT, r: H_RED, '+': H_RED, '=': H_GRY,
-                              '[': H_GRY, ']': H_GRY, '@': H_WHT, i: H_BLU,
-                              '~': H_WHT, s: H_SKIN, j: H_JKT }, frames: [
-    [ '          ____                ',
-      '         (____)               ',
-      '   [====================]     ',
-      '   |WWWWWWWWWrrWWWWWWWWW|     ',
-      '   |WWWWWrrrrrrrrrrWWWWW|     ',
-      '   |WWWWWWWWWrrWWWWWWWWW|     ',
-      '   [==[]============[]==]     ',
-      '  s(____________________)s    ',
-      ' (ss|                  |ss)   ',
-      ' (sss|________________|sss)   ',
-      '  |jjss|          |ssjj|      ',
-      '  |jj/j|          |j=jj|      ',
-      '  (jjjj)          (jjjj)      ' ],
-    [ '    +     +      +    +      ',
-      '      _________________      ',
-      '     /WWWWWWWrrWWWWWWW/      ',
-      '    /WWWWWrrrrrrWWWWW/       ',
-      '   /WWWWWWWWrrWWWWWW/        ',
-      '   [====================]    ',
-      '   |(@)(@)[i][i](@)(@)~~|    ',
-      '   [==[]============[]==]    ',
-      '  s(____________________)s   ',
-      ' (ss|       +          |ss)  ',
-      ' (sss|________________|sss)  ',
-      '  |jjss|          |ssjj|     ',
-      '  |jj/j|          |j=jj|     ',
-      '  (jjjj)          (jjjj)     ' ] ] }
-};
-/* ---- the new rituals: shared grips, per-item tops and palettes.
-   grip folds use , and . (glyphs no item cmap touches), so the same coat
-   renders the same under every ritual ------------------------------------- */
-const VG_CUP = [                              // both palms under, arms merging
-  '   ___(______________)___   ',
-  '  (sss(              )sss)  ',
-  ' (ssssssssssssssssssssssss) ',
-  ' |jjssssssssssssssssssssjj| ',
-  ' |jjjj.jjjjj,jjjjjj.jjjjjj| ',
-  ' (jjjjjj,jjjjjjjj,jjjjjjj)  ' ];
-const VG_ONE = [                              // one hand, forearm off right
-  '        _(sss(sss)_         ',
-  '       (sssssssssss)        ',
-  '        (sss,ssssss)_       ',
-  '        |jj.jjjjjjjjj)_     ',
-  '         (jjjj,jjjjjjjj)_   ',
-  '          (jjjjjjj,jjjjjj)  ',
-  '           (jjjjjjjjjjjjj)  ' ];
-const VG_ARM = [                              // the left forearm, presented
-  '  ______________________    ',
-  ' (ssssssssssssssssssssss)__ ',
-  ' (jj.jjjjjjjjj,jjjjjjjjjjjj)',
-  ' (jjjjjjjj,jjjjjjjjj.jjjjjj)' ];
-const VG_PALM = [                             // an open hand, fingers apart
-  '     _(ssss(s(s(ss)_        ',
-  '    (sss,sssssssssss)       ',
-  '     (sss,sssssssss)        ',
-  '     |jj.jjjjjjj.jj|        ',
-  '      (jjjj,jjjjjj)         ',
-  '      |jjjjjjjjjjj|         ' ];
-const va = (dur, cmap, grip, ...tops) =>
-  ({ dur, cmap, frames: tops.map(t => t.concat(grip)) });
-// a real bowl of ramen: wood chopsticks, patterned band, slurp, put-down
-VANIM.ramen = va(1.7,
-  { n: H_YEL, '~': H_WHT, W: H_WHT, r: H_RED, '=': H_WHT, '\\': H_YEL,
-    '-': H_YEL, s: H_SKIN, j: H_JKT },
-  VG_CUP,
-  [ '      ~     ~     ~         ',
-    '   ~     ~     ~            ',
-    '              \\ \\         ',
-    '               \\ \\        ',
-    '   _____________\\_\\_____  ',
-    '  (nnn~nnnnnnnnn\\n\\n~nnn) ',
-    '  |rWrWrWrWrWrWrWrWrWrWrW|  ',
-    '   (WWWWWWWWWWWWWWWWWWWW)   ',
-    '     (=)=)=)=)=)=)=)=)/     ',
-    '      (______________)      ' ],
-  [ '  ~ ~   ~~   ~ ~   ~~   ~   ',
-    '    ~ \\ \\ ~   ~~    ~     ',
-    '       \\n\\  ~             ',
-    '       n\\ \\n              ',
-    '   _____n__n_\\_\\________  ',
-    '  (nn~nnnnnnnnnnnnnn~nnn)   ',
-    '  |rWrWrWrWrWrWrWrWrWrWr|   ',
-    '   (WWWWWWWWWWWWWWWWWWW)    ',
-    '     (=)=)=)=)=)=)=)=/      ',
-    '      (_____________)       ' ],
-  [ '            ~               ',
-    '        ~       ~           ',
-    '                            ',
-    '                            ',
-    '   _____--------________    ',
-    '  (nn~nnnnnnnnnnnnn~nnn)    ',
-    '  |rWrWrWrWrWrWrWrWrWrW|    ',
-    '   (WWWWWWWWWWWWWWWWWW)     ',
-    '     (=)=)=)=)=)=)=)/       ',
-    '      (____________)        ' ]);
-// handheld snacks: four real silhouettes, bites that fall down
-VANIM.bao = va(1.1,
-  { B: H_WHT, '@': H_RED, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '                            ',
-    '           __/|\\__         ',
-    '         _(BB\\|/BB)_       ',
-    '        (BBBBBBBBBBBB)      ',
-    '        (BB@@BBBB@@BB)      ',
-    '         (BBBBBBBBBB)       ',
-    '          (________)        ' ],
-  [ '          __/|\\__          ',
-    '        _(BB\\|/B(__        ',
-    '        (BBBBBBB(@@)        ',
-    '        (BB@@BBB(_/         ',
-    '         (BBBBBBBB)         ',
-    "               '  '         ",
-    '          (________)        ' ]);
-VANIM.onigiri = va(1.1,
-  { B: H_WHT, '@': H_DRK, '<': H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '                            ',
-    '             __             ',
-    '           _(BB)_           ',
-    '          (BBBBBB)          ',
-    '         (BBBBBBBB)         ',
-    '        (BB@@@@@@BB)        ',
-    '         (__@@@@__)         ' ],
-  [ '                            ',
-    '             __             ',
-    '           _(BB<            ',
-    '          (BBBB<            ',
-    '         (BBBBBB<           ',
-    "        (BB@@@@@BB)  '      ",
-    "         (__@@@@__) '       " ]);
-VANIM.taiyaki = va(1.1,
-  { B: H_YEL, '@': H_RED, o: H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '                            ',
-    '                            ',
-    '        ________   _        ',
-    '      _(BoBBBBBB)_/ /       ',
-    '     (BBB@B@B@BBBB\\ \\_    ',
-    '      (BBBBBBBBBB)\\_/      ',
-    '       (________)           ' ],
-  [ '                            ',
-    '                            ',
-    '        ______              ',
-    '      _(BoBBBB(@@           ',
-    '     (BBB@B@BB(@@           ',
-    "      (BBBBBBB(_/  '        ",
-    "       (______)  ' '        " ]);
-VANIM.apple = va(1.1,
-  { B: H_GRN, '@': H_WHT, '`': H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '            _(B)            ',
-    '           |/               ',
-    '        _(B@@BBBB)_         ',
-    '       (BBBBBBBBBBB)        ',
-    '       (BBBBBBBBBBB)        ',
-    '        (BBBBBBBBB)         ',
-    '         (_______)          ' ],
-  [ '            _(B)            ',
-    '           |/               ',
-    '        _(B@@BB(__          ',
-    '       (BBBBBBB(            ',
-    '       (BBBBBBB(_/          ',
-    '        (BBBBBBBB)  `       ',
-    '         (_______)          ' ]);
-VANIM.gyoza = va(1.3,                          // six on the tray, honestly
-  { G: H_WHT, '.': H_DRK, '=': H_GRY, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  VG_CUP,
-  [ '                            ',
-    '    __  __  __  __  __  __  ',
-    '   (G.)(G.)(G.)(G.)(G.)(G.)',
-    '  [======================]  ',
-    '  (______________________)  ' ],
-  [ "        '    '              ",
-    '    __  __      __  __      ',
-    '   (G.)(G.)    (G.)(G.)     ',
-    '  [======================]  ',
-    '  (______________________)  ' ],
-  [ "       '   '    '           ",
-    '                __          ',
-    '               (G.)         ',
-    '  [======================]  ',
-    '  (______________________)  ' ]);
-VANIM.skewer = va(1.2,                         // one stick, eaten down it
-  { K: H_GRN, '#': H_DRK, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '              __/           ',
-    '            _(K#)           ',
-    '           (KK#)/           ',
-    '           _(#K)/           ',
-    '          (K#K)/            ',
-    '           (K)/             ',
-    '            /               ',
-    '           /                ' ],
-  [ "        '    '              ",
-    '              __/           ',
-    '            _(K#)           ',
-    '           (KK#)/           ',
-    '             /              ',
-    '            /               ',
-    '           /                ',
-    '          /                 ' ],
-  [ "       '   '                ",
-    '              /             ',
-    '             /              ',
-    '            /               ',
-    '           /                ',
-    '          /                 ',
-    '         /                  ',
-    '        /                   ' ]);
-VANIM.kebab = { dur: 1.2,                      // same stick, vat-meat palette
-  cmap: { K: H_RED, '#': H_YEL, "'": H_YEL, s: H_SKIN, j: H_JKT },
-  frames: VANIM.skewer.frames };
-VANIM.sake = va(1.3,                           // tokkuri: lift, tip, drain
-  { W: H_WHT, r: H_RED, '~': H_WHT, '`': H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '                            ',
-    '           __               ',
-    '          (WW)              ',
-    '          |WW|              ',
-    '         (WWWW)             ',
-    '        (WWrrWW)            ',
-    '        (WWWWWW)            ',
-    '         (____)             ' ],
-  [ '          ~  ~              ',
-    '                            ',
-    '            ___             ',
-    '            \\WW\\          ',
-    '             \\WW\\         ',
-    '            (WWWW)          ',
-    '            (WrrW)          ',
-    '             (___)          ' ],
-  [ '                            ',
-    '                            ',
-    '          (__)              ',
-    '          /WW/              ',
-    '         /WWrr/             ',
-    '         /WWWW/             ',
-    '          (__)              ',
-    '            `               ' ]);
-VANIM.boba = va(1.4,                           // the pearls actually travel
-  { '!': H_GRY, P: H_PUR, o: H_DRK, W: H_WHT, s: H_SKIN, j: H_JKT },
-  VG_CUP,
-  [ '              !             ',
-    '              !             ',
-    '          ____!___          ',
-    '        _(WWWW!WWW)_        ',
-    '       |PPPPPP!PPPPP|       ',
-    '       |PPPPPP!PPPPP|       ',
-    '       |PoPoPo!oPoPo|       ',
-    '        (oooooooooo)        ',
-    '         (________)         ' ],
-  [ '              !             ',
-    '              o             ',
-    '          ____!___          ',
-    '        _(WWWW!WWW)_        ',
-    '       |PPPPPP!PPPPP|       ',
-    '       |PPPPPP!PPPPP|       ',
-    '       |Po oPo!oP oo|       ',
-    '        (o       o)         ',
-    '         (________)         ' ],
-  [ '              !             ',
-    '              !             ',
-    '          ____!___          ',
-    '        _(WWWW!WWW)_        ',
-    '       |      !     |       ',
-    '       |P     !    P|       ',
-    '       | PPo  !  oPP|       ',
-    '        (          )        ',
-    '         (________)         ' ]);
-// the shelf: each substance is its own object on the same open palm
-VANIM.chill = va(1.1,
-  { G: H_GRN, o: H_GRN, '*': H_GRN, "'": H_WHT, s: H_SKIN, j: H_JKT },
-  VG_PALM,
-  [ '                            ',
-    '          _     _           ',
-    '         (o)   (o)          ',
-    '         (GGGGGGG)          ',
-    '          (GG GG)           ' ],
-  [ '           *                ',
-    '          (G)               ',
-    "         '   '              ",
-    '                            ',
-    '                            ' ],
-  [ '       *   *    *           ',
-    '     *    *   *             ',
-    '                            ',
-    '                            ',
-    '                            ' ]);
-VANIM.haze = va(1.1,
-  { H: H_PUR, '*': H_PUR, '[': H_DRK, ']': H_DRK, s: H_SKIN, j: H_JKT },
-  VG_PALM,
-  [ '                            ',
-    '                            ',
-    '          ______            ',
-    '         [HHHHHH]           ',
-    '         [HHHHHH]           ' ],
-  [ '            *               ',
-    '          [HH]              ',
-    '         *    *             ',
-    '                            ',
-    '                            ' ],
-  [ '       *   *    *           ',
-    '     *    *   *             ',
-    '                            ',
-    '                            ',
-    '                            ' ]);
-VANIM.staticd = va(1.1,
-  { H: H_WHT, '#': H_PUR, '*': H_PUR, '[': H_DRK, ']': H_DRK,
-    s: H_SKIN, j: H_JKT },
-  VG_PALM,
-  [ '                            ',
-    '                            ',
-    '          ______            ',
-    '         [HH#HHH]           ',
-    '         [HHHH#H]           ' ],
-  [ '            #               ',
-    '          [H#]              ',
-    '         *    #             ',
-    '                            ',
-    '                            ' ],
-  [ '       #   *    #           ',
-    '     *    #   *             ',
-    '                            ',
-    '                            ',
-    '                            ' ]);
-VANIM.ghost = va(1.0,                          // a mound of dust, blown
-  { '*': H_WHT, '`': H_WHT, '~': H_WHT, s: H_SKIN, j: H_JKT },
-  VG_PALM,
-  [ '                            ',
-    '                            ',
-    '           `````            ',
-    '         _(*****)_          ',
-    '          (*****)           ' ],
-  [ '        ` ~ * ` ~  *        ',
-    '      ~ * ` ~ * `   ~       ',
-    '         ` ~ `              ',
-    '                            ',
-    '                            ' ]);
-VANIM.rush = va(1.0,                           // the inhaler, puff at the nozzle
-  { I: H_RED, '=': H_GRY, D: H_GRY, '~': H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '                            ',
-    '                            ',
-    '           ____             ',
-    '          |IIII|            ',
-    '          |IIII|            ',
-    '         _|IIII|_           ',
-    '        (I======I)          ',
-    '         (______)==D        ' ],
-  [ '                            ',
-    '           ____             ',
-    '          |IIII|            ',
-    '         _|IIII|_           ',
-    '        (I======I)  ~ ~~    ',
-    '         (______)==D~~ ~    ',
-    '                     ~      ',
-    '                            ' ]);
+/*==================== the rituals: what the hands know =====================
+  The ASCII frames died with the ASCII viewmodel - the rig performs every
+  ritual in voxels now - so what a ritual IS has boiled down to its clock:
+  how long your hands are spoken for. The durations run long on purpose.
+  A bowl of ramen at seventy credits was over in 1.7 seconds, which is a
+  transaction, not a meal: now there is the raise, the taking - bite after
+  bite, sip after sip - and the put-away, and your hands are busy the whole
+  time, in a city where that can matter. The cigarette keeps its own burn -
+  a loop was always priced in minutes, not seconds. */
+const VANIM = {};
 {
-  const T_INJ1 = [
-    '            __              ',
-    '           |II|             ',
-    '           |II|             ',
-    '          [=II=]            ',
-    '           |##|             ',
-    '           \\##/            ',
-    '            \\/             ' ];
-  const T_INJ2 = [
-    '     *   |   |   *          ',
-    '        *|  *|              ',
-    '           |II|             ',
-    '          [=II=]            ',
-    '           |##|             ',
-    '           \\##/            ',
-    '            \\/             ' ];
-  const T_INJ3 = [
-    '            __              ',
-    '           |  |             ',
-    '           |  |             ',
-    '          [====]            ',
-    '           |  |             ',
-    '           \\ /             ',
-    '            \\/             ' ];
-  const INJ = (icol) => va(1.2,
-    { I: icol, '*': icol, '|': icol, '=': H_GRY, '#': H_DRK,
-      s: H_SKIN, j: H_JKT }, VG_ARM, T_INJ1, T_INJ2, T_INJ3);
-  VANIM.overclock = INJ(H_BLU);
-  VANIM.mirror    = INJ(H_PUR);
+  const D = { eat: 3.4, drink: 2.6, pill: 1.9, inhale: 2.6, jab: 3.0 };
+  const D1 = { ramen: 4.2, noodles: 3.8, medkit: 3.8, boba: 3.0, sake: 3.2 };
+  for (const id in CONSUME_CLASS)
+    VANIM[id] = { dur: D1[id] || D[CONSUME_CLASS[id]] || 2.4 };
+  VANIM.cigarette = { dur: 4.4, loop: 1 };
 }
-VANIM.numb = va(1.4,                            // carry, press, adhered
-  { N: H_BLU, '+': H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ARM,
-  [ '                            ',
-    '         ________           ',
-    '      __|NNNNNNNN|__        ',
-    '     (ss|NN+NN+NN|ss)       ',
-    '      (s|NNNNNNNN|s)        ',
-    '       (ssssssssss)         ' ],
-  [ '                            ',
-    '                            ',
-    '        __________          ',
-    '      _(ssssssssss)_        ',
-    '     (ssssssssssssss)       ',
-    '     |NN(ssssssss)NN|       ' ],
-  [ '       +    +    +          ',
-    '     +   ________   +       ',
-    '        |NNNNNNNN|          ',
-    '        |NN+NN+NN|          ',
-    '        |NNNNNNNN|          ',
-    '                            ' ]);
-VANIM.coffee = va(1.0,                          // squat can, steam not fizz
-  { C: H_YEL, '#': H_DRK, '=': H_GRY, '[': H_GRY, ']': H_GRY, o: H_WHT,
-    '~': H_WHT, s: H_SKIN, j: H_JKT },
-  VG_ONE,
-  [ '        ~   ~               ',
-    '      ~   ~                 ',
-    '       ______               ',
-    '      (=[o]==)              ',
-    '      |CCCCCC|              ',
-    '      |C####C|              ',
-    '      |CCCCCC|              ',
-    '      (______)              ' ],
-  [ '          ~  ~              ',
-    '        ~                   ',
-    '         ____               ',
-    '       _(=[o]=)             ',
-    '       /CCCCC/              ',
-    '      /C####/               ',
-    '      /CCCC/                ',
-    '      (____)                ' ]);
-
-VANIM.cigarette = { dur: 4.4, loop: 1,
-  cmap: { W: H_WHT, e: H_RED, E: H_YEL, '~': H_GRY, '*': H_GRY,
-          s: H_SKIN, j: H_JKT },
-  frames: [
-    ['                            ', '                            ', '              ~             ', '             ~              ', '              ~             ', '             ~              ', '            ~               ', '           ~                ', '                            ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '             ~              ', '              ~             ', '             ~              ', '            ~               ', '           ~                ', '                            ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '           ~ ~              ', '          ~   ~             ', '           ~ ~              ', '            ~               ', '                            ', '           |E|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '                            ', '          ~~ ~~             ', '         ~  ~  ~            ', '          ~~~~~             ', '           |E|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '                            ', '         ~~~ ~~~            ', '        ~  ~~~  ~           ', '         ~~~~~~~            ', '           |E|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '                            ', '      *  ~~~~~  *           ', '     * ~~~~~~~~~ *          ', '      *~~~~~~~~~*           ', '        ~~~~~~~             ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '                            ', '   *   ~~~~~~~~~   *        ', '  *  ~~~~~~~~~~~~~  *       ', '   * ~~~~~~~~~~~~~ *        ', '      *~~~~~~~~~*           ', '         ~~~~~              ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  '],
-    ['                            ', '                            ', '  ~   ~~~~~~~~~~~   ~       ', '    ~  ~~~~~~~~~  ~         ', '      ~ ~~~~~~~ ~           ', '         ~~~~~              ', '          ~ ~               ', '           ~                ', '                            ', '           |e|              ', '           |W|              ', '           |W|              ', '        __(sWs(ss)__        ', '       (ssssssssssss)       ', '        (ss,ssssssss)_      ', '        |jj.jjjjjjjjj)_     ', '        (jjjj,jjjjjjjjj)_   ', '        (jjjjjjj,jjjjjjjj)  ', '        (jjjjjjjjjjjjjjjj)  ']
-  ] };
-for (const k in VANIM)                        // every ritual, twice the frames
-  if (VANIM[k] && VANIM[k].frames) VANIM[k].frames = tweenFrames(VANIM[k].frames);
 let vAnim = null, smokeGlow = 0;
 /* What the hands are doing, for the body to read. The viewmodel's own state
    IS that state - there is nothing to keep alongside it, because every one of
@@ -22993,6 +21726,8 @@ function spritePass(){
     const f = rx * dirX + ry * dirY;
     if (f > -1.2 && f < MD) drawList.push({ d: f, k: 4, o: null });
   }
+  // and your own hands: the nearest solid of every frame they are on screen
+  if (fpRigVisible()) drawList.push({ d: 0.4, k: 7, o: null });
   const vp = visibleProps();
   for (let i = 0; i < vp.length; i++){
     const p = vp[i];
@@ -23053,6 +21788,8 @@ function spritePass(){
       if (o.yaw === undefined) o.yaw = 0;
       drawModel(o.x, o.y, 0, o.len, 1.55, ART.carSide, o.sb, o.sd, 0,
                 o.yaw, o.wid / o.len, 1);
+    } else if (it.k === 7){
+      drawFpRig();
     } else if (it.k === 3){
       drawSprite(o.x, o.y, o.z, 0.36, 0.32, ART.spark,
                  SPARK_SL.base, SPARK_SL.dens, false, C.nAmber);
@@ -29741,26 +28478,12 @@ function hudPass(){
   // ---- held weapon, reticle, or whichever mode owns the screen ----
   const im = topMode();
   if (!im){
-    // ---- the player exists as arms: guard, weapon, or ritual --------------
+    /* ---- the player exists as arms - but the arms are WORLD now -----------
+       The rig draws in the sprite pass with everything else: same palette,
+       same rays, same occlusion. What is left here is the chrome the world
+       cannot carry: spark glyphs, score strings, and the scope tube. */
     if (!cam.riding){
-      const bob = Math.round(cam.walkPhase) & 1;
-      if (skating){                             // the deck under your feet
-        let dart = VM_DECK_FLAT;
-        if (skTrick && airT > 0){
-          const set = DECK_TRICKS[skTrick.base] || DT_KICKFLIP;
-          const prog = clamp(skTrick.t / skTrick.dur, 0, 0.999);
-          dart = set[(prog * set.length) | 0];
-        }
-        else if (airT > 0) dart = VM_DECK_AIR;
-        else if (crouchT > 0 || ollieHold >= 0) dart = VM_DECK_CROUCH;
-        else if (landT > 0) dart = VM_DECK_LAND;
-        else if (pushArtT > 0) dart = VM_DECK_PUSH;
-        const dh = Math.max(6, Math.round(rows * 0.30));   // a deck you can see
-        const dw = Math.round(dh * viewW(dart) / dart.length);
-        const rise = airT > 0
-          ? Math.round(Math.sin(Math.min(1, 1 - Math.max(0, airT) / airDur) * Math.PI) * dh * 0.35) : 0;
-        const shift = Math.round(-skLean * 2);  // the board tracks out under a carve
-        drawViewArt(dart, (cols >> 1) - (dw >> 1) + shift, rows - dh - rise, dh, CM_DECK);
+      if (skating){
         for (const p2 of skParts) hudCell(p2.c, p2.r, p2.ch, p2.col);
         if (styleN > 0 || skCombo > 1){
           const stx = 'STYLE ' + styleN + (skCombo > 1 ? ' x' + skCombo : '');
@@ -29772,120 +28495,10 @@ function hudPass(){
           hudStr(Math.max(1, (cols - cn.length) >> 1), rows - 4, cn, H_YEL);
         }
       }
-      if (vAnim){
-        const fr = vAnim.d.frames[Math.min(vAnim.d.frames.length - 1,
-                     (vAnim.t / vAnim.d.dur * vAnim.d.frames.length) | 0)];
-        const tr = Math.round(rows * 0.42);            // 2.5x the old ritual
-        const tw = Math.round(tr * viewW(fr) / fr.length);
-        drawViewArt(fr, (cols - tw) >> 1, rows - tr, tr, vAnim.d.cmap);
-      } else if (punchT > 0){
-        const mw = meleeStats();
-        // Only bare hands keep a guard up. Both of the bat's hands are on its
-        // grip, and the pipe is a one-hander - its off hand is out of frame.
-        if (mw.id === 'fist'){
-          const gt = Math.round(rows * 0.30);
-          const gw = Math.round(gt * viewW(VM_FIST_R) / VM_FIST_R.length);
-          const off = Math.round(cols * 0.19);
-          if (punchLeft) drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - gt + 2, gt, CM_ARM);
-          else drawViewArt(VM_FIST_L, (cols >> 1) - off - gw, rows - gt + 2, gt, CM_ARM);
-        }
-        // eight beats to a swing: every pose gets a half-step of travel
-        const sc = punchDur / mw.cool;
-        const e = punchDur - punchT;
-        const b0 = mw.beats[0] * sc, b1 = mw.beats[1] * sc, b2 = mw.beats[2] * sc;
-        const ph = e < b0 * 0.5 ? 0 : e < b0 ? 1
-                 : e < b0 + (b1 - b0) * 0.5 ? 2 : e < b1 ? 3
-                 : e < b1 + (b2 - b1) * 0.4 ? 4 : e < b2 ? 5
-                 : e < b2 + (punchDur - b2) * 0.5 ? 6 : 7;
-        let art, cmA = CM_ARM, axf;
-        const mv = MELEE_VM[mw.id];
-        if (mv){ art = mv.set()[ph]; axf = mv.ax()[ph]; cmA = mv.cm(); }
-        else art = punchLeft ? PUNCH_SET_L[ph] : PUNCH_SET[ph];
-        let tr = Math.round(rows * (mv ? mv.tr : 0.56));
-        if (axf !== undefined) tr = fitTr(art, tr, cols);   // keep it on screen
-        const tw = Math.round(tr * viewW(art) / art.length);
-        let ax;
-        if (axf !== undefined) ax = swingAX(art, tr, axf, cols);  // the arc is authored
-        else if (ph === 2)                  // fist lands beside the reticle
-          ax = punchLeft ? (cols >> 1) - 6 - Math.round(tw * 0.75)
-                         : (cols >> 1) + 6 - Math.round(tw * 0.25);
-        else if (ph === 1)                  // the smear reaches across
-          ax = punchLeft ? (cols >> 1) - tw + 6 : (cols >> 1) - 6;
-        else {                              // wind / recover at the flank
-          const ins = Math.max(0, Math.round((cols - 2 * tw - 6) * 0.125));
-          ax = punchLeft ? 3 + ins : cols - tw - 3 - ins;
-        }
-        drawViewArt(art, ax, rows - tr, tr, cmA);
-      } else if (scopeUp()){
+      if (scopeUp()){
         // Up at the eye. The rifle itself is behind your cheek and out of
         // shot; what you see is the tube, so that is all that is drawn.
         drawScope();
-      } else if (GUNS[weaponId()]){
-        const gid = weaponId();
-        const gart = VM_GUNS[gid] || VM_GUN;
-        // 0.42, not 0.60: see the note over VM_GUN_ARMS. The sight still lands
-        // on the crosshair, so nothing about aiming changes - there is simply
-        // a third more street under it.
-        const tr = Math.round(rows * 0.42);
-        // work out where the front sight will actually land once the art is
-        // grounded and scaled, then hang the gun so the post sits on the
-        // crosshair instead of beside it
-        const ga = groundArt(gart), gah = ga.length, gaw = viewW(ga);
-        const gtr = Math.min(tr, Math.round(gah * 3.5));
-        const gtc = Math.max(2, Math.round(gtr * gaw / gah));
-        const sightX = Math.round(((GUN_SIGHTS[gid] !== undefined
-                        ? GUN_SIGHTS[gid] : GUN_SIGHT_COL) + 0.5) * gtc / gaw - 0.5);
-        // recoil in stages: the buck, the settle, the return
-        const kick = muzzleT > 0.06 ? 3 : muzzleT > 0.03 ? 2 : muzzleT > 0 ? 1 : 0;
-        const gx = (cols >> 1) - sightX, gy = rows - tr + bob + kick;
-        /* A scoped gun is drawn with a hole in it and a ring round the hole -
-           the tube, seen from behind, mounted on the weapon rather than
-           painted on the screen. It rides the gun, so it lifts with the bob
-           and jumps with the recoil, and the aim dot does NOT follow it: the
-           dot sits where the barrel is pointing and the ring sits where the
-           gun is, so bringing one onto the other is a thing you do with the
-           mouse. At rest they line up; walk, or take the recoil, and you put
-           them back. */
-        const G2 = GUNS[gid];
-        let hole = null;
-        if (G2 && G2.scope){
-          // the tube is mounted on the GUN, so it is measured against the
-          // gun's drawn height - a fraction of the screen stopped landing on
-          // the weapon the moment the weapon got smaller
-          // the tube is mounted on the GUN, so it is measured against the
-          // gun's drawn height - a fraction of the SCREEN stopped landing on
-          // the weapon the moment the weapon got smaller. It is also a
-          // smaller fraction than it was: on a 26-cell gun the old radius ate
-          // the receiver, both scope mounts and the ready lamps with it, and
-          // what was left read as a gun with a hole punched through it.
-          hole = { cx: cols >> 1, cy: gy + Math.round(tr * 0.20),
-                   rad: Math.max(2.5, tr * 0.13) };
-        }
-        drawViewArt(gart, gx, gy, tr, CM_GUN, true, hole);
-        if (hole){
-          ringCells(hole.cx, hole.cy, hole.rad, (x, y) => hudCell(x, y, 'O', H_DIM));
-          ringCells(hole.cx, hole.cy, hole.rad + 1, (x, y) => hudCell(x, y, '#', H_DRK));
-        }
-        if (muzzleT > 0)                        // the flash leaves the bore
-          drawViewArt(['\\  *  /', '-* * *-', '/  *  \\'],
-                      (cols >> 1) - 3, gy - 3, 3, CM_MUZ, false);
-      } else {
-        const mw = meleeStats();
-        const mh = MELEE_HOLD[mw.id];
-        if (mh){
-          const tr = Math.round(rows * mh.tr);
-          const tw = drawnW(mh.art(), tr);
-          const ax = mh.anchor === 'c'
-            ? (cols >> 1) + Math.round(tw * mh.off)
-            : cols - tw - Math.round(cols * mh.off);
-          drawViewArt(mh.art(), ax, rows - tr + (bob ? 0 : 1), tr, mh.cm());
-        } else {
-          const tr = Math.round(rows * 0.34);
-          const tw = Math.round(tr * viewW(VM_FIST_R) / VM_FIST_R.length);
-          const off = Math.round(cols * 0.19);    // a boxer guard, framing the reticle
-          drawViewArt(VM_FIST_L, (cols >> 1) - off - tw, rows - tr + (bob ? 1 : 0), tr, CM_ARM);
-          drawViewArt(VM_FIST_R, (cols >> 1) + off, rows - tr + (bob ? 0 : 1), tr, CM_ARM);
-        }
       }
     }
     if (sitting){
