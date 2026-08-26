@@ -22456,7 +22456,17 @@ function drawSignPlane(sg){
       const lo = Math.ceil(mb - rows + 1), hi = Math.floor(mb - hzRow - 1);
       if (s0 < lo) s0 = lo;
       if (s1 > hi) s1 = hi;
-      if (s0 <= s1){
+      /* Above the frame there is no depth buffer, but every occluder is
+         planted on the ground: anything covering rows above the frame at
+         this column covers row 0 too, so row 0's depth answers for the
+         whole overhang. Without this a sign standing BEHIND a tower still
+         laid its reflection into the wet street - the emit path hands the
+         card no depth for mirror points and the card draws them with the
+         test off, so the only place the question can be asked is here. In
+         emit mode dBuf may be a cleared not-this-frame copy, so the test
+         reads the snapshot signCollect keeps of the last fresh frame. */
+      const occT = _sigE ? (GV.topD ? GV.topD[x] : 1e30) : dBuf[x];
+      if (s0 <= s1 && !(occT < t - 0.02)){
         const wobx = refWob[x];
         for (let r = s0; r <= s1; r++){
           const rr = Math.round(mb - r + wobx);
@@ -22592,6 +22602,12 @@ function signCollect(){
     GV.sgS = new Float32Array(n * 8);
   }
   GV.sgMN = 0; GV.sgSN = 0;
+  // row 0 of the depth buffer, kept across the frames when the deferred
+  // read leaves dBuf cleared - the sign mirror's occlusion gate reads this
+  if (!GV.topD || GV.topD.length !== R.cols)
+    GV.topD = new Float32Array(R.cols).fill(1e30);
+  if (typeof GW === 'undefined' || GW.fresh !== 0)
+    GV.topD.set(dBuf.subarray(0, R.cols));
   _sigE = 1;
   try { signPass(); } finally { _sigE = 0; }
   return GV.sgSN;
