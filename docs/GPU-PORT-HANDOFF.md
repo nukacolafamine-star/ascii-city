@@ -1789,6 +1789,36 @@ lit sign's core stretches into the classic horizontal lens streak;
 subtle enough to read as atmosphere, not a sticker. FS_POST gained mode
 4 (the smear) and mode 5 (a gained lay-back).
 
+### 5u. Animated lights vs the cache: the frozen breath (commit a26c4cf)
+
+The player's persistent "path tracing just isn't working" finally pinned
+to a mechanism: a burner stall BREATHES amber-pink every 1.8s
+(`stallLight`, computed at draw time), the harvest reads the colour off
+the screen, and the CACHE remembers it - so the moment the stall leaves
+the frame (which, while walking, is most of the time), every wall it
+lights freezes at one colour for up to the ttl. Measured: live strip
+cycling pink-amber-pink over four seconds, cache entry pinned at one
+pink throughout. Even facing it, the keepFrac drift path updated colour
+at partA 6%/frame - a 1.8s cycle low-passed into a frozen blend.
+
+Fixes: (1) the drift path takes COLOUR at 0.5/frame while position and
+weight keep the slow drift - colour is not screen coverage; a small view
+of a light still sees its true colour. (2) `stallLight` is a pure
+function of time, so every harvest RE-PERFORMS it onto the remembered
+entries: enumerate the quanta the canopy occupies (the same clamp-and-
+round as ecacheWrite's key), look them up in `C.map`, recolour entries
+above table height (z > 1.2 spares the glowing table items). Produce
+stalls (steady white) are skipped. Verified: cache tracks the live
+breath sample-for-sample while facing away; paired screenshots show the
+wall wash, glow, wet streak and reflections all swapping together.
+
+STILL IN THIS CLASS, unfixed: sign border CHASES (the spinning-lights
+trick) freeze mid-rotation when the sign is off-screen - deterministic
+too, but per-CELL along the border ring, so re-performing it needs the
+entry's position on the ring, not just a single colour; and the small
+white/red blinker props. The half-per-frame colour take helps both
+whenever they are even partially visible.
+
 ---
 
 ## 6. Measurement traps that have already cost time
