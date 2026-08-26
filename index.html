@@ -23109,10 +23109,26 @@ uniform sampler2D uGIGrid;
 uniform vec4  uGIG;
 // x: display denoise on; y: bounce rays per frame; zw spare
 uniform vec4  uGI3;
+/* the wet street's own light: x wetLevel, y streak gain, z streak
+   tightness, w vertical smear (how far down the road a streak runs) */
+uniform vec4  uWetS;
+// x streak distance falloff; yzw spare
+uniform vec4  uWetS2;
+/* the air's shape: x scatter anisotropy g, y its strength, z the density
+   multiplier at street level, w 1/height where that boost has faded */
+uniform vec4  uAir2;
 
 // a hash good enough for one ray a frame, denoised by the average
 float gHash(vec3 v){
   return fract(sin(dot(v, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+}
+/* the CPU's hash3, bit for bit - the streak's puddle mask must agree with
+   the glyph mirror's puddleAt or the two wets disagree about where the
+   water is */
+float hash3(int a, int b, int c){
+  uint h = uint(a) * 374761393u ^ uint(b) * 668265263u ^ uint(c) * 1442695041u;
+  h = (h ^ (h >> 13)) * 1274126177u;
+  return float(h ^ (h >> 16)) / 4294967296.0;
 }
 /* The heightfield DDA, which is giTrace. Returns the distance to the wall it
    hit and that wall's normal, or a negative distance if the ray got away. */
@@ -23294,6 +23310,10 @@ void main(){
   vec3 rd = vec3(uDir.x + uPlane.x * cxn, uDir.y + uPlane.y * cxn,
                  -((r + 0.5 - uHorizon) / uProjRows));
   vec3 surf = uCam + rd * depth;                 // what this cell is looking at
+  vec3 rdn = normalize(rd);
+  /* the road: at z~0 looking down. Rooftops are excluded by height, and
+     that is right - the engine's mirror never wets a roof either. */
+  bool ground = !airCell && surf.z < 0.2 && rd.z < 0.0;
 
   float dens = uTune.x, fall = uTune.y, gain = uTune.z, roof = uTune.w;
   float shaftK = uTune2.x; int sSteps = int(uTune2.y);
@@ -23337,6 +23357,20 @@ void main(){
         vec3 mid = uCam + rd * ((t0 + t1) * 0.5);
         float q = dot(mid - ep, mid - ep) / (rad * rad);
         float tau = (t1 - t0) * dens / rad / (1.0 + fall * q) * night;
+        /* The smog is not the same everywhere, and it does not scatter
+           the same in every direction. Height: dense at street level,
+           thinning by uAir2.w - the street swims, the tower tops rise
+           out of it. Direction: a Henyey-Greenstein lobe leaning toward
+           the light (uAir2.x), so a sign BLOOMS as you turn to face it
+           and settles as it slides to the frame's edge - the single
+           strongest "this air is real" cue there is. */
+        float hgt = mix(uAir2.z, 1.0, clamp(mid.z * uAir2.w, 0.0, 1.0));
+        vec3 tl = ep - uCam;
+        float cph = dot(rdn, tl * inversesqrt(max(dot(tl, tl), 1e-4)));
+        float gg = uAir2.x;
+        float ph = mix(1.0, (1.0 - gg * gg) /
+                       pow(1.0 + gg * gg - 2.0 * gg * cph, 1.5), uAir2.y);
+        tau *= hgt * ph;
         // the shaft: what is standing between that air and the light
         float sh = sSteps > 0 ? shadow(mid, ep, sSteps) : 1.0;
         vec3 ca = ec * min(tau, 1.0) * sh * shaftK * ew;
@@ -23369,6 +23403,47 @@ void main(){
          to its floor everywhere - the whole street darkened by half while the
          one shopfront in front of you blew out. */
       occ += (1.0 - sh) * att; occW += att;
+    }
+    /*------------ the streak a light lays down the wet road ---------------
+      Neon on wet asphalt: the light's mirror image under the road,
+      smeared DOWN the street. The lobe is the mirrored direction against
+      the view ray with its vertical error forgiven (uWetS.w), which is
+      exactly what rough wet asphalt does - tight across the road, long
+      along it. Fresnel squared puts the streaks in the middle distance
+      where a real wet street holds them and takes them out from underfoot.
+      The puddle mask is the CPU's own, bit for bit, so the streaks stand
+      on the same water the glyph mirror shows. One shadow march, and only
+      for a streak bright enough to survive - the lobe is tight in azimuth,
+      so few lights a cell ever pay it. */
+    if (ground && uWetS.x > 0.001 && uWetS.y > 0.0){
+      vec3 md = vec3(ep.x, ep.y, -ep.z) - uCam;
+      float md2 = dot(md, md);
+      if (md2 > 1.0){
+        vec3 dv = rdn - md * inversesqrt(md2);
+        dv.z *= uWetS.w;
+        float s = exp(-dot(dv, dv) * uWetS.z);
+        if (s > 0.02){
+          float grz = 1.0 - abs(rdn.z);
+          float w = s * grz * grz * ew * uWetS.y * night
+                    / (1.0 + md2 * uWetS2.x);
+          if (w > 0.01){
+            float pud = 1.0;
+            if (uWetS.x < 0.999){
+              int px = int(floor(surf.x)), py = int(floor(surf.y));
+              float blob = hash3(px / 3, py / 3, 313);
+              float fine = hash3(px, py, 77);
+              pud = (blob * 0.72 + fine * 0.28) < uWetS.x ? 1.0 : 0.0;
+            }
+            if (pud > 0.0){
+              float sh2 = sSteps > 0
+                        ? shadow(surf + vec3(0.0, 0.0, 0.05), ep, sSteps) : 1.0;
+              vec3 cst = ec * (w * sh2);
+              acc += cst;
+              accH += cst * max(cst.r, max(cst.g, cst.b));
+            }
+          }
+        }
+      }
     }
   }
   /* The richness bend: rebuild the loop's answer with each contribution's
@@ -23624,7 +23699,7 @@ function glInit(){
     for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane','uCap',
                      'uHist','uGI','uGI2','uSky','uGIClamp','uTiles','uTIdx','uTune3','uHR',
                      'uRichK','uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2',
-                     'uGIGrid','uGIG','uGI3'])
+                     'uGIGrid','uGIG','uGI3','uWetS','uWetS2','uAir2'])
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
   } catch (e){ G.lightOK = false; }
@@ -24178,6 +24253,30 @@ const GPUE = {
      because a ray to the sky crosses more air than a ray to a wall, and
      the sky must stay behind the city, not in front of it. */
   airGlow: 1.00,
+  /*--- neon on wet asphalt (the streak term in FS_LIGHT) ------------------
+    Every light lays a coloured streak down the wet road toward the eye:
+    its mirror image under the ground, smeared along the street. gain is
+    brightness IN ACC UNITS - the chords accumulate 20-100 there, so a
+    streak needs the same order to read at all (1.2 measured invisible,
+    150 flooded the road; 80 is bars that stay bars). shine is how tight
+    the lobe is across the road (tight enough to leave darkness between
+    streaks - 60 summed to a wash), streakZ how far it runs down the
+    street (smaller = longer), streakFall how fast it fades with the
+    light's distance. Streaks stand only on puddleAt's own puddles, so
+    they agree with the glyph mirror about where the water is. */
+  streak:      80.0,
+  streakShine: 170.0,
+  streakZ:     0.28,
+  streakFall:  0.004,
+  /*--- the shape of the air (chord multipliers in FS_LIGHT) ---------------
+    phaseG/phaseK: a Henyey-Greenstein lobe leaning the glow toward its
+    light, so a sign blooms as you turn to face it. airLow/airLowH: the
+    smog is densest at street level and thins by airLowH units up - the
+    street swims, the tower tops rise out of it. */
+  phaseG:  0.32,
+  phaseK:  0.6,
+  airLow:  1.45,
+  airLowH: 14,
   /* And a gentler ambient floor. Occlusion is now weighted by how much each
      light actually reaches the surface - see FS_LIGHT - because one vote per
      light was fine for a hundred and wrong for four thousand. */
@@ -25648,6 +25747,15 @@ function glLightPass(){
     const cnt = GPUL._tCnt, off = GPUL._tOff, rect = GPUL._tRect;
     cnt.fill(0);
     const halfC = R.cols * 0.5, invPL = 1 / planeLen;
+    /* When the road is wet, a light's STREAK lands far below its glow -
+       outside the rect these tiles are built from. Extend every in-frustum
+       light's rect to the bottom of the frame and widen it by the lobe's
+       azimuth reach, or a distant sign's streak pops at a tile boundary.
+       Costs pairs, not cells - the shader's own gates reject the misses in
+       a few instructions, and that is the whole economy of the tiles. */
+    const strkOn = DEN && GPUE.streak > 0 && wetLevel > 0.001 && _lampNight > 0;
+    const strkW = strkOn
+      ? Math.ceil(R.cols * 1.1 * Math.sqrt(3.9 / Math.max(8, GPUE.streakShine))) : 0;
     for (let k = 0; k < n; k++){
       const o0 = k * 4, o1 = LIGHT_CAP * 4 + k * 4;
       const relX = T[o0] - cam.x, relY = T[o0 + 1] - cam.y, ez = T[o0 + 2];
@@ -25676,11 +25784,14 @@ function glLightPass(){
         const lat = (dirY * relX - dirX * relY) * invPL;
         const cc = halfC * (1 - lat / fwd);
         const half = halfC * (R3 / f) * invPL + 2;
-        const c0 = cc - half, c1 = cc + half;
-        if (c1 < 0 || c0 > R.cols - 1){ rect[k * 4] = 1; rect[k * 4 + 1] = 0; continue; }
+        let c0 = cc - half, c1 = cc + half;
         const rT = horizon + (cam.z - (ez + R3)) * projRows / f;
         const rB = horizon + (cam.z - (ez - R3)) * projRows / f;
         let r0 = Math.min(rT, rB) - 2, r1 = Math.max(rT, rB) + 2;
+        // the streak: the light's mirror and its smear run to the frame's
+        // bottom edge, and the lobe is wider in azimuth than the glow
+        if (strkOn && ez > 0.3){ c0 -= strkW; c1 += strkW; r1 = R.rows - 1; }
+        if (c1 < 0 || c0 > R.cols - 1){ rect[k * 4] = 1; rect[k * 4 + 1] = 0; continue; }
         if (r1 < 0 || r0 > R.rows - 1){ rect[k * 4] = 1; rect[k * 4 + 1] = 0; continue; }
         t0x = Math.max(0, (c0 - TS) / TS | 0); t1x = Math.min(tw - 1, (c1 + TS) / TS | 0);
         t0y = Math.max(0, (r0 - TS) / TS | 0); t1y = Math.min(th - 1, (r1 + TS) / TS | 0);
@@ -25884,6 +25995,11 @@ function glLightPass(){
   if (GPUL._gigOn) gl.uniform4f(GL.uL.uGIG, GPUL._gigOx, GPUL._gigOy, 0.25, 24);
   else gl.uniform4f(GL.uL.uGIG, 0, 0, 0, 0);
   gl.uniform4f(GL.uL.uGI3, GIR.denoise !== false ? 1 : 0, GIR.rays || 1, 0, 0);
+  gl.uniform4f(GL.uL.uWetS, wetLevel, DEN ? GPUE.streak : 0,
+               GPUE.streakShine, GPUE.streakZ);
+  gl.uniform4f(GL.uL.uWetS2, GPUE.streakFall, 0, 0, 0);
+  gl.uniform4f(GL.uL.uAir2, DEN ? GPUE.phaseG : 0, DEN ? GPUE.phaseK : 0,
+               DEN ? GPUE.airLow : 1, 1 / Math.max(1, GPUE.airLowH));
   gl.uniform2f(GL.uL.uGrid, R.cols, R.rows);
   gl.uniform3f(GL.uL.uCam, cam.x, cam.y, cam.z);
   gl.uniform2f(GL.uL.uDir, dirX, dirY);
