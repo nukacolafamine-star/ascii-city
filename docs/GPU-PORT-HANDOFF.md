@@ -1247,6 +1247,55 @@ straight off `GL.lightF` (which is RGBA16F now: read it as FLOAT, not bytes).
 
 ---
 
+### 5i. The framerate came back, and the light stopped being screen-shaped
+
+Opening the list to every window put the frame at 7.7ms against the 5.56
+target, and the decomposition was clean: GI cost 0.3ms, the DENSE LIST cost
+2.7 - every cell looping 7,500 lights, rejecting most in a few instructions
+each. "30 and 220 cost the same" was true at 220 and does not extrapolate.
+
+Three structural changes, each measured:
+
+**Tiled culling.** Lights bin by their projected reach into 32x32-cell tiles;
+a fragment loops only its tile's list. `GPUL.noTile` is the bisect - every
+light into every tile, same indirection - and tiled against it is **zero
+texels different**. The reach formula is shared verbatim between the shader's
+surface gate and the binning (attenuation-based, att < 0.05 - the old
+three-radius gate made footprints three times wider than anything visible and
+pushed every light down the all-tiles path: 780,932 pairs a frame).
+
+**Distance LOD in the harvest.** Cells nearer than `lodT` (24) bucket at
+block 2 as before; cells past it bucket at block 6 - the ORIGINAL granularity
+the far field was tuned at. 7,407 lights became 1,326 with the far field
+visually identical.
+
+**And the world-keyed cache, which is the walk-around fix.** The list was
+built from the screen, so a window that left the frame stopped existing as a
+light - the street dimmed behind you and snapped bright when you looked back.
+Kept buckets now land in a cache quantised at a quarter-tile (same-frame
+siblings MERGE, or a close wall of windows collapses to its last bucket;
+later frames REPLACE), entries live ~30s unseen, and the shader's list is the
+nearest rings of everything cached within 44 tiles, capped at `emitMax`.
+
+**The ring cap is not decoration.** Emitting everything in range put 12,967
+lights in the list after one lap of a block, which blew the tile-pair budget
+fivefold - and overflow drops whole lights per tile, so MORE LIGHTS MADE THE
+STREET DIMMER: the exact bug the cache was meant to fix, rebuilt out of its
+own success. Nearest-rings-first with a cap keeps every budget honest, and
+anything that ever does truncate is the farthest light.
+
+The walk test, which the pose harness cannot express: stand, lap the block,
+return. Before: mean light 17.2 to 6.7 and stuck. After: **18.7 to 17.2, and
+looking 180 degrees away and back recovers in fifteen frames with no snap.**
+
+**At the shipped configuration - 4px grid, every switch on, GI on, warm
+cache, turning camera: 4.80ms median, 208fps, against the 5.56ms / 180fps
+goal.** Blocks 4.71 / 4.76 / 4.80 / 5.08. The pinned 480x256 stretch grid is
+~7.2ms; the fat there is per-tile counts (~600 average) and the next lever is
+16-cell tiles, measured not guessed.
+
+---
+
 ## 6. Measurement traps that have already cost time
 
 - **A dead property in the harness is worth thirty times the thing you are
@@ -1351,6 +1400,11 @@ straight off `GL.lightF` (which is RGBA16F now: read it as FLOAT, not bytes).
   half its blocks reading `0` and a median of zero. Start long runs detached,
   park the result on `window`, and **reload the page before retrying** rather
   than layering a second run on a first that is still alive.
+- **A BLOWN PAIRS BUDGET READS AS DIMMING, NOT AS AN ERROR.** Tile-list
+  overflow drops whole lights per tile silently - so ADDING lights made the
+  street darker, which pointed every intuition away from the cause. If light
+  behaves paradoxically, read `GPUL.pairsUsed` and `pairsOver` before
+  theorising.
 - **TUNING WITH `GPUH` ON AND THE DRIVER PAUSED MEASURES NOTHING.** The fence
   needs the card to finish work between frames; a paused driver rendering
   synchronously never gives it the chance, so the read never lands, the harvest

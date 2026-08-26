@@ -19933,9 +19933,12 @@ function harvestEmitters(){
   const cols = R.cols, rows = R.rows;
   const DEN = GPUE.on && GL && GL.lightOK && GPUL.on;
   const B = DEN ? GPUE.block : LIGHTV.block;
-  const bw = Math.ceil(cols / B), bh = Math.ceil(rows / B), nb = bw * bh;
+  const bw = Math.ceil(cols / B), bh = Math.ceil(rows / B);
+  const BF = DEN ? GPUE.lodBlock : B;
+  const bwF = Math.ceil(cols / BF), bhF = Math.ceil(rows / BF);
+  const nbN = bw * bh, nb = DEN ? nbN + bwF * bhF : nbN;
   if (!EMIT || EMIT.nb !== nb){
-    const cap = nb + LIGHTV.offN;             // buckets, then the off-screen lamps
+    const cap = Math.max(nb + LIGHTV.offN, 40960);   // buckets, lamps, the cache's list
     EMIT = { nb, bw, bh, n: 0, cap,
              x: new Float32Array(cap), y: new Float32Array(cap), z: new Float32Array(cap),
              r: new Float32Array(cap), g: new Float32Array(cap), b: new Float32Array(cap),
@@ -19951,8 +19954,10 @@ function harvestEmitters(){
   const hHz = BS ? BS.hz : horizon, hPr = BS ? BS.pr : projRows;
   const hVd = BS ? BS.vd : viewD;
   const hRx = BS ? BS.rx : rayX, hRy = BS ? BS.ry : rayY;
+  if (DEN){ if (!ECACHE.x) ecacheInit(); ECACHE.frame++; }
   for (let row = 0; row < rows; row++){
     const off = row * cols, br = ((row / B) | 0) * bw;
+    const brF = DEN ? nbN + ((row / BF) | 0) * bwF : 0;
     const kk = (row + 0.5 - hHz) / hPr;
     for (let c = 0; c < cols; c++){
       const i = off + c;
@@ -19962,7 +19967,7 @@ function harvestEmitters(){
       const col = BASE[bBuf[i]];
       if (!col) continue;
       const kw = emitKind[i] === 1 ? (DEN ? GPUE.winW : LIGHTV.winW) : 1;
-      const bi = br + ((c / B) | 0);
+      const bi = (DEN && t >= GPUE.lodT) ? brF + ((c / BF) | 0) : br + ((c / B) | 0);
       E.x[bi] += (hCx + hRx[c] * t) * kw;
       E.y[bi] += (hCy + hRy[c] * t) * kw;
       E.z[bi] += (hCz - kk * t) * kw;
@@ -19978,8 +19983,10 @@ function harvestEmitters(){
     const inv = 1 / w;
     E.x[bi] *= inv; E.y[bi] *= inv; E.z[bi] *= inv;
     E.r[bi] *= inv; E.g[bi] *= inv; E.b[bi] *= inv;
-    E.idx[n++] = bi;
+    if (!DEN){ E.idx[n++] = bi; continue; }
+    ecacheWrite(E.x[bi], E.y[bi], E.z[bi], E.r[bi], E.g[bi], E.b[bi], w);
   }
+  if (DEN) n = ecacheEmit(E);
   /* Too many still, on a street that is all shopfront. Keep the biggest -
      brightness is what the eye follows, and a hundred one-window sources
      read as the ambient the fog is already doing. */
@@ -20017,7 +20024,9 @@ function harvestEmitters(){
       const fwd = ox * dirX + oy * dirY;
       const lat = dirY * ox - dirX * oy;
       if (fwd > 0.3 && Math.abs(lat) <= fwd * planeLen * 1.1) continue;   // on screen
-      const bi = nb + added;
+      /* appended at the end of whatever the cache emitted, not at a fixed
+         offset - the cached list can be longer than the bucket count */
+      const bi = DEN ? n : nb + added;
       const col = BASE[L.lampC];
       if (!col) continue;
       E.x[bi] = L.lx; E.y[bi] = L.ly; E.z[bi] = LAMP_LENS_Z;
@@ -22853,6 +22862,8 @@ uniform vec4  uTune2;         // shaftK, shadowSteps, aoK, night
   frames. Light lagging a fast turn is a far cheaper thing to look at than
   noise.
 ---------------------------------------------------------------------------*/
+uniform sampler2D uTiles;     // per 32x32-cell tile: offset, count
+uniform sampler2D uTIdx;      // the flat list those offsets index into
 uniform sampler2D uHist;      // last frame's accumulated light
 uniform vec4  uGI;            // dist, albedo, moveAlpha->alpha, aoDist
 uniform vec4  uGI2;           // on, seed, skyScale, bounceGain
@@ -22982,8 +22993,19 @@ void main(){
      sources affordable is not this bound - it is that a light whose glow this
      ray misses is rejected in a handful of instructions, and measured, thirty
      sources and two hundred and twenty cost the same frame. */
-  for (int i = 0; i < 16384; i++){
-    if (i >= uNE) break;
+  /* Only the lights whose glow can touch THIS TILE. The CPU bins every light
+     by its projected sphere into 32x32-cell tiles; a light outside the rect
+     cannot touch the tile's cells, so the answer is IDENTICAL to looping the
+     whole list - it just stops paying for the misses. Measured before this:
+     7,578 lights x 122,880 cells of one-fetch rejections was 2.7ms of frame,
+     the whole gap between 130fps and the 180 target. */
+  ivec2 tile = ivec2(int(c) >> 5, int(r) >> 5);
+  vec4 TT = texelFetch(uTiles, tile, 0);
+  int tOff = int(TT.x), tCnt = int(TT.y);
+  for (int j = 0; j < 4096; j++){
+    if (j >= tCnt) break;
+    int pi = tOff + j;
+    int i = int(texelFetch(uTIdx, ivec2(pi & 2047, pi >> 11), 0).r);
     vec4 A = texelFetch(uEmit, ivec2(i, 0), 0);
     vec4 B = texelFetch(uEmit, ivec2(i, 1), 0);
     vec3 ep = A.xyz;  float ew = A.w;
@@ -23009,7 +23031,14 @@ void main(){
     // --- and what it puts on the surface itself ----------------------------
     vec3 toL = ep - surf;
     float d2 = dot(toL, toL);
-    if (d2 < rad * rad * 9.0){
+    /* The reach is where the attenuation drops below sight (att < 0.05),
+       not a multiple of the glow radius - at three radii of a big source the
+       contribution is thousandths, and the old gate made every light's
+       footprint three times wider than anything it could put on a surface.
+       THE BINNING USES THIS EXACT FORMULA: shader and tiles must agree or
+       culling changes the picture. */
+    float rS2 = min(rad * rad * 9.0, ew * 40.0 - 2.0);
+    if (d2 < rS2){
       float att = ew / (1.0 + d2 * 0.5);
       float sh = sSteps > 0 ? shadow(surf + vec3(0.0, 0.0, 0.05), ep, sSteps) : 1.0;
       acc += ec * att * sh * 0.06 * night;
@@ -23132,7 +23161,7 @@ function glInit(){
     G.pLight = mkProg(VS_FULL, FS_LIGHT);
     G.uL = {};
     for (const k of ['uDepth','uEmit','uHeight','uGrid','uCam','uDir','uPlane','uCap',
-                     'uHist','uGI','uGI2','uSky','uGIClamp',
+                     'uHist','uGI','uGI2','uSky','uGIClamp','uTiles','uTIdx',
                      'uProjRows','uHorizon','uViewD','uMap','uNE','uTune','uTune2'])
       G.uL[k] = gl.getUniformLocation(G.pLight, k);
     G.lightOK = true;
@@ -23547,8 +23576,110 @@ const GPUE = {
   /* And a gentler ambient floor. Occlusion is now weighted by how much each
      light actually reaches the surface - see FS_LIGHT - because one vote per
      light was fine for a hundred and wrong for four thousand. */
-  ao:     0.30
+  ao:     0.30,
+  /*--- the density LOD, and the memory -----------------------------------
+    Every window being a light was the point; every window being a FULL
+    RESOLUTION light forever was the framerate regression. Two changes:
+
+    Cells nearer than lodT bucket at block 2 as before; cells past it bucket
+    at block 6, which is the ORIGINAL granularity - the far field was tuned
+    there and looks identical, and it cuts the far list ninefold.
+
+    And kept buckets feed a WORLD-KEYED CACHE instead of going straight to
+    the shader. The old list was built from the screen, so a window that left
+    the frame stopped existing as a light - walk around a block and it dims
+    behind you, look back and it snaps bright. Cached entries live at world
+    positions for ttl frames whether or not you are looking, and the shader's
+    list is everything cached within `range` tiles. A block you have seen
+    keeps shining at your back. */
+  lodT:   24,     // tiles; nearer than this buckets fine, past it coarse
+  lodBlock: 6,
+  radMax: 6.0,    // no glow sphere wider than this, however heavy the bucket
+  ttl:    1800,   // frames a cached light survives unseen (~30s)
+  range:  44,     // tiles; how far from the eye the cached list reaches
+  emitMax: 4096   // the most the shader is ever handed, nearest rings first
 };
+/* The cache itself: flat arrays plus a Map from quantised world key to slot,
+   swap-deleted on expiry. Quantised at a quarter tile in x/y and two units in
+   z; same-frame writes to one key MERGE (near buckets are finer than the
+   quantum), later frames REPLACE (the newest observation of a window wins). */
+const ECACHE = { map: new Map(), cap: 131072, n: 0, frame: 0, x: null };
+function ecacheInit(){
+  const C = ECACHE, cap = C.cap;
+  C.x = new Float32Array(cap); C.y = new Float32Array(cap); C.z = new Float32Array(cap);
+  C.r = new Float32Array(cap); C.g = new Float32Array(cap); C.b = new Float32Array(cap);
+  C.w = new Float32Array(cap); C.key = new Float64Array(cap); C.seen = new Int32Array(cap);
+}
+function ecacheWrite(x, y, z, r, g, b, w){
+  const C = ECACHE;
+  const qx = Math.max(0, Math.min(4095, Math.round(x * 4)));
+  const qy = Math.max(0, Math.min(4095, Math.round(y * 4)));
+  const qz = Math.max(0, Math.min(63, Math.round(z * 0.5)));
+  const k = (qx * 4096 + qy) * 64 + qz;
+  let i = C.map.get(k);
+  if (i === undefined){
+    if (C.n >= C.cap) return;
+    i = C.n++; C.map.set(k, i); C.key[i] = k;
+  } else if (C.seen[i] === C.frame){
+    // a same-frame sibling: two fine buckets inside one quantum. Merge, or
+    // standing close to a wall of windows loses all but the last of them.
+    const W = C.w[i] + w, a = w / W;
+    C.x[i] += (x - C.x[i]) * a; C.y[i] += (y - C.y[i]) * a; C.z[i] += (z - C.z[i]) * a;
+    C.r[i] += (r - C.r[i]) * a; C.g[i] += (g - C.g[i]) * a; C.b[i] += (b - C.b[i]) * a;
+    C.w[i] = W; return;
+  }
+  C.x[i] = x; C.y[i] = y; C.z[i] = z; C.r[i] = r; C.g[i] = g; C.b[i] = b; C.w[i] = w;
+  C.seen[i] = C.frame;
+}
+function ecacheEmit(E){
+  /* NEAREST RINGS FIRST, capped. The first version emitted everything within
+     range in cache order, and a lap of one block put 12,967 lights in the
+     list - which blew the tile-pair budget fivefold, and overflow drops whole
+     lights per tile in arbitrary order. On screen that was the same bug the
+     cache was built to fix: the street dimming as you walk. Emitted
+     nearest-first with a hard cap, the list stays inside every budget and
+     anything that ever does fall off the end is the farthest light, which is
+     the one that matters least. */
+  const C = ECACHE; if (!C.x) return 0;
+  if (!C.ring){ C.ring = [new Int32Array(C.cap), new Int32Array(C.cap),
+                          new Int32Array(C.cap), new Int32Array(C.cap)];
+                C.ringN = new Int32Array(4); }
+  const ttl = GPUE.ttl, rng = GPUE.range, rng2 = rng * rng;
+  const q = rng / 4, q1 = q * q, q2 = q * q * 4, q3 = q * q * 9;
+  const RG = C.ring, RN = C.ringN; RN[0] = RN[1] = RN[2] = RN[3] = 0;
+  let i = 0;
+  while (i < C.n){
+    if (C.frame - C.seen[i] > ttl){
+      const last = C.n - 1;
+      C.map.delete(C.key[i]);
+      if (i !== last){
+        C.x[i] = C.x[last]; C.y[i] = C.y[last]; C.z[i] = C.z[last];
+        C.r[i] = C.r[last]; C.g[i] = C.g[last]; C.b[i] = C.b[last];
+        C.w[i] = C.w[last]; C.seen[i] = C.seen[last];
+        C.key[i] = C.key[last]; C.map.set(C.key[i], i);
+      }
+      C.n = last; continue;
+    }
+    const dx = C.x[i] - cam.x, dy = C.y[i] - cam.y, d2 = dx * dx + dy * dy;
+    if (d2 <= rng2){
+      const ring = d2 < q1 ? 0 : d2 < q2 ? 1 : d2 < q3 ? 2 : 3;
+      RG[ring][RN[ring]++] = i;
+    }
+    i++;
+  }
+  let n = 0;
+  const cap = Math.min(GPUE.emitMax, E.cap);
+  for (let ring = 0; ring < 4 && n < cap; ring++){
+    const list = RG[ring], m = RN[ring];
+    for (let j = 0; j < m && n < cap; j++){
+      const si = list[j];
+      E.x[n] = C.x[si]; E.y[n] = C.y[si]; E.z[n] = C.z[si];
+      E.r[n] = C.r[si]; E.g[n] = C.g[si]; E.b[n] = C.b[si]; E.w[n] = C.w[si];
+      E.idx[n] = n; n++;
+    }
+  }
+  return n;
+}
 const GPUC = { on: true };
 let _cpuLitFrame = false;
 
@@ -24737,10 +24868,102 @@ function glLightPass(){
     T[o0]     = E.x[bi]; T[o0 + 1] = E.y[bi]; T[o0 + 2] = E.z[bi];
     T[o0 + 3] = Math.min(4, 0.35 + E.w[bi] * 0.10);          // weight, damped
     T[o1]     = E.r[bi] / 255; T[o1 + 1] = E.g[bi] / 255; T[o1 + 2] = E.b[bi] / 255;
-    T[o1 + 3] = eRad * Math.pow(Math.max(1, E.w[bi]), eGrow) * 1.6;
+    T[o1 + 3] = Math.min(DEN ? GPUE.radMax : 99,
+                         eRad * Math.pow(Math.max(1, E.w[bi]), eGrow) * 1.6);
   }
   gl.bindTexture(gl.TEXTURE_2D, GL.emitT);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIGHT_CAP, 2, gl.RGBA, gl.FLOAT, T);
+  /* Only the n columns in use - the full width is 16,384 and uploading all of
+     it was half a megabyte a frame. ROW_LENGTH tells the driver the array's
+     real stride; it goes straight back to 0 because every other upload in
+     this renderer assumes tightly packed rows. */
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, LIGHT_CAP);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, Math.max(1, n), 2, gl.RGBA, gl.FLOAT, T);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+
+  /*--------------- the tile bins, rebuilt every frame ----------------------
+    Project each light's sphere (at three radii - the surface term reaches
+    that far) to a screen rect, conservatively, and push its index into every
+    32x32-cell tile the rect touches. Two passes with a prefix sum in between,
+    so nothing allocates. A sphere that reaches the eye, or sits too near the
+    camera plane for the projection to be stable, goes into every tile. */
+  {
+    const TS = 32, tw = Math.ceil(R.cols / TS), th = Math.ceil(R.rows / TS), nt = tw * th;
+    const PAIR_CAP = 262144;
+    if (!GL.tileT || GL.tileW !== tw || GL.tileH !== th){
+      GL.tileW = tw; GL.tileH = th;
+      GL.tileT = glTailTex(GL.tileT, gl.RGBA32F, gl.RGBA, gl.FLOAT, tw, th);
+      GPUL._tileBuf = new Float32Array(nt * 4);
+      GPUL._tCnt = new Int32Array(nt);
+      GPUL._tOff = new Int32Array(nt);
+      GPUL._tRect = new Int32Array(LIGHT_CAP * 4);
+    }
+    if (!GL.tidxT){
+      GL.tidxT = glTailTex(null, gl.R32F, gl.RED, gl.FLOAT, 2048, 128);
+      GPUL._pairs = new Float32Array(PAIR_CAP);
+    }
+    const cnt = GPUL._tCnt, off = GPUL._tOff, rect = GPUL._tRect;
+    cnt.fill(0);
+    const halfC = R.cols * 0.5, invPL = 1 / planeLen;
+    for (let k = 0; k < n; k++){
+      const o0 = k * 4, o1 = LIGHT_CAP * 4 + k * 4;
+      const relX = T[o0] - cam.x, relY = T[o0 + 1] - cam.y, ez = T[o0 + 2];
+      /* max(chord reach, surface reach) - the surface reach is the SAME
+         attenuation cut the shader gates on, or the tiles would disagree
+         with the picture. rad*3 bounded it at ~21 tiles and pushed nearly
+         every light down the all-tiles path: 780,932 pairs a frame. */
+      const rad1 = T[o1 + 3];
+      const R3 = Math.max(rad1, Math.min(rad1 * 3, Math.sqrt(Math.max(0.01, T[o0 + 3] * 40 - 2))));
+      const fwd = relX * dirX + relY * dirY;
+      let t0x = 0, t1x = tw - 1, t0y = 0, t1y = th - 1;
+      /* The bisect: every light into every tile, which is the brute-force loop
+         with the indirection kept. Tiled against this must be byte-identical,
+         because tiling is culling and culling may not change one cell. */
+      if (GPUL.noTile){
+        rect[k * 4] = 0; rect[k * 4 + 1] = tw - 1; rect[k * 4 + 2] = 0; rect[k * 4 + 3] = th - 1;
+        for (let ty = 0; ty < th; ty++) for (let tx = 0; tx < tw; tx++) cnt[ty * tw + tx]++;
+        continue;
+      }
+      if (fwd + R3 < 0.3){ rect[k * 4] = 1; rect[k * 4 + 1] = 0; continue; }  // behind
+      if (fwd - R3 > 0.35){
+        const f = fwd - R3;
+        const lat = (dirY * relX - dirX * relY) * invPL;
+        const cc = halfC * (1 - lat / fwd);
+        const half = halfC * (R3 / f) * invPL + 2;
+        const c0 = cc - half, c1 = cc + half;
+        if (c1 < 0 || c0 > R.cols - 1){ rect[k * 4] = 1; rect[k * 4 + 1] = 0; continue; }
+        const rT = horizon + (cam.z - (ez + R3)) * projRows / f;
+        const rB = horizon + (cam.z - (ez - R3)) * projRows / f;
+        let r0 = Math.min(rT, rB) - 2, r1 = Math.max(rT, rB) + 2;
+        if (r1 < 0 || r0 > R.rows - 1){ rect[k * 4] = 1; rect[k * 4 + 1] = 0; continue; }
+        t0x = Math.max(0, (c0 - TS) / TS | 0); t1x = Math.min(tw - 1, (c1 + TS) / TS | 0);
+        t0y = Math.max(0, (r0 - TS) / TS | 0); t1y = Math.min(th - 1, (r1 + TS) / TS | 0);
+      }
+      rect[k * 4] = t0x; rect[k * 4 + 1] = t1x; rect[k * 4 + 2] = t0y; rect[k * 4 + 3] = t1y;
+      for (let ty = t0y; ty <= t1y; ty++)
+        for (let tx = t0x; tx <= t1x; tx++) cnt[ty * tw + tx]++;
+    }
+    let run = 0;
+    for (let i = 0; i < nt; i++){ off[i] = run; run += cnt[i]; }
+    GPUL.pairsUsed = run; GPUL.pairsOver = Math.max(0, run - PAIR_CAP);
+    const pairs = GPUL._pairs, fill = GPUL._tCnt; fill.fill(0);
+    for (let k = 0; k < n; k++){
+      const t0x = rect[k * 4], t1x = rect[k * 4 + 1];
+      if (t1x < t0x) continue;
+      const t0y = rect[k * 4 + 2], t1y = rect[k * 4 + 3];
+      for (let ty = t0y; ty <= t1y; ty++)
+        for (let tx = t0x; tx <= t1x; tx++){
+          const ti = ty * tw + tx, pi = off[ti] + fill[ti];
+          if (pi < PAIR_CAP){ pairs[pi] = k; fill[ti]++; }
+        }
+    }
+    const TB = GPUL._tileBuf;
+    for (let i = 0; i < nt; i++){ TB[i * 4] = off[i]; TB[i * 4 + 1] = fill[i]; }
+    gl.bindTexture(gl.TEXTURE_2D, GL.tileT);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, tw, th, gl.RGBA, gl.FLOAT, TB);
+    gl.bindTexture(gl.TEXTURE_2D, GL.tidxT);
+    const rowsUsed = Math.min(128, Math.ceil(Math.max(1, run) / 2048));
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 2048, rowsUsed, gl.RED, gl.FLOAT, pairs.subarray(0, rowsUsed * 2048));
+  }
   /* The depth this pass needs is already on the card whenever the tail owns
      the frame, and taking it from there is not just one upload saved - it is
      the difference between working and not. worldPasses clears dBuf to 1e30
@@ -24778,6 +25001,10 @@ function glLightPass(){
   gl.useProgram(GL.pLight);
   gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, GL.lightTs[prev]);
   gl.uniform1i(GL.uL.uHist, 3);
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, GL.tileT);
+  gl.uniform1i(GL.uL.uTiles, 4);
+  gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, GL.tidxT);
+  gl.uniform1i(GL.uL.uTIdx, 5);
   gl.uniform4f(GL.uL.uGI, GIR.dist, GIR.albedo, alpha, GIR.aoDist);
   /* The seed comes off its own counter. It was keyed to litN, which RESETS
      to 1 on any camera change - so a moving camera fired the exact same ray
