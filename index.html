@@ -12977,6 +12977,25 @@ for (const k in WEAPON_VOX_RAW){
                     tint: e.tint !== undefined ? C[e.tint] : null,
                     scopeAt: e.scopeAt || null };
 }
+/* The scope bore gets a LINING: every wall cell facing the drilled tube
+   goes near-black, because a hollow lit the same grey as its own end caps
+   reads as a solid - the darkness inside is what says "tube" from every
+   angle the hold ever shows it at. */
+for (const k in WEAPON_VOX){
+  const E = WEAPON_VOX[k], sc = E.scopeAt;
+  if (!sc) continue;
+  const uc = sc.u * E.gw - 0.5, zc = (1 - sc.w) * E.gh - 0.5;
+  const radC = sc.rad * E.gh + 1.35;
+  const v0 = Math.max(0, Math.floor(sc.v0 * E.gd) - 1);
+  const v1 = Math.min(E.gd - 1, Math.ceil(sc.v1 * E.gd));
+  for (let z = 0; z < E.gh; z++)
+    for (let v = v0; v <= v1; v++)
+      for (let u = 0; u < E.gw; u++){
+        const i = (z * E.gd + v) * E.gw + u;
+        if (!E.vox[i]) continue;
+        if ((u - uc) ** 2 + (z - zc) ** 2 <= radC * radC) E.vox[i] = ROLE.B;
+      }
+}
 /* Every gun also carries a half-lattice copy of itself, majority-sampled.
    The scope pass renders on the CPU (the glass blends the CPU buffers by
    hand), and marching a full-lattice rifle over half the screen at three
@@ -13049,6 +13068,7 @@ function gunSlots(id){
     if (!_gunSl) _gunSl = slots({ T: [C.carC, 0.9], K: [C.rail, 0.90],
                                   H: [C.metal, 0.88], L: [C.shirtC, 0.9],
                                   P: [C.trunk, 0.9], W: [C.nWhite, 0.95],
+                                  B: [C.winDark, 0.95],
                                   X: [C.tlAmb, 1.0], R: [C.tlRed, 1.0],
                                   G: [C.nGreen, 1.0], V: [C.nCyan, 1.0],
                                   M: [C.metal, 0.9] });
@@ -13059,10 +13079,29 @@ function gunSlots(id){
     sl = slots({ T: [C.carC, 0.9], K: [C.rail, 0.90],
                  H: [C.metal, 0.88], L: [C.shirtC, 0.9],
                  P: [C.trunk, 0.9], W: [C.nWhite, 0.95],
+                 B: [C.winDark, 0.95],           // the dark inside the tube
                  X: [C.tlAmb, 1.0], R: [C.tlRed, 1.0],
                  G: [C.nGreen, 1.0], V: [C.nCyan, 1.0],
                  M: [E.tint, 0.9] });
     _gunSlById.set(id, sl);
+  }
+  return sl;
+}
+/* the first-person gun's own palette: the armoury's metals plus the bore
+   lining - it cannot share the rig's, where B is the wearer's shirt */
+const _fpGunSl = new Map();
+function fpGunSlots(id){
+  const E = WEAPON_VOX[id];
+  const tint = E && E.tint !== null ? E.tint : C.metal;
+  let sl = _fpGunSl.get(tint);
+  if (!sl){
+    sl = slots({ T: [C.carC, 0.92], H: [C.metal, 0.88],
+                 L: [C.shirtC, 0.9], P: [C.trunk, 0.9],
+                 W: [C.nWhite, 0.95], B: [C.winDark, 0.95],
+                 X: [C.tlAmb, 1.0], R: [C.tlRed, 1.0],
+                 G: [C.nGreen, 1.0], V: [C.nCyan, 1.0],
+                 M: [tint, 0.9] });
+    _fpGunSl.set(tint, sl);
   }
   return sl;
 }
@@ -13753,6 +13792,24 @@ function fpRigSample(dt){
   else if (!skating) fpGuard(RP, wt);
   // riding empty-handed, the arms are out at your sides for balance -
   // which is to say out of frame; the deck is the whole viewmodel
+  /* the hands ride the same pitch the gun does, about the same pivot - or
+     a raised rifle would swing away from the fists that hold it */
+  if (RP.gun && WEAPON_VOX[RP.gun.id]){
+    const th = camPitchStep() * PITCH_STEP;
+    if (th){
+      const st2 = RP.gun.st || 0;
+      const pf = 0.36 * (1 - st2) + 0.19 * st2;
+      const ph = RP.gun.h * (1 - st2);
+      const c = Math.cos(th), s = Math.sin(th);
+      for (const k2 of ['L', 'R']){
+        const Hd = RP[k2];
+        if (!Hd) continue;
+        const df = Hd.f - pf, dh2 = Hd.h - ph;
+        Hd.f = pf + df * c - dh2 * s;
+        Hd.h = ph + df * s + dh2 * c;
+      }
+    }
+  }
   return RP;
 }
 /* the boxer guard: both fists framing the reticle. The breathe is one slow
@@ -13817,7 +13874,7 @@ function fpGunHold(RP, w){
     scopeBoreR = sc2 ? sc2.rad * hgtS : 0.032;
     scopeBoreD = boreD;
   }
-  RP.gun = { id: w, f: gf, h: gh, u: gu, scale: gsc,
+  RP.gun = { id: w, f: gf, h: gh, u: gu, scale: gsc, st,
              pitch: 0.10 * k2 * (1 - st), dyaw: dy2, kick: k2 };
   const hR = { u: gu + 0.02, f: gf - 0.02, h: gh - 0.05 };     // trigger hand
   const hL = long ? { u: gu - 0.06, f: gf + G.len * FP_GUN_SCALE * 0.5,
@@ -14109,9 +14166,14 @@ function rigWeapon(v, aw, vd, ah, RP, X, Y, Z, set){
 function rigGunFlash(RP, X, Y, Z, set){
   const G = RP.gun;
   const GM = (WEAPON_HOLD[G.id] && WEAPON_HOLD[G.id].gun) || { len: 0.3 };
-  const len = GM.len * FP_GUN_SCALE;
+  const len = GM.len * FP_GUN_SCALE * (G.scale || 1);
   const cy = Math.cos(G.dyaw || 0), sy = Math.sin(G.dyaw || 0);
-  const mf = G.f + len * cy, mu = G.u + len * sy, mh = G.h;
+  // the bore follows the pitched gun: the muzzle end swings about the grip
+  const th = camPitchStep() * PITCH_STEP;
+  const mArm = len * 0.86;
+  const mf = G.f + len * 0.14 + mArm * Math.cos(th) * cy;
+  const mu = G.u + len * sy;
+  const mh = G.h + mArm * Math.sin(th);
   const r = 0.030 + 0.045 * RP.flash;
   for (let i = 0; i < 26; i++){
     const a = Math.random() * Math.PI * 2, rr = Math.random() * r * 2.2;
@@ -14127,27 +14189,68 @@ function rigGunFlash(RP, X, Y, Z, set){
   times a second, the thing they hold never has to. Every cell of the model
   is a real voxel on screen, which is where the small detail lives, and the
   drilled scope keeps its round bore instead of a resampled slot. */
+/*--- the gun pitches with the view -----------------------------------------
+  The renderer's vertical look is a shear: no solid can tilt, so a camera
+  pitched thirty degrees showed the same profile of the same level gun. The
+  held weapon now bakes ROTATED variants of its own grid - eight-degree
+  steps, built lazily, cached like everything else - and the draw pivots
+  them about the grip (or about the eyepiece while scoped, so the glass
+  never leaves your aim): look up and the muzzle comes up with you,
+  foreshortening as it goes. ---*/
+const PITCH_STEP = 8 * Math.PI / 180, PITCH_MAX = 4;    // +-32 degrees
+function camPitchStep(){
+  return clamp(Math.round(Math.atan2(cam.pitch, projRows) / PITCH_STEP),
+               -PITCH_MAX, PITCH_MAX);
+}
 const _fpGunArt = {};
-function fpGunArt(id, lo){
-  const key = id + (lo ? ':lo' : '');
+function fpGunArt(id, lo, ps){
+  const key = id + (lo ? ':lo' : '') + ':' + ps;
   let a = _fpGunArt[key];
   if (a) return a;
   const E = lo ? WEAPON_VOX[id].half : WEAPON_VOX[id];
-  a = { w: E.gw, h: E.gh, data: new Uint8Array(E.gw * E.gh),
+  if (!ps){
+    a = { w: E.gw, h: E.gh, gdV: E.gd, ghV: E.gh,
+          data: new Uint8Array(E.gw * E.gh),
+          vol: (aw, vd, ah) => {
+            const v = new Uint8Array(aw * vd * ah);
+            for (let iz = 0; iz < E.gh; iz++)
+              for (let iv = 0; iv < E.gd; iv++)
+                for (let iu = 0; iu < E.gw; iu++){
+                  const r = E.vox[(iz * E.gd + iv) * E.gw + iu];
+                  // low art-y is the front: the muzzle (iv high) lands there
+                  if (r) v[(iz * vd + (vd - 1 - iv)) * aw + iu] = r;
+                }
+            return v;
+          } };
+    return (_fpGunArt[key] = a);
+  }
+  const th = ps * PITCH_STEP, c = Math.cos(th), s = Math.sin(th);
+  const gdR = Math.ceil(E.gd * Math.abs(c) + E.gh * Math.abs(s));
+  const ghR = Math.ceil(E.gd * Math.abs(s) + E.gh * Math.abs(c));
+  a = { w: E.gw, h: ghR, gdV: gdR, ghV: ghR,
+        data: new Uint8Array(E.gw * ghR),
         vol: (aw, vd, ah) => {
           const v = new Uint8Array(aw * vd * ah);
-          for (let iz = 0; iz < E.gh; iz++)
-            for (let iv = 0; iv < E.gd; iv++)
+          for (let iz = 0; iz < ghR; iz++){
+            const dw = ghR * 0.5 - (iz + 0.5);          // up, in cells
+            for (let iv = 0; iv < gdR; iv++){
+              const dv = iv + 0.5 - gdR * 0.5;          // toward the muzzle
+              // out of the rotated frame, back into the gun's own
+              const sv = dv * c + dw * s + E.gd * 0.5;
+              const sw = -dv * s + dw * c + E.gh * 0.5;
+              const jv = sv | 0, jz = E.gh - 1 - (sw | 0);
+              if (jv < 0 || jv >= E.gd || jz < 0 || jz >= E.gh) continue;
               for (let iu = 0; iu < E.gw; iu++){
-                const r = E.vox[(iz * E.gd + iv) * E.gw + iu];
-                // low art-y is the front, so the muzzle (iv high) lands there
+                const r = E.vox[(jz * E.gd + jv) * E.gw + iu];
                 if (r) v[(iz * vd + (vd - 1 - iv)) * aw + iu] = r;
               }
+            }
+          }
           return v;
         } };
   return (_fpGunArt[key] = a);
 }
-function drawFpGun(sl){
+function drawFpGun(){
   const G = rigRP.gun;
   const E0 = WEAPON_VOX[G.id];
   /* the scope pass runs on the CPU, so the rifle against your cheek drops
@@ -14158,15 +14261,31 @@ function drawFpGun(sl){
   const GM = (WEAPON_HOLD[G.id] && WEAPON_HOLD[G.id].gun) || { len: 0.3 };
   const lenS = GM.len * FP_GUN_SCALE * (G.scale || 1);
   const widS = Math.max(0.05, lenS * E0.wFrac), hgtS = lenS * E0.hFrac;
+  const ps = camPitchStep();
+  const A = fpGunArt(G.id, lo, ps);
+  const th = ps * PITCH_STEP, c = Math.cos(th), s = Math.sin(th);
+  const cell = lenS / E.gd;                     // cells are cubic
+  const D2 = A.gdV * cell, H2 = A.ghV * cell;
+  /* the pivot: the grip at rest, sliding to the eyepiece as the scope comes
+     up - the one point of the gun that must NOT move when the view pitches,
+     because it is the point nailed to your aim */
+  const sc2 = E0.scopeAt, st2 = G.st || 0;
+  const vA = sc2 ? 0.14 + (sc2.v0 - 0.14) * st2 : 0.14;
+  const wA = sc2 ? 0.5 + (sc2.w - 0.5) * st2 : 0.5;
+  const dv0 = (vA - 0.5) * lenS, dw0 = (wA - 0.5) * hgtS;
+  const dvR = dv0 * c - dw0 * s, dwR = dv0 * s + dw0 * c;
   const swp = cam.ang + (G.dyaw || 0);
   const fx = Math.cos(cam.ang), fy = Math.sin(cam.ang);
   const rx = Math.cos(cam.ang + Math.PI / 2), ry = Math.sin(cam.ang + Math.PI / 2);
   const sx = Math.cos(swp), sy2 = Math.sin(swp);
-  // the butt stays on its anchor; the toe-in swings the muzzle, not the grip
-  const ox = cam.x + fx * G.f + rx * G.u + sx * lenS * 0.5;
-  const oy = cam.y + fy * G.f + ry * G.u + sy2 * lenS * 0.5;
-  drawModel(ox, oy, cam.z + G.h - hgtS * 0.5, widS, hgtS, fpGunArt(G.id, lo),
-            sl.base, sl.dens, 0, swp + Math.PI / 2, E.gd / E.gw, 0);
+  // the anchor point's place today, then the rotated volume hung off it
+  const bx = cam.x + fx * G.f + rx * G.u, by = cam.y + fy * G.f + ry * G.u;
+  const aF = vA * lenS;
+  const ox = bx + sx * (aF - dvR), oy = by + sy2 * (aF - dvR);
+  const anchorH = G.h + (wA - 0.5) * hgtS;
+  drawModel(ox, oy, cam.z + anchorH - dwR - H2 * 0.5, widS, H2, A,
+            fpGunSlots(G.id).base, fpGunSlots(G.id).dens, 0,
+            swp + Math.PI / 2, D2 / widS, 0);
 }
 /* what is being taken, by class, in the item's own colour */
 function rigItem(RP, blob, beam, set, X, Y, Z){
@@ -14286,10 +14405,13 @@ function deckSlots(){
                                        H: [C.shirtC, 0.9] }));
 }
 /*---- the draw: one solid, hung on the camera -----------------------------*/
+let _zoomPass = 0;
 function fpRigVisible(){
   // the scope no longer hides the rig: the rifle coming up to the eye IS
-  // the scope-in, and the glass composites through its drilled tube
-  return !topMode() && !cam.riding;
+  // the scope-in, and the glass composites through its drilled tube.
+  // The ZOOMED pass is the world through the optics, though - your own
+  // arms and rifle have no business being magnified inside their own glass
+  return !topMode() && !cam.riding && !_zoomPass;
 }
 let _rigF = -1, _rigSig = '', _deckSig = '';
 /* rebuild only when the pose has moved a THIRD of a voxel: an idle rig is a
@@ -14353,7 +14475,7 @@ function drawFpRig(){
               cam.z + RIG_TOP - RIG_H, RIG_W, RIG_H, RIG_ART,
               sl.base, sl.dens, 0, cam.ang + Math.PI / 2, RIG_D / RIG_W, 0);
   // the baked gun rides beside the rig at its own full lattice
-  if (rigRP && rigRP.gun && WEAPON_VOX[rigRP.gun.id]) drawFpGun(sl);
+  if (rigRP && rigRP.gun && WEAPON_VOX[rigRP.gun.id]) drawFpGun();
   if (skating){
     const dsl = deckSlots();
     /* Anchored to the SCREEN, not to a height: the tail must run off the
@@ -17426,9 +17548,13 @@ function scopeGeom(){
      against the zoomed plane is a circle twice the size of the tube - the
      magnified picture then hangs over the scope's own body */
   const pl0 = Math.tan(CFG.FOV * 0.5);
+  /* 1.14, deliberately OUTSIDE the drilled hole: the voxel bore is a
+     staircase octagon and a circle can never sit flush against it - so the
+     glass swallows the stair-steps whole and the seam the eye sees is the
+     drawn ring, every time */
   if (scopeBoreR > 0)
-    rad = Math.min(rad * 1.2,
-                   scopeBoreR / scopeBoreD * R.cols / (2 * pl0) * 0.88);
+    rad = Math.min(rad * 1.3,
+                   scopeBoreR / scopeBoreD * R.cols / (2 * pl0) * 1.14);
   const r2 = scopeRamp();
   return { cx: (R.cols - 1) / 2,
            cy: R.rows / 2 + cam.pitch,
@@ -30788,7 +30914,8 @@ function render(){
     }
     _scG.set(gBuf); _scB.set(bBuf); _scL.set(lBuf); _scD.set(dBuf);
     setView(zoom);
-    worldPasses();
+    _zoomPass = 1;                 // the optics see the world, not the rifle
+    try { worldPasses(); } finally { _zoomPass = 0; }
     const g = scopeGeom(), cols = R.cols, rows = R.rows;
     const ry = g.rad * (R.cellW / R.cellH);
     for (let r = 0; r < rows; r++){
