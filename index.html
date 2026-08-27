@@ -556,7 +556,8 @@ const PK_LAMP = 0, PK_TREE = 1, PK_HYDR = 2, PK_TLIGHT = 3, PK_BIN = 4,
       PK_FLOTSAM = 23, PK_RAMP = 24,
       PK_FOUNT = 25, PK_STATUE = 26, PK_BAND = 27,
       PK_PARKED = 28,                         // stock, standing on its wheels
-      PK_BODY = 29;                           // and what is left of somebody
+      PK_BODY = 29,                           // and what is left of somebody
+      PK_TENT = 30;                           // one man's whole plan, in canvas
 
 // `let`, not `const`: entering a building swaps these references to a second
 // interior array set and back, so the renderer never learns scenes exist.
@@ -1656,6 +1657,7 @@ function buildCity(seed){
   initDealership();
   initMainQuest();
   initWorks();
+  initDavid();
   clearWaypoint(true);
   myCar = null;                                 // respawned lazily from the save
   // anything the inits put down gets the same treatment
@@ -4168,6 +4170,45 @@ const BODYCUT_DEF = { art: ART.bodyCut, w: 2.0, h: 0.52, dep: 0.85,
 PROPDEF[PK_RAMP] = { art: ART.ramp, w: 9.4, h: 1.25, dep: 0.40,
                      sl: slots({ M: [C.deckOld, 0.74], K: [C.trunk, 0.62],
                                  X: [C.nMag, 1.0], W: [C.nWhite, 0.9] }) };
+/* A ridge tent, pitched on worked land. An elevation, so the inflater turns
+   each shrinking row into its own barrel and the stack reads as canvas over
+   a pole; the split bottom rows are the door standing open. */
+ART.tent = parseArt([
+  '....KK....',
+  '...MMMM...',
+  '..MMMMMM..',
+  '.MMMMMMMM.',
+  'MMMM..MMMM',
+  'MMM....MMM']);
+PROPDEF[PK_TENT] = { art: ART.tent, w: 2.7, h: 1.8, dep: 0.85,
+                     sl: slots({ M: [C.leaf, 0.78], K: [C.trunk, 0.85] }) };
+/* The placard as it is CARRIED - board over a long pole, with DEFLOCK
+   spelled out in real 3x5 letterforms so the word survives the distance.
+   The board rows are solid cells edge to edge (letters are red cells ON the
+   white, never gaps), because the inflater severs a volume at every empty
+   column - see the corpse-art note above parseArt. Drawn thin via the
+   depth fraction, so the full-width runs cannot fatten into a lens. */
+ART.dsignHeld = parseArt([
+  'WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW',
+  'WWRRWWRRRWRRRWRWWWRRRWRRRWRWRWW',
+  'WWRWRWRWWWRWWWRWWWRWRWRWWWRRWWW',
+  'WWRWRWRRWWRRWWRWWWRWRWRWWWRWWWW',
+  'WWRWRWRWWWRWWWRWWWRWRWRWWWRRWWW',
+  'WWRRWWRRRWRWWWRRRWRRRWRRRWRWRWW',
+  'WWRRWRWRRWWRWRRRWRWWRRWRWRRWWWW',
+  'WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW',
+  '..............KKK..............',
+  '..............KKK..............',
+  '..............KKK..............',
+  '..............KKK..............',
+  '..............KKK..............',
+  '..............KKK..............',
+  '..............KKK..............',
+  '..............KKK..............']);
+const DSIGN_HELD = {
+  art: ART.dsignHeld, w: 1.15, h: 1.15 * (16 / 31),
+  sl: slots({ W: [C.nWhite, 0.92], R: [C.camRed, 0.98], K: [C.trunk, 0.9] })
+};
 PROPDEF[PK_FOUNT] = { art: ART.fount, w: 4.6, h: 2.6, dep: 1.0,
                       sl: slots({ X: [C.water, 0.55], M: [C.curb, 0.72] }) };
 PROPDEF[PK_STATUE] = { art: ART.statue, w: 2.0, h: 4.4, dep: 0.85,
@@ -4573,6 +4614,12 @@ const ITEM_DEF = {};
     ['cyl', 6, 6, 8, 10, 0.4, 11],
     ['cyl', 6, 6, 4, 6, 1.5, 13]],
     { W: [W, 0.7], M: [MET, 0.8], S: [C.nCyan, 0.95] });
+  d('relaxtabs', 0.26, 0.14, [                  // an amber pharmacy bottle, tipped
+    ['cyl', 5, 6, 0, 3, 2.4, 13],               // the bottle, the item's own amber
+    ['cyl', 5, 6, 4, 4, 1.6, 2],                // the child-proof cap
+    ['dot', 9, 5, 0, 2], ['dot', 10, 7, 0, 2],  // two tabs shaken out
+    ['dot', 9, 7, 0, 13]],
+    { W: [W, 0.85], K: [DK, 0.9] });
   d('staticd', 0.30, 0.18, [                    // a dead-channel cassette
     ['box', 2, 3, 0, 9, 8, 3, 9],               // black plastic shell
     ['box', 3, 4, 3, 8, 7, 3, 13],              // the printed label on top
@@ -4626,6 +4673,18 @@ const ITEM_DEF = {};
     ['rodx', 0, 0, 6, 2, 1.6, 5],               // the cut, clean
     ['dot', 10, 5, 3, 4], ['dot', 11, 6, 2, 4]],
     { L: [C.shirtC, 0.9], R: [C.camRed, 0.95] });
+  d('dsign', 0.62, 0.52, [                      // the placard on its pole
+    ['box', 5, 5, 0, 6, 6, 5, 7],               // the pole, two hands of it
+    ['box', 0, 4, 5, 11, 7, 11, 2],             // the board, gone grey-white
+    ['box', 1, 4, 9, 4, 4, 9, 13],              // DEFLOCK, in the item's red
+    ['box', 6, 4, 9, 10, 4, 9, 13],
+    ['box', 1, 4, 7, 6, 4, 7, 13],              // THE
+    ['box', 1, 4, 6, 9, 4, 6, 13],              // NEIGHBORHOOD
+    ['box', 1, 7, 9, 4, 7, 9, 13],              // and the same on the far face
+    ['box', 6, 7, 9, 10, 7, 9, 13],
+    ['box', 1, 7, 7, 6, 7, 7, 13],
+    ['box', 1, 7, 6, 9, 7, 6, 13]],
+    { W: [W, 0.82], P: [TR, 0.9] });
   d('butcherkeys', 0.24, 0.26, [                // heavy brass on a ring
     ['cyl', 6, 6, 4, 5, 2.2, 13],
     ['cyl', 6, 6, 4, 5, 1.2, 0],                // the hole in the ring
@@ -5802,7 +5861,7 @@ function actorRoom(a){
 const _qAS = [];
 function actorShoulder(a, dt){
   if (a.boss) return;
-  if (a.brain !== 'hostile' && a.brain !== 'wander' &&
+  if (a.brain !== 'hostile' && a.brain !== 'wander' && a.brain !== 'brawl' &&
       a.brain !== 'patrol' && a.brain !== 'watch') return;
   const here = actorRoom(a);
   let px = 0, py = 0;
@@ -6093,6 +6152,7 @@ const INT_FLAVOR = {
   dungeon: { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [
            'The lights gave up on this floor years ago.'] },
   myhome:  { keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [] },
+  davidapt:{ keeper: 'NOBODY', floorA: 0, floorB: 0, lines: [] },
   parlor:  { keeper: 'MADAME', floorA: 0, floorB: 0, lines: [
            'Sit anywhere, sugar. Somebody will find you.',
            'House rules: pay first, no names, no cameras. ESPECIALLY no cameras.'] }
@@ -6105,6 +6165,8 @@ function initInteriorFlavors(){          // palette indices exist by now
   INT_FLAVOR.office.floorA = C.deck;   INT_FLAVOR.office.floorB = C.screen;
   INT_FLAVOR.apts.floorA   = C.deckOld; INT_FLAVOR.apts.floorB = C.walk;
   INT_FLAVOR.storage.floorA = C.dataDk; INT_FLAVOR.storage.floorB = C.tire;
+  // DAVID's floor is the one interior in the rows with money in it
+  INT_FLAVOR.davidapt.floorA = C.deck; INT_FLAVOR.davidapt.floorB = C.trunk;
 }
 initInteriorFlavors();
 // A building's canonical floors: always the street, sometimes a low floor,
@@ -6227,6 +6289,7 @@ function butcheryPick(){
     const b = buildings.find(bb => bb.id === d.b);
     if (!b || d.sealed || b.dist !== D_IND || b.landmark) continue;
     if (isDungeon(b)) continue;                // the condemned towers keep their jobs
+    if (homeAt(b.id)) continue;                // and the walk-up keeps its deed
     if (bldFloorsBase(b).length < 2) continue;
     if (b.h > bh){ bh = b.h; best = { x: d.x, y: d.y, bld: b.id, door: d }; }
   }
@@ -6276,6 +6339,12 @@ function buildInterior(bld, door, floor, S){
   if (myHome && player.homes && player.homes[myHome.id] && floor === 1)
     kind = 'myhome';
   if (FIXER && bld.id === FIXER.bld && floor === FIXER.floor) kind = 'fixer';
+  /* DAVID's flat exists the moment he invites you and not before - until
+     then the floor is whatever the building said it was, so the room is
+     something he shows you rather than something you find. */
+  if (typeof DAVID_APT !== 'undefined' && DAVID_APT && bld.id === DAVID_APT.bld &&
+      floor === DAVID_APT.floor && player.quests.dv7 !== undefined)
+    kind = 'davidapt';
   const trade = kind === 'shop' ? (uDef && uDef.trade) || 'general' : null;
   const F = INT_FLAVOR[kind];
   const TF = trade && SHOP_FLAVOR[trade];
@@ -6893,6 +6962,37 @@ function buildInterior(bld, door, floor, S){
                            { name: 'THE FIXER', brain: 'still', shirt: C.nPink,
                              skin: C.skinB, tree: fixerTree() });
     fx2.interior = 1; fx2.range = 2;
+  } else if (kind === 'davidapt'){
+    /* One level, and too much of it. A protester who owns a whole floor in
+       the rows, furnished like a catalogue page: real kitchen, real couch,
+       plants somebody waters, a display case with nothing worth displaying.
+       Nobody asks the question out loud, and he never answers it. */
+    wall('w', 0.10, 'bed');
+    wall('w', 0.34, 'cabinet');
+    wall('n', 0.16, 'kitchenette');
+    wall('n', 0.44, 'tvunit');
+    wall('n', 0.72, 'holoboard');
+    wall('e', 0.14, 'displaycase');
+    wall('e', 0.42, 'sofa');
+    wall('e', 0.78, 'planter');
+    wall('w', 0.62, 'planter');
+    wall('s', 0.20, 'floorlamp');
+    wall('w', 0.86, 'floorlamp');
+    if (rw > 9) mid(0.5, 0.42, 'conftable', 0);
+    if (rw > 9) mid(0.36, 0.60, 'chairx', 0);
+    /* The sign leans by the door from the day he stops carrying it. Its own
+       named key, NOT the slot counter: this floor was an ordinary flat
+       before dv7, and an ordinary flat's medkit burns slot zero - so the
+       counter key could already be in the taken-delta before the sign ever
+       existed, and the one item the ending needs would never appear. */
+    if (player.quests.dv19 !== undefined && !worldDelta.taken.dvsign1)
+      ip.push({ x: doorX + 1.6, y: IOY + rh - 1.6, z: 0, k: PK_ITEM, s: 0,
+                r: 0, item: 'dsign', key: 'dvsign1', qty: 1 });
+    dvAptCast((k2, x, y, o) => {
+      const a = spawnClear(k2, x, y, o);
+      a.interior = 1;
+      return a;
+    }, IOX, IOY, rw, rh);
   } else if (kind === 'hideout'){
     /* No sign, no counter, no stock. Somebody has been sleeping here: a bed
        in the corner, crates for chairs, a shelf of things you do not leave
@@ -7248,7 +7348,7 @@ let lookTarget = null, _prSc = 0;
 /* Things you go somewhere to use outrank things you can walk over. */
 const PROBE_WEIGHT = {
   shift: 1.6, theswitch: 1.6, plans: 1.7, door: 1.35, stash: 1.3, sleep: 1.3,
-  buyhome: 1.25, metro: 1.2, actor: 1.15, drop: 1.4,
+  buyhome: 1.25, metro: 1.2, actor: 1.15, drop: 1.4, dvtent: 1.5,
   item: 1.0, ped: 0.9, cut: 0.85, bin: 0.7, bench: 0.7
 };
 function probeConsider(x, y, obj){
@@ -7354,6 +7454,11 @@ function probeInteract(){
       if (Math.hypot(metroStops[i].x - cam.x, metroStops[i].y - cam.y) < 3.4)
         probeConsider(metroStops[i].x, metroStops[i].y,
           { kind: 'metro', prompt: '[E]  METRO - ' + metroStops[i].name });
+  // the tent on DAVID's plot, once there is a reason to look inside it
+  if (!inside && mqLive('dv18') && typeof DAVID_FARM !== 'undefined' && DAVID_FARM &&
+      Math.hypot(DAVID_FARM.x - cam.x, DAVID_FARM.y - cam.y) < 5)
+    probeConsider(DAVID_FARM.x, DAVID_FARM.y,
+      { kind: 'dvtent', prompt: '[E]  CHECK THE TENT FOR DAVID' });
   if (inside){
     if (inside.exit)
       probeConsider(inside.exit.x, inside.exit.y,
@@ -7398,6 +7503,8 @@ function tryInteract(){
     sfx('door', { vol: 0.6, rate: 1.3 });
     toast('the package is gone, and a reply is in your pocket. back to ROOK');
     checkQuests();
+  } else if (t.kind === 'dvtent'){
+    dvCheckTent();
   } else if (t.kind === 'plans'){
     player.qvar.mq18plans = 1;
     toast('the terminal coughs up forty years of grid drawings. you take all of it');
@@ -10061,12 +10168,29 @@ function companionTree(theme, comp){
 let HOMES = null;
 function initHomes(){
   HOMES = {};
+  /* The deed is for the ground floor - myhome replaces whatever the street
+     door opened onto - and the pick used to read district and shape and
+     nothing else, so FOR SALE could hang over a working counter: the door
+     said THE WALK-UP, the room behind it was still the tools shop, and
+     buying the flat bulldozed the shop. Anything actually trading through
+     the door goes to the back of the queue - shops, card rooms and parlors
+     last, the depots a step ahead of them - while idle doors, apartments
+     and lobbies cost nothing (a doorman under a penthouse is not a bug).
+     The penalties are cliffs, not tastes: a clean building anywhere in the
+     district beats every occupied one, and a shop only ever sells the flat
+     above it in a city with no other door left to offer. */
+  const occupied = b => {
+    const u = buildingUse(b), ud = u && USES[u];
+    const k = u === 'casino' || u === 'parlor' ? u : ud && ud.kind;
+    return k === 'shop' || k === 'casino' || k === 'parlor' ? 2
+         : k === 'depot' ? 1 : 0;
+  };
   const pick = (dist, score) => {
     let best = null, bs = -1e9;
     for (const d of doors){
       const b = buildings.find(bb => bb.id === d.b);
       if (!b || d.sealed || b.dist !== dist || isDungeon(b)) continue;
-      const sc = score(b);
+      const sc = score(b) - occupied(b) * 1e5;
       if (sc > bs){ bs = sc; best = { d, b }; }
     }
     return best;
@@ -10689,6 +10813,7 @@ function initFixer(){
     const b = buildings.find(bb => bb.id === d.b);
     if (!b || d.sealed || isDungeon(b)) continue;
     if (HIDEOUT && b.id === HIDEOUT.bld) continue;   // not over ROOK's head
+    if (homeAt(b.id)) continue;                      // nor over anybody's bed
     const fls = bldFloors(b);
     if (fls.length < 2) continue;                    // he wants stairs
     // the red mile first; a tall building anywhere else if the mile has none
@@ -11270,6 +11395,9 @@ const MQ1 = {
 function mqFirecracker(x, y){
   const sp = mqSpot(671, D_STRIP);
   if (mqLive('mq7') && sp && Math.hypot(sp.x - x, sp.y - y) < 10) player.qvar.mq7pop = 1;
+  // and DAVID's strip action counts the same noise
+  const dp = typeof dvSpot === 'function' && dvSpot(747);
+  if (mqLive('dv4') && dp && Math.hypot(dp.x - x, dp.y - y) < 12) player.qvar.dv4pop = 1;
 }
 /*--------------------------- ROOK, who leads -------------------------------
   One tree, an act hub. entry() reads the line's state and jumps to the node
@@ -12412,8 +12540,11 @@ const ITEMS = {
              hint: 'the hunters lose the scent', use(){ return takeDrug('ghost'); } },
   overclock:{ name: 'OVERCLOCK SHOT', pcol: C.nCyan, stack: 2, cat: 'consumable', price: 70,
              hint: 'the world drops into slow motion', use(){ return takeDrug('overclock'); } },
-  staticd: { name: 'STATIC', pcol: C.nMag, stack: 4, cat: 'consumable', price: 25,
+  staticd: { name: 'STATIC', pcol: C.nMag, stack: 8, cat: 'consumable', price: 25,
              hint: 'reality drops packets', use(){ return takeDrug('staticd'); } },
+  relaxtabs:{ name: 'RELAX TABS', pcol: C.tlAmb, stack: 4, cat: 'consumable', price: 15,
+             hint: 'the edges round off; nothing feels urgent',
+             use(){ return takeDrug('relaxtabs'); } },
   mirror:  { name: 'MIRRORSHADE', pcol: C.nViolet, stack: 2, cat: 'consumable', price: 55,
              hint: 'see every heartbeat in the district', use(){ return takeDrug('mirror'); } },
   // ---- weapons ----
@@ -12545,7 +12676,11 @@ const ITEMS = {
              hint: 'an arm, severed clean above the elbow. it did not drown' },
   butcherkeys: { name: 'BUTCHERY KEYS', pcol: C.tlAmb, stack: 1, cat: 'misc', price: 0,
              keep: 1,
-             hint: 'heavy brass, cold-room stamped - THE MEATWORKS' }
+             hint: 'heavy brass, cold-room stamped - THE MEATWORKS' },
+  dsign:   { name: 'DEFLOCK SIGN', pcol: C.camRed, stack: 1, cat: 'misc', price: 0,
+             keep: 1,
+             hint: 'his sign. use it to hold it over your head; again to lower it',
+             use(){ return dvSignToggle(); } }
 };
 function invAdd(id, n){
   let st = player.inv.find(s => s.id === id);
@@ -12629,6 +12764,8 @@ const DRUGFX = {
                label: 'the world drops into slow motion' },
   staticd:   { dur: 30, onset: 1.5, fall: 4, glitch: 1, audJit: 0.25, machineBlind: 1,
                label: 'reality drops packets' },
+  relaxtabs: { dur: 45, onset: 4, fall: 10, speed: 0.97, wob: 0.18, sat: 1.25,
+               aud: 0.92, warm: 1, label: 'nothing feels urgent any more' },
   mirror:    { dur: 35, onset: 3, fall: 6, hueC: 0.45, sat: 1.2, seeAll: 1,
                wob: 0.3, beat: 0.7,
                label: 'you can see every heartbeat in the district' }
@@ -12919,7 +13056,7 @@ const CONSUME_CLASS = {
   taiyaki:'stick', kebab:'stick',
   soda:'drink', coffee:'drink', boba:'drink', sake:'drink',
   cigarette:'smoke',
-  chill:'pill', haze:'pill', mirror:'pill', staticd:'pill',
+  chill:'pill', haze:'pill', mirror:'pill', staticd:'pill', relaxtabs:'pill',
   rush:'inhale', ghost:'inhale',
   numb:'jab', overclock:'jab', medkit:'jab'
 };
@@ -12997,6 +13134,7 @@ function playerBodyVol(worn, P){
      motion instead of being the motion. */
   const sitF = Math.min(1, P.sit || 0);
   const mF_L = Math.min(1, P.mouthL || 0), mF_R = Math.min(1, P.mouthR || 0);
+  const signF = Math.min(1, P.sign || 0);      // both hands over the head
   return function(aw, vd, ah){
     const v = new Uint8Array(aw * vd * ah);
     const set = (x, y, z, role) => {
@@ -13141,8 +13279,24 @@ function playerBodyVol(worn, P){
              FWD * (reach * 0.5 + 0.9));
       } else slab(armLo + (dz || 0), sh, hw, 1.9, role, xoff + tw * 0.35, swing);
     };
-    arm(-5.2, armL, reachL, dropL, R.S, 1.2, P.mouthL, inL, -rl);
-    arm( 5.2, armR, reachR, dropR, R.S, 1.2, P.mouthR, inR,  rl);
+    /* An arm overhead is a third topology: a post rising from the shoulder
+       to the top of the volume. Picked at the halfway point of the raise,
+       the way sit and the mouth-fold pick theirs. The hands land at the
+       crown; the placard itself is a separate model drawn by drawBodyOf,
+       because the body's own box ends an inch over the head. */
+    const armUp = (xoff, role, hw) => {
+      const z0 = armLo + (shoulder - armLo) * signF;
+      slab(z0, shoulder + 0.02, hw, 1.4, role, xoff + tw * 0.35, lean);
+      slab(shoulder - 0.06, BODY_H, hw, 1.2, role,
+           xoff * (1 - 0.35 * signF) + tw * 0.35, lean);
+    };
+    if (signF > 0.5){
+      armUp(-4.6, R.S, 1.2);
+      armUp( 4.6, R.S, 1.2);
+    } else {
+      arm(-5.2, armL, reachL, dropL, R.S, 1.2, P.mouthL, inL, -rl);
+      arm( 5.2, armR, reachR, dropR, R.S, 1.2, P.mouthR, inR,  rl);
+    }
     // whatever is being lifted to the mouth stamps LAST, at the bottom of
     // this builder - drawn here it was buried under the head and the coat
     // sleeves the moment they went on over it
@@ -13165,8 +13319,13 @@ function playerBodyVol(worn, P){
     const under = shirt ? R.B : R.S;           // whatever the coat is over
     if (outer){                                              // the coat wins
       slab(hip - 0.02, tT + 0.04, 4.6, 2.7, R.K, 0, lean);
-      arm(-5.3, armL, reachL, dropL, R.K, 1.5, P.mouthL, inL);   // sleeves
-      arm( 5.3, armR, reachR, dropR, R.K, 1.5, P.mouthR, inR);
+      if (signF > 0.5){                                      // sleeves follow up
+        armUp(-4.7, R.K, 1.5);
+        armUp( 4.7, R.K, 1.5);
+      } else {
+        arm(-5.3, armL, reachL, dropL, R.K, 1.5, P.mouthL, inL);   // sleeves
+        arm( 5.3, armR, reachR, dropR, R.K, 1.5, P.mouthR, inR);
+      }
       if (outer === 'puffer'){                               // horizontal baffles
         for (let h = hip + 0.04; h < tT + 0.04; h += 0.16)
           slab(h, h + 0.05, 4.8, 2.8, R.W, 0, lean);
@@ -14105,7 +14264,7 @@ function bodyUsingOf(p){
 const POSE_NUM = ['legL', 'legR', 'armL', 'armR', 'armInL', 'armInR',
                   'reachL', 'reachR', 'dropL', 'dropR', 'crouch', 'lean',
                   'thigh', 'armRaise', 'twist', 'roll', 'tuck', 'sit',
-                  'mouthL', 'mouthR', 'footDown'];
+                  'mouthL', 'mouthR', 'footDown', 'sign'];
 const easeIO = t => t * t * (3 - 2 * t);            // smoothstep
 const easeIn = t => t * t;
 /* A swing's clock, for bodies whose punchDur we cannot read: cool and the
@@ -14169,6 +14328,16 @@ function samplePoseTarget(p, S, dt){
   else {
     S.useId = null; S.useT = 0;
     if (!p.sit) sampleArms(T, p, S, local);
+  }
+  // ---- the sign, held over the head: it owns both arms while it is up ----
+  // A factor, not a flag, so the raise is the animation - the arms travel up
+  // through the middle of it and the placard rides them.
+  if ((local ? dvSignOn() : p.sign) && !p.sit && !p.skate){
+    T.sign = 1;
+    T.armL = 0; T.armR = 0; T.reachL = 0; T.reachR = 0;
+    T.mouthL = 0; T.mouthR = 0; T.armInL = 0; T.armInR = 0;
+    T.gun = null;
+    T._rate = 10;                              // it goes up like a flag, not a jab
   }
   // ---- the flinch, scaled by how fresh the hit is ----
   const hT = local ? (typeof hurtT !== 'undefined' ? Math.min(hurtT, 0.3) : 0)
@@ -14512,6 +14681,23 @@ function drawBodyOf(p, x, y, yaw){
     // camjack sees our own shots without netplay being on at all
     const fT = p.local === false ? (p.fireT || 0) : muzzleT;
     if (fT > 0) drawMuzzleFlash(x, y, yaw, P.gun, fT, P.fire && P.fire.flash, lift);
+  }
+  /* The placard, riding the raised hands. Its own model rather than voxels
+     in the body volume, because the body's box ends an inch over the head -
+     and it climbs with the sign factor, so the raise reads from outside.
+     The pole is the bottom half of the art: at full raise it spans the
+     gripping hands, and the board clears the head. */
+  const sF = P.sign || 0;
+  if (sF > 0.5 && typeof DSIGN_HELD !== 'undefined'){
+    const D = DSIGN_HELD;
+    const bob = Math.sin(worldTime * 1.6 + (S.seed || 0)) * 0.03;
+    /* The board turns its face to whoever is looking. A flat art extruded
+       has one honest face and one mirrored one - the tag pieces dodge this
+       by being symmetric, but a sign with WORDS on it cannot - so the words
+       choose the reader, which is, after all, what a protest sign is for. */
+    drawModel(x, y, lift + 0.9 + 0.6 * sF + bob, D.w, D.h,
+              D.art, D.sl.base, D.sl.dens, 0,
+              Math.atan2(y - cam.y, x - cam.x) + Math.PI / 2, 0.10, 0);
   }
 }
 /* the camjack's view of you, left standing where you walked away from */
@@ -15836,6 +16022,10 @@ function openCamJack(){
       cam.x = c.x; cam.y = c.y; cam.z = 4.6;
       cam.ang = hash3(c.x | 0, c.y | 0, 5) * Math.PI * 2; setAim(-6);
       sfx('ui_move', { vol: 0.5, rate: 1.5 });
+      /* DAVID's stakeout: the flock looking at its own masters. Riding any
+         lens near the marked corner is seeing it - the suits do not check
+         over their shoulders for cameras, because the cameras are theirs. */
+      if (typeof dvCamSpy === 'function') dvCamSpy(c);
     },
     onKey(code){
       if (code === 'KeyA' || code === 'ArrowLeft'){
@@ -17296,6 +17486,1053 @@ function startQuest(id){
   sfx('ui_select', { vol: 0.6, rate: 0.8 });
   toast('new objective: ' + QUESTS[id].name);
 }
+/*============================ DEFLOCK (dv1-dv20) ===========================
+  DAVID, who holds a sign on a corner in the rows, and the twenty stages it
+  takes to watch a person come apart at walking pace. Nothing in this line
+  jumps out at you. It is a man, a cause, an itch, a tent, and a sunrise,
+  in that order, and the horror of it is that the player carries half of it
+  there one shopping trip at a time.
+
+  Structure notes, for whoever touches this next:
+  - DAVID is a LOCAL body (spawned past CAST0, never streamed), respawned
+    by davidEnsure() from quest state the way the run respawns VESPER, so
+    a save taken anywhere puts him back where the story says he is.
+  - Everything persistent lives in player.qvar (dvEgo, dv6kills, dvFarmAt,
+    dvRestAt, dvDawnAt, the latches). Times are absolute hours - see
+    dvHour() - so sleeping through a wait works exactly like waiting.
+  - The rally brawl is a set piece held in memory, not in the save: like
+    THE RUN, it is respawned (minus the dead) when you come back to it.
+  - Cutscene latches are set in after(), never on the way in (the mq20
+    lesson), so an interrupted beat simply plays again.
+============================================================================*/
+let DAVID_APT = null, DAVID_FARM = null;
+const DV_DIST = { 741: D_RES, 743: D_RES, 745: D_SUB, 747: D_STRIP,
+                  749: D_DOWN, 751: D_DOWN, 753: D_DOWN, 755: D_IND };
+let _dvSpots = {};
+function dvSpot(salt){
+  const k = salt + '_' + worldSeed;
+  return _dvSpots[k] || (_dvSpots[k] = mqSpot(salt, DV_DIST[salt]));
+}
+function dvHour(){ return dayCount * 24 + clock; }
+function dvActor(){ return actors.find(a => a.name === 'DAVID' && !a.interior); }
+/* the flat: the widest residential block with an upstairs, which is the
+   point of it - a protester with a whole floor in the rows. Deterministic
+   (door scan plus hash), because this runs inside newWorld. */
+function initDavid(){
+  DAVID_APT = null; DAVID_FARM = null;
+  _dvSpots = {};
+  const pickApt = dist => {
+    let best = null, bs = -1e9;
+    for (const d of doors){
+      const b = buildings.find(bb => bb.id === d.b);
+      if (!b || d.sealed || b.dist !== dist || isDungeon(b)) continue;
+      if (homeAt(b.id)) continue;
+      if (HIDEOUT && b.id === HIDEOUT.bld) continue;
+      if (FIXER && b.id === FIXER.bld) continue;
+      const fls = bldFloors(b);
+      if (fls.length < 2) continue;
+      const sc = (b.x1 - b.x0) * (b.y1 - b.y0) + hash3(b.id, 93, 7);
+      if (sc > bs){ bs = sc; best = { bld: b.id, floor: fls[1], x: d.x, y: d.y }; }
+    }
+    return best;
+  };
+  DAVID_APT = pickApt(D_RES) || pickApt(D_SUB);
+  /* the plot: a worked patch out in the fields, cleared of the crop rows so
+     it reads as land somebody bought and has not planted */
+  const fp = mqSpot(761, D_RURAL);
+  if (fp && fp !== HIDEOUT){
+    DAVID_FARM = { x: fp.x, y: fp.y };
+    for (let i = props.length - 1; i >= 0; i--){
+      const p = props[i];
+      if (p.k === PK_CROP && Math.hypot(p.x - fp.x, p.y - fp.y) < 5.5)
+        props.splice(i, 1);
+    }
+  }
+}
+/*--- where he is, from what the story has got to -------------------------*/
+function dvDavidHome(){
+  const q = player.quests, v = player.qvar;
+  if (v.dvGone || v.dvRefused) return false;
+  if (q.dv17 !== undefined) return false;
+  if (typeof q.dv7 === 'number') return true;      // the invitation stands
+  if (typeof q.dv12 === 'number') return true;     // the tapes come to him
+  if (q.dv12 === 'done' && dvHour() < (v.dvRestAt || 0)) return true;   // resting
+  return false;
+}
+function dvCornerSalt(){
+  const q = player.quests;
+  if (q.dv6 === 'done') return 741;                // home corner, head down
+  if (q.dv5 === 'done') return 749;
+  if (q.dv4 === 'done') return 747;
+  if (q.dv3 === 'done') return 745;
+  if (q.dv2 === 'done') return 743;
+  return 741;
+}
+function dvMarchDest(){
+  const q = player.quests;
+  if (q.dv2 === 0) return dvSpot(743);
+  if (q.dv3 === 0) return dvSpot(745);
+  if (q.dv4 === 0) return dvSpot(747);
+  if (q.dv5 === 0) return dvSpot(749);
+  return null;
+}
+function dvWhereStreet(){
+  const q = player.quests, v = player.qvar;
+  if (v.dvGone) return null;
+  if (v.dvRefused){ const sp = dvSpot(741); return sp && { x: sp.x, y: sp.y, sign: 1 }; }
+  if (q.dv17 !== undefined)
+    return DAVID_FARM ? { x: DAVID_FARM.x, y: DAVID_FARM.y + 2, sign: 0 } : null;
+  if (dvDavidHome()) return null;
+  if (typeof q.dv6 === 'number'){
+    if (q.dv6 !== 0) return null;                  // lost in the crush
+    const sp = dvSpot(751); return sp && { x: sp.x, y: sp.y, sign: 1 };
+  }
+  const md = dvMarchDest();
+  if (md) return { x: md.x, y: md.y, sign: 1 };
+  const sp = dvSpot(dvCornerSalt());
+  return sp && { x: sp.x, y: sp.y, sign: 1 };
+}
+function toDavid(){
+  const d = dvActor();
+  if (d) return { x: d.x, y: d.y, name: 'DAVID' };
+  if (dvDavidHome() && DAVID_APT)
+    return { x: DAVID_APT.x, y: DAVID_APT.y, name: 'DAVID’S BUILDING' };
+  if (player.quests.dv17 !== undefined && DAVID_FARM)
+    return { x: DAVID_FARM.x, y: DAVID_FARM.y, name: 'THE PLOT' };
+  const sp = dvSpot(dvCornerSalt());
+  return sp && { x: sp.x, y: sp.y, name: 'DAVID' };
+}
+/* a fetch points at the counter until you are carrying enough, then at him */
+function dvFetch(id, n, shopName){
+  if (invCount(id) >= n) return toDavid();
+  return supplyMark(nearestShopFor(id), shopName || 'COUNTER') || toDavid();
+}
+/*--------------------------------- the jobs -------------------------------*/
+const DAVID_QUESTS = {
+  dv1: { name: 'THE SIGN ON THE CORNER',
+    stages: [{ log: 'a man on a corner in the rows holds a sign about the cameras - hear him out',
+      target: toDavid }] },
+  dv2: { name: 'THE GOOD FIGHT',
+    stages: [{ log: 'march with DAVID - stay close, it matters to him that they see two',
+      target: toDavid,
+      auto(){ const d = dvActor(), sp = dvSpot(743);
+              return !inside && d && sp && Math.hypot(d.x - sp.x, d.y - sp.y) < 4 &&
+                     Math.hypot(d.x - cam.x, d.y - cam.y) < 12; } }] },
+  dv3: { name: 'TWO LENSES',
+    stages: [
+      { log: 'march with DAVID into the suburbs', target: toDavid,
+        auto(){ const d = dvActor(), sp = dvSpot(745);
+                return !inside && d && sp && Math.hypot(d.x - sp.x, d.y - sp.y) < 4 &&
+                       Math.hypot(d.x - cam.x, d.y - cam.y) < 12; } },
+      { log: () => 'cut 2 flock cams for the movement (' +
+                   Math.min(2, (player.qvar.camCut || 0) - (player.qvar.dv3Base || 0)) +
+                   ' of 2) - face one with a SAW and press E', tool: 'saw',
+        auto(){ return (player.qvar.camCut || 0) - (player.qvar.dv3Base || 0) >= 2; } }] },
+  dv4: { name: 'LOOK UP',
+    stages: [
+      { log: 'march with DAVID onto the strip', target: toDavid,
+        auto(){ const d = dvActor(), sp = dvSpot(747);
+                return !inside && d && sp && Math.hypot(d.x - sp.x, d.y - sp.y) < 4 &&
+                       Math.hypot(d.x - cam.x, d.y - cam.y) < 12; } },
+      { log: 'set off firecrackers near the corner - a street full of feeds, made to look up',
+        tool: 'firecracker',
+        target(){ return dvSpot(747); },
+        auto(){ return !!player.qvar.dv4pop; } }] },
+  dv5: { name: 'FRONT PAGE',
+    stages: [
+      { log: 'march with DAVID downtown - into the flock’s own living room', target: toDavid,
+        auto(){ const d = dvActor(), sp = dvSpot(749);
+                return !inside && d && sp && Math.hypot(d.x - sp.x, d.y - sp.y) < 4 &&
+                       Math.hypot(d.x - cam.x, d.y - cam.y) < 12; } },
+      { log: () => 'burn the slogan onto 2 walls (' +
+                   Math.min(2, (player.qvar.vandal || 0) - (player.qvar.dv5Base || 0)) +
+                   ' of 2)', tool: 'burner',
+        auto(){ return (player.qvar.vandal || 0) - (player.qvar.dv5Base || 0) >= 2; } }] },
+  dv6: { name: 'THE RALLY',
+    stages: [
+      { log: 'DAVID called a rally on the plaza downtown - stand with him',
+        target(){ return dvSpot(751); },
+        auto(){
+          if (atSpot(dvSpot(751), 10) && !player.qvar.dv6scene && !inCutscene() && !inside)
+            dvRallyScene();
+          return false;
+        } },
+      { log: () => player.qvar.dvFled
+          ? 'you were never there'
+          : 'the rally broke - put down the enforcers (' +
+            Math.min(20, player.qvar.dv6kills || 0) +
+            ' of 20), or get clear and disappear (C to hide, once you are far away)',
+        target(){ return dvSpot(751); },
+        auto(){
+          const v = player.qvar;
+          if (v.dvFled) return true;
+          if (v.dv6spawned && (v.dv6kills || 0) >= 20){ v.dvHelped = 1; return true; }
+          return false;
+        } }] },
+  dv7: { name: 'SOMEWHERE QUIET',
+    stages: [
+      { log: 'DAVID is expecting you - his building in the rows, second floor',
+        target(){ return DAVID_APT && { x: DAVID_APT.x, y: DAVID_APT.y, name: 'DAVID’S BUILDING' }; },
+        auto(){ return !!(inside && DAVID_APT && inside.bld === DAVID_APT.bld &&
+                          inside.floor === DAVID_APT.floor); } },
+      { log: () => 'two RELAX TABS off a dispensary shelf (' +
+                   Math.min(2, invCount('relaxtabs')) + ' of 2) - then back to DAVID’S',
+        take: { relaxtabs: 2 },
+        target(){ return dvFetch('relaxtabs', 2); } }] },
+  dv8: { name: 'PICKET FUEL',
+    stages: [{ log: () => 'three COFFEES for the picket line (' +
+                 Math.min(3, invCount('coffee')) + ' of 3) - then DAVID’s corner',
+      take: { coffee: 3 },
+      target(){ return dvFetch('coffee', 3); } }] },
+  dv9: { name: 'NIGHT EYES',
+    stages: [{ log: () => 'cut 2 more flock cams (' +
+                 Math.min(2, (player.qvar.camCut || 0) - (player.qvar.dv9Base || 0)) +
+                 ' of 2) - DAVID keeps the count now', tool: 'saw',
+      auto(){ return (player.qvar.camCut || 0) - (player.qvar.dv9Base || 0) >= 2; } }] },
+  dv10: { name: 'OVER THE OLD PAINT',
+    stages: [{ log: () => 'burn the slogan onto 2 more walls (' +
+                 Math.min(2, (player.qvar.vandal || 0) - (player.qvar.dv10Base || 0)) +
+                 ' of 2)', tool: 'burner',
+      auto(){ return (player.qvar.vandal || 0) - (player.qvar.dv10Base || 0) >= 2; } }] },
+  dv11: { name: 'LITTLE BROTHER',
+    stages: [
+      { log: 'ride the flock with the CAM-JACK and find the meeting on the marked corner',
+        tool: 'camjack',
+        target(){ return dvSpot(753); },
+        auto(){ return !!player.qvar.dv11seen; } },
+      { log: 'tell DAVID what you saw', target: toDavid }] },
+  dv12: { name: 'STATIC',
+    stages: [{ log: () => 'two STATIC tapes (' + Math.min(2, invCount('staticd')) +
+                 ' of 2) - the dispensaries keep them - then DAVID’S flat',
+      take: { staticd: 2 },
+      target(){ return dvFetch('staticd', 2); } }] },
+  dv13: { name: 'SIGN FRAMES',
+    stages: [{ log: () => 'three SCRAP ELECTRONICS for sign frames (' +
+                 Math.min(3, invCount('scrap')) + ' of 3) - then DAVID',
+      take: { scrap: 3 },
+      target(){
+        if (invCount('scrap') >= 3) return toDavid();
+        return supplyMark(nearestDepot(Math.max(1, 3 - invCount('scrap'))), 'DEPOT') || toDavid();
+      } }] },
+  dv14: { name: 'FRESH PAINT',
+    stages: [{ log: () => 'burn 2 pieces for the movement (' +
+                 Math.min(2, (player.qvar.vandal || 0) - (player.qvar.dv14Base || 0)) +
+                 ' of 2)', tool: 'burner',
+      auto(){ return (player.qvar.vandal || 0) - (player.qvar.dv14Base || 0) >= 2; } }] },
+  dv15: { name: 'FEED THE PICKETS',
+    stages: [{ log: () => 'four CUP NOODLES for the picket (' +
+                 Math.min(4, invCount('noodles')) + ' of 4) - then DAVID',
+      take: { noodles: 4 },
+      target(){ return dvFetch('noodles', 4); } }] },
+  dv16: { name: 'THE RAZOR TAX',
+    stages: [
+      { log: 'three razors sit on a corner in the belt, holding STATIC - take it off them',
+        target(){ return dvSpot(755); },
+        auto(){ return (player.qvar.dv16dead || 0) >= 3; } },
+      { log: () => 'bring DAVID the three STATIC (' + Math.min(3, invCount('staticd')) +
+                   ' of 3)',
+        take: { staticd: 3 },
+        target: toDavid }] },
+  dv17: { name: 'GREENER LAND',
+    stages: [
+      { log: 'DAVID is out on his plot in the fields - go and see what he bought',
+        target(){ return DAVID_FARM && { x: DAVID_FARM.x, y: DAVID_FARM.y, name: 'THE PLOT' }; } },
+      { log: () => 'a week’s supply: seven STATIC (' + Math.min(7, invCount('staticd')) +
+                   ' of 7) - then back out to the plot',
+        take: { staticd: 7 },
+        target(){ return dvFetch('staticd', 7); } }] },
+  dv18: { name: 'THE QUIET',
+    stages: [{ log: 'twenty-four hours. go back out to the plot and check on DAVID',
+      target(){ return DAVID_FARM && { x: DAVID_FARM.x, y: DAVID_FARM.y, name: 'THE PLOT' }; },
+      auto(){ return !!player.qvar.dv18checked; } }] },
+  dv19: { name: 'WHAT HE LEFT',
+    stages: [{ log: 'his old sign is still at the flat in the rows - somebody should have it',
+      target(){ return DAVID_APT && { x: DAVID_APT.x, y: DAVID_APT.y, name: 'DAVID’S BUILDING' }; },
+      auto(){ return invCount('dsign') > 0; } }] },
+  dv20: { name: 'SAME OLD',
+    stages: [{ log: 'the sun is coming up' }] }
+};
+Object.assign(QUESTS, DAVID_QUESTS);
+/*------------------------------ the conversation ---------------------------
+  One tree, one hub, read fresh every time the way ROOK's is. The early
+  nodes are the recruitment: three questions, and the option that advances
+  each one is the option that feeds him. That is the design and the theme in
+  one mechanism - the other answers are all TRUER, and they all bounce. */
+function davidTree(){
+  const ego = () => { player.qvar.dvEgo = (player.qvar.dvEgo || 0) + 1; };
+  return {
+    entry(){ return this.nextNode(); },
+    nextNode(){
+      const q = player.quests, v = player.qvar;
+      if (v.dvRefused) return 'after';
+      if (q.dv1 === undefined) return 'meet';
+      if (mqLive('dv1')) return 'meet2';
+      if (dvMarchDest()) return 'march';
+      if (q.dv3 === 1) return 'wait3';
+      if (q.dv4 === 1) return 'wait4';
+      if (q.dv5 === 1) return 'wait5';
+      if (q.dv2 === 'done' && q.dv3 === undefined) return 'give3';
+      if (q.dv3 === 'done' && q.dv4 === undefined) return 'give4';
+      if (q.dv4 === 'done' && q.dv5 === undefined) return 'give5';
+      if (q.dv5 === 'done' && q.dv6 === undefined) return 'give6';
+      if (typeof q.dv6 === 'number') return 'wait6';
+      if (q.dv6 === 'done' && q.dv7 === undefined) return 'give7';
+      if (typeof q.dv7 === 'number')
+        return q.dv7 === 0 ? 'come7'
+             : invCount('relaxtabs') >= 2 ? 'turn7' : 'home7';
+      if (q.dv7 === 'done' && q.dv8 === undefined) return 'give8';
+      if (typeof q.dv8 === 'number')
+        return invCount('coffee') >= 3 ? 'turn8' : 'wait8';
+      if (q.dv8 === 'done' && q.dv9 === undefined) return 'give9';
+      if (typeof q.dv9 === 'number') return 'wait9';
+      if (q.dv9 === 'done' && q.dv10 === undefined) return 'give10';
+      if (typeof q.dv10 === 'number') return 'wait10';
+      if (q.dv10 === 'done' && q.dv11 === undefined) return 'give11';
+      if (q.dv11 === 0) return 'wait11';
+      if (q.dv11 === 1) return 'turn11';
+      if (q.dv11 === 'done' && q.dv12 === undefined) return 'give12';
+      if (typeof q.dv12 === 'number')
+        return invCount('staticd') >= 2 ? 'turn12' : 'wait12';
+      if (q.dv12 === 'done' && dvHour() < (v.dvRestAt || 0)) return 'resting';
+      if (q.dv12 === 'done' && q.dv13 === undefined) return 'give13';
+      if (typeof q.dv13 === 'number')
+        return invCount('scrap') >= 3 ? 'turn13' : 'wait13';
+      if (q.dv13 === 'done' && q.dv14 === undefined) return 'give14';
+      if (typeof q.dv14 === 'number') return 'wait14';
+      if (q.dv14 === 'done' && q.dv15 === undefined) return 'give15';
+      if (typeof q.dv15 === 'number')
+        return invCount('noodles') >= 4 ? 'turn15' : 'wait15';
+      if (q.dv15 === 'done' && q.dv16 === undefined) return 'give16';
+      if (q.dv16 === 0) return 'wait16';
+      if (q.dv16 === 1)
+        return invCount('staticd') >= 3 ? 'turn16' : 'wait16b';
+      if (q.dv16 === 'done' && q.dv17 === undefined) return 'patience';
+      if (q.dv17 === 0) return 'farm17';
+      if (q.dv17 === 1)
+        return invCount('staticd') >= 7 ? 'turn17' : 'wait17';
+      return 'idle';
+    },
+    /*---- recruitment: three correct answers, and every one of them is
+          about HIM rather than the cause. The truer options bounce. ----*/
+    meet: { text: 'DEFLOCK THE NEIGHBORHOOD! You - yes, you, you stopped, nobody stops. You know what that camera on the pole behind you is doing right now? It is deciding what kind of person you are. A box on a pole is DECIDING you. Somebody has to say it out loud.',
+      opts: [{ t: 'And you’re the one saying it', do(){ mqStart('dv1'); ego(); }, next: 'q2' },
+             { t: 'It’s deterring muggers, mostly', do(){ mqStart('dv1'); }, next: 'r1' },
+             { t: 'It’s a camera. It doesn’t decide anything', do(){ mqStart('dv1'); }, next: 'r1' }] },
+    meet2: { text: 'You came back. I told myself you would. The sign is heavy, friend - not in the arms. In the other place. Where was I. The flock.',
+      opts: [{ t: 'You were telling me who decides', next: 'q2b' }] },
+    q2b: { text: 'THEY decide. Every lens reports to a tower and every tower reports to nobody you can name. I have stood on this corner for two years. Do you know how many people ever asked me WHY?',
+      opts: [{ t: 'I’m asking. Nobody else would', do(){ ego(); }, next: 'q3' },
+             { t: 'Maybe they were busy', next: 'r2' },
+             { t: 'How many cameras have you actually counted?', next: 'r2' }] },
+    r1: { text: 'That is - no. No, see, that is what the feed WANTS in your mouth. I have heard that sentence from a hundred mouths and it is never theirs. Try again. Look at the pole. Look at ME, and try again.',
+      opts: [{ t: 'Okay. Nobody else is saying it. You are', do(){ ego(); }, next: 'q2' },
+             { t: 'I’m just saying what I think', next: 'meetLoop' }] },
+    meetLoop: { text: 'Then think LONGER. I am on this corner every day. The thought comes if you stand still long enough, I promise you that.',
+      opts: [{ t: 'Alright - tell me again', next: 'meet' }] },
+    q2: { text: 'Two years on this corner. Rain, heat, the vans slowing down to look at me. My own block treats me like weather. And I stay, because if I go, then there is NOBODY between this neighborhood and the flock. You understand what I am telling you?',
+      opts: [{ t: 'That you’re the only one who sees it', do(){ ego(); }, next: 'q3' },
+             { t: 'That you’re exhausted', next: 'r2' },
+             { t: 'That you need more people, not more standing', next: 'r2' }] },
+    r2: { text: 'You are hearing the words and missing the SHAPE of it. That is fine. That is the training talking - they train you with the feeds, you know, the cuts, the pacing, it is all pacing. Breathe. Listen to the shape.',
+      opts: [{ t: 'The shape is: you’re the only one holding the line', do(){ ego(); }, next: 'q3' },
+             { t: 'I should go', next: 'meetLoop' }] },
+    q3: { text: 'Yes. YES. You see - most people’s eyes slide off me, and yours don’t, and that is not nothing, that is rare, that is - listen. I need one person. Not a crowd. Crowds are weather too. One person who sees what I see, standing where I stand. The good fight needs a second pair of hands.',
+      opts: [{ t: 'Then it has them. I’m in',
+               do(){ ego(); mqDone('dv1'); mqStart('dv2'); }, next: 'joined' },
+             { t: 'What exactly would I be doing?', next: 'q3b' },
+             { t: 'I’m not a joiner', next: 'r3' }] },
+    q3b: { text: 'Walking, mostly. Standing. Being SEEN seeing. And later - later there is real work, there is always real work, but it starts with two people on a corner instead of one, which is not twice as many. It is a hundred times as many. Ask anybody who has ever been one.',
+      opts: [{ t: 'Alright. I’m in',
+               do(){ ego(); mqDone('dv1'); mqStart('dv2'); }, next: 'joined' },
+             { t: 'Let me think about it', next: 'meetLoop' }] },
+    r3: { text: 'Neither am I! Joiners join things that exist. We are not joining. We are STARTING. There is a difference and the difference is everything.',
+      opts: [{ t: 'Fine. Then let’s start',
+               do(){ ego(); mqDone('dv1'); mqStart('dv2'); }, next: 'joined' },
+             { t: 'Another day, maybe', next: 'meetLoop' }] },
+    joined: { text: 'Ha! HA! Okay. Okay okay okay. Right now - we walk. Momentum matters, the first hour matters, ask any organizer, which is me, I am the organizer. Two blocks over. Stay close. Let them see there are two of us now.' },
+    /*---- the marches ----*/
+    march: { text: () => ['Keep up! A gap in a march reads as doubt.',
+                          'Eyes up, friend. Let every lens on this street file us properly.',
+                          'You feel that? That is what momentum feels like. Nobody tells you it feels like being watched.']
+             [((player.qvar.dvEgo || 0) + mqStep()) % 3] },
+    give3: { text: 'The suburbs next. I know, I know - LOOK at it, hedges and silence. That silence is bought, friend. Every quiet street is quiet AT somebody. Walk with me and I will show you the poles they hide the lenses on.',
+      opts: [{ t: 'Lead on', do(){ mqStart('dv3'); mqBase('dv3Base', 'camCut'); } },
+             { t: 'Not today' }] },
+    wait3: { text: () => 'Two lenses on this street, friend. ' +
+                 ((player.qvar.camCut || 0) - (player.qvar.dv3Base || 0)) +
+                 ' down. A saw through each eye. I would do it myself but they know my face - my face is FILED - you they have not decided yet.' },
+    give4: { text: 'The strip. Every screen on it is a mouth and every mouth is saying BUY, and nobody looks up, ever, at the things on the poles watching them not look up. We are going to make a street full of feeds look UP. You will want firecrackers.',
+      opts: [{ t: 'Let’s wake them up', do(){ mqStart('dv4'); } },
+             { t: 'Later' }] },
+    wait4: { text: 'Crackers, near the corner. Loud, bright, gone. Ten seconds of every face pointed at the SKY where the flock lives. Ten seconds of a street seeing what watches it. Cheap at any price.' },
+    give5: { text: 'Downtown. The flock’s own living room. I want the words on their walls, friend - MY words, in fire, where the morning shift cannot not read them. A burner does it. You have steadier hands than mine. Lately. The hands, lately.',
+      opts: [{ t: 'Your words, their walls', do(){ mqStart('dv5'); mqBase('dv5Base', 'vandal'); } },
+             { t: 'Not yet' }] },
+    wait5: { text: () => 'Two walls. ' + ((player.qvar.vandal || 0) - (player.qvar.dv5Base || 0)) +
+                 ' so far. Big letters. Letters they have to PAY somebody to remove - that is the trick of it, we cost them money, money is the only nerve they have left.' },
+    give6: { text: 'It is time. I have been out every night this week - flyers, corners, the noodle queues. A RALLY, friend. A real one. The plaza downtown, everyone at once, too many to file. Two years on a corner and it comes down to one afternoon. Stand with me. Stand WITH me.',
+      opts: [{ t: 'Front row', do(){ mqStart('dv6'); }, next: 'give6b' },
+             { t: 'This feels too fast', next: 'give6c' }] },
+    give6b: { text: 'Front row. You and me and everybody, and by tonight this city knows the neighborhood has teeth. Go. I have to bring the signs. ALL the signs.' },
+    give6c: { text: 'Fast? FAST? Two YEARS, friend. If this is fast then a glacier is a bullet train. The plaza. Today. Please.',
+      opts: [{ t: 'Okay. The plaza', do(){ mqStart('dv6'); } }] },
+    wait6: { text: 'LOOK at them all. Look at them ALL. I did this. We did this. Stay where I can see you when it starts.' },
+    /*---- after the plaza ----*/
+    give7: { text: () => (player.qvar.dvHelped
+        ? 'I saw what you did back there. I should say I am horrified. I am not horrified. Twenty of THEM, and they are the ones who limped away for once - do you know what that does for people? For ME?'
+        : 'You got out clean. Good. GOOD. That is not a criticism, friend - a movement needs survivors more than it needs martyrs, I read that, I might have written it.') +
+        ' But the heat right now, the vans are crawling every block of the rows... my place. Come to my place until it cools. I have - it is comfortable. You will see.',
+      opts: [{ t: 'Lead the way', do(){ mqStart('dv7'); }, next: 'give7b' },
+             { t: 'I’ll lie low on my own', next: 'give7c' }] },
+    give7b: { text: 'Second floor. The building with the good door. You will know it when you see it - that is not bragging, it is directions.' },
+    give7c: { text: 'Sure. Sure. Only - the offer stands. It is a good flat. Nobody ever sees it, is all.',
+      opts: [{ t: 'Alright, show me the flat', do(){ mqStart('dv7'); }, next: 'give7b' },
+             { t: 'Another time' }] },
+    come7: { text: 'You are here! Up the stairs, friend - second floor, the door is open. Come UP.' },
+    home7: { text: 'Well. This is it. Yes - the whole floor, yes, the furniture is real, no, I do not want to get into how, it is not interesting, family is not interesting. SIT. Look - after a day like that, a body needs to come DOWN, medically, that is just true. RELAX TABS. The dispensaries sell them over the counter, they are practically vitamins. Two - one for each of us. Would you?',
+      opts: [{ t: 'Sure. Two tabs', next: 'home7b' },
+             { t: 'You’re sure that’s a good idea?', next: 'home7c' }] },
+    home7b: { text: 'You are a good friend. The GOOD fight and the good friend. Ha. Go - I will find the glasses. There are glasses somewhere.' },
+    home7c: { text: 'A good - they are LEGAL, friend, they sell them next to the throat sweets. After what we walked out of today? It is medicine. It is practically citizenship.',
+      opts: [{ t: 'Okay. Two tabs', next: 'home7b' },
+             { t: '(leave it for now)' }] },
+    turn7: { text: 'You got them! Ha - look at us, look at this, an evening like normal people. Sit down, sit DOWN.',
+      opts: [{ t: '(stay the evening)', do(){ dvHangScene(); } },
+             { t: '(not tonight)' }] },
+    /*---- back on the corner ----*/
+    give8: { text: 'Morning! Back to work - the corner does not hold itself. Listen, the picket runs on caffeine and I am worth nothing before ten, which is a joke, but also true. Three coffees? Movement funds. I am good for it.',
+      opts: [{ t: 'Three coffees', do(){ mqStart('dv8'); } },
+             { t: 'Get your own coffee' }] },
+    wait8: { text: 'Coffee, friend. Three. The bodega on any corner. My hands want something to hold that is not the sign, is all. An itch I cannot scratch. Forget I said that. Coffee.' },
+    turn8: { text: 'You are a saint. A logistical saint.',
+      opts: [{ t: 'Here', do(){ mqDone('dv8'); }, next: 'give9' }] },
+    give9: { text: 'Two more lenses. I have a LIST now - I keep the count at night. There is a lot of night lately, I am not sleeping much, which is fine, it is useful, you see more. Two cams, any two. For the list.',
+      opts: [{ t: 'For the list', do(){ mqStart('dv9'); mqBase('dv9Base', 'camCut'); } },
+             { t: 'Rest first, David' }] },
+    wait9: { text: () => 'The list, friend. ' + ((player.qvar.camCut || 0) - (player.qvar.dv9Base || 0)) +
+                 ' of 2. And - unrelated - do you ever notice things outside your window at night? Not people. Just... things that are there and then are not. Unrelated. The list.' },
+    give10: { text: 'Paint. Two more pieces. The old ones faded - walls forget, that is the entire problem with walls, somebody should write that on one. Ha! Write THAT on one.',
+      opts: [{ t: 'Two walls', do(){ mqStart('dv10'); mqBase('dv10Base', 'vandal'); } },
+             { t: 'Not today' }] },
+    wait10: { text: () => 'The paint, friend. ' + ((player.qvar.vandal || 0) - (player.qvar.dv10Base || 0)) +
+                 ' of 2. Big letters. Letters with TEETH.' },
+    give11: { text: 'Before the paint dries - sit down, I have to tell you something and you are going to laugh. I bought land. LAND, friend. A plot out in the fields, my name on an actual paper. A couple of cows. A chicken that lays. That is the whole dream and it has always been the whole dream, since before the sign, since before any of this. Somewhere the city cannot look at me... but that is LATER, later. First - there is a meeting. A corner downtown, same two men, over and over. A MERIDIAN suit and a man who is... wrong. I need eyes on it and my face is filed. The cam-jack rides their own lenses. Use their eyes. Tell me what their eyes see.',
+      opts: [{ t: 'Cows and a chicken. That’s a good dream', do(){ ego(); mqStart('dv11'); }, next: 'give11b' },
+             { t: 'How do you know about this meeting?', next: 'give11c' }] },
+    give11b: { text: 'It is the BEST dream. It is the only one I have ever had that does not need anybody to lose. Go - the corner is marked. Their own eyes, friend. Use their own eyes.' },
+    give11c: { text: 'I watch. That is the job. That has always been the job - somebody watches the watchers, and it is me, it has to be somebody and it is me. The corner is marked.',
+      opts: [{ t: 'Alright. I’ll ride the flock', do(){ mqStart('dv11'); } }] },
+    wait11: { text: 'The corner, friend. The cam-jack. Any lens near it is THEIR lens, which makes it our lens. There is a poetry in that I do not have time to write down.' },
+    turn11: { text: 'Tell me. The suit - MERIDIAN, gray collar, yes? And the other one. Describe the other one.',
+      opts: [{ t: 'Gray coat. Still. Like he wasn’t anybody', do(){ mqDone('dv11'); }, next: 'turn11b' }] },
+    turn11b: { text: 'That is him. That is HIM, friend - I have seen that man. Outside my window. At night. I told you there were things outside my window and you looked at me the way you are looking at me right now, and there he IS, in daylight, shaking hands with a tower. I am not - I have never been - I need... I need to come down. I need to come down from this.' },
+    give12: { text: 'The tabs do not work any more. They round the edges and the edges grow back by morning, sharper, the edges are always sharper the next day. I need something with actual teeth in it. STATIC. Two tapes. The dispensaries keep it behind the counter but they sell it, it is legal, everything is legal if it keeps the city quiet. Bring them to mine. Please, friend.',
+      opts: [{ t: 'Two tapes. Okay', do(){ mqStart('dv12'); }, next: 'give12b' },
+             { t: 'David - tabs, and now static?', next: 'give12c' }] },
+    give12b: { text: 'Thank you. THANK you. My place. I will get the deck out - it is, technically, for music.' },
+    give12c: { text: 'And NOW static, yes, because the man from outside my window has meetings, friend, MEETINGS, and I am the only one who - I am fine. It is one bad month in a good cause. Two tapes.',
+      opts: [{ t: 'Okay. Two tapes', do(){ mqStart('dv12'); } },
+             { t: '(say nothing and go)' , do(){ mqStart('dv12'); } }] },
+    wait12: { text: 'The tapes, friend. Two. Behind the dispensary counter. Then mine.' },
+    turn12: { text: 'You have them. Good - good. Come in. Shoes anywhere. The deck is already out, which means nothing.',
+      opts: [{ t: '(put the tapes on the table)', do(){ dvBreakScene(); } },
+             { t: '(not like this - keep them for now)' }] },
+    resting: { text: 'Not yet, friend. I said a day and I need the day. The blanket helped. You helped. Come back tomorrow and I will be - come back tomorrow.' },
+    give13: { text: 'Better. I am better. We go AGAIN, that is what the movement means, it means you go again. Sign frames - the old ones warped in the rain. Three units of scrap does it. The belt sheds it.',
+      opts: [{ t: 'Three scrap', do(){ mqStart('dv13'); } },
+             { t: 'Take another day, David' }] },
+    wait13: { text: () => 'Scrap, friend. ' + Math.min(3, invCount('scrap')) + ' of 3. The depots in the belt are stacked with it.' },
+    turn13: { text: 'Frames. FRAMES. The signs will stand up straighter than I do. That is a joke. Laugh with me.',
+      opts: [{ t: 'Here', do(){ mqDone('dv13'); }, next: 'give14' }] },
+    give14: { text: 'Paint again. Two pieces. Keep the words wet, friend - a wall with our words on it is the only wall in this city that is on anybody’s side.',
+      opts: [{ t: 'Two pieces', do(){ mqStart('dv14'); mqBase('dv14Base', 'vandal'); } },
+             { t: 'Later' }] },
+    wait14: { text: () => 'The paint. ' + ((player.qvar.vandal || 0) - (player.qvar.dv14Base || 0)) + ' of 2.' },
+    give15: { text: 'The picket needs feeding. Noodles - four cups. It is me, friend. The picket is me. It has been me for a while now. Four cups lasts me the week if I am careful, and I am always careful, I am famously careful.',
+      opts: [{ t: 'Four cups', do(){ mqStart('dv15'); } },
+             { t: 'Come eat somewhere real, David' }] },
+    wait15: { text: () => 'Noodles, friend. ' + Math.min(4, invCount('noodles')) + ' of 4. Any counter.' },
+    turn15: { text: 'You keep me standing. I want it noted somewhere that you kept me standing.',
+      opts: [{ t: 'Here', do(){ mqDone('dv15'); }, next: 'give16' }] },
+    give16: { text: 'Listen. LISTEN. There is a crew in the belt - three razors on a corner - and they are sitting on static, tapes and tapes of it, they tax the dispensaries, everybody knows. I am not asking you to hurt anybody. I am asking you to take back what they took, and if that is the same thing, then it was the same thing before we got there. Three tapes, friend. I cannot afford the counter any more and I cannot be without it. Those are both true and I hate them both.',
+      opts: [{ t: 'I’ll get your tapes', do(){ mqStart('dv16'); } },
+             { t: 'This isn’t activism, David', next: 'give16b' }] },
+    give16b: { text: 'No. It is not. I know what it is not, friend. Three tapes.',
+      opts: [{ t: '...okay', do(){ mqStart('dv16'); } },
+             { t: 'No' }] },
+    wait16: { text: 'The corner in the belt. Three of them. They will not touch you unless you touch them - that crew minds its own ledger. Which is more than the city ever did.' },
+    wait16b: { text: () => 'The tapes, friend. ' + Math.min(3, invCount('staticd')) + ' of 3.' },
+    turn16: { text: 'All three. All THREE. This is enough to keep me going a while. Yes - going. That is the word I said and the word I meant. Look at me: I am not pretending it is for the movement, I am not pretending it is for the edges. It is for me, and you got it for me, and that is where we are now, the two of us. ...Come out to my land tomorrow. It is real. It has a fence post. I want one person to see it who will not laugh at me.',
+      opts: [{ t: 'I’ll come see the farm', do(){ mqDone('dv16'); player.qvar.dvFarmAt = dvHour() + 24; }, next: 'turn16b' },
+             { t: '(just hand over the tapes)', do(){ mqDone('dv16'); player.qvar.dvFarmAt = dvHour() + 24; }, next: 'turn16b' }] },
+    turn16b: { text: 'Tomorrow. The fields, out past the belt. You will see the tent - it is a good tent. It is the first thing I have ever bought that does nothing but what it says.' },
+    patience: { text: 'Tomorrow, friend. The fields. Give a man one day to make the place look like a beginning.' },
+    /*---- the plot ----*/
+    farm17: { text: 'You came! Look at it. LOOK at it. I know there are no cows yet - the cows are a later phase, there are phases - but the dirt is mine, the quiet is mine. Life is better out here, friend, it is BETTER... except. Except that nobody delivers out here. There is no counter for thirty blocks, and the counters in the city, my face, they know my face now, they have stopped selling to me. A week’s worth. Seven tapes. Then I am set up out here and the city can rot without me. You are the only one who can get what I am looking for. You have always been the only one.',
+      opts: [{ t: 'A week’s supply. Okay', do(){ advanceQuest('dv17'); }, next: 'farm17b' },
+             { t: 'No. I’m done carrying tapes, David', next: 'farm17c' },
+             { t: 'You need help. Real help', next: 'farm17d' }] },
+    farm17b: { text: 'Seven. Thank you. When it is done I will not need the city for anything at all, and neither will you, you can visit, you can - there could be a second tent. Ha. Go safe, friend.' },
+    farm17c: { text: 'Done. Done? ...Okay. Okay, friend. It was a lot to ask. It was always a lot to ask, every time, and you never once said so, and I always knew it was a lot, and I asked anyway. That is a thing I know about myself now. Go home. I have a fence post to stare at.',
+      opts: [{ t: '(leave him the corner of the field)', do(){ dvEpilogueScene(); } }] },
+    farm17d: { text: 'This IS the real help. The land IS the help - doctors file reports, friend, clinics have cameras in the waiting rooms, I have SEEN them. Out here nothing watches me but the crows, and I can live with crows. Seven tapes, or nothing.',
+      opts: [{ t: 'Then okay. Seven', do(){ advanceQuest('dv17'); }, next: 'farm17b' },
+             { t: 'Then nothing. I’m sorry', next: 'farm17c' }] },
+    wait17: { text: () => 'Seven, friend. ' + Math.min(7, invCount('staticd')) +
+                 ' so far. I count them at night. There is a lot of night out here. It is one of the features.' },
+    turn17: { text: '"Thank you." That is all he says, and he says it to the tapes rather than to you, and his hands are very steady while he lines all seven up on the bedroll like a spine. "I don’t know if I’ll get the chance to see you again, friend. The phases, you know. The cows." He does not laugh. He does not look up. The field is very quiet.',
+      opts: [{ t: '(leave him to the quiet)', do(){ mqDone('dv17'); player.qvar.dv18At = dvHour() + 24; } }] },
+    /*---- the other ending, standing on a corner forever ----*/
+    after: { text: () => ['DEFLOCK THE NEIGHBORHOOD! ...You. I know you. The good fight goes on, friend. It always goes on.',
+                          'The sign is new. The letters are straighter than they have ever been. He does not mention the field, and neither do you.',
+                          '"Two years on this corner," he calls out, to everyone, to no one. It has been longer than that. You do not correct him.']
+             [mqStep() % 3] },
+    idle: { text: 'The corner holds, friend. The corner holds.' }
+  };
+}
+/* the flat's cast: him, when the story has him home */
+function dvAptCast(place, ox, oy, rw, rh){
+  if (!dvDavidHome()) return;
+  place('citizen', ox + (rw >> 1) + 0.5, oy + (rh >> 1) + 1.5,
+    { name: 'DAVID', brain: 'still', shirt: C.leaf, tree: davidTree() });
+}
+/*---------------------------- the set pieces -------------------------------*/
+function dvRallyScene(){
+  openScene('THE RALLY', [
+    'There are more people on this plaza than DAVID has ever had in his life. Two dozen, maybe. Hand-made signs. A drum somebody cannot really play.',
+    'DAVID is up on a crate with the sign over his head, and for one whole minute it is working: the chant catches, the corner answers, a stranger laughs WITH him and not at him.',
+    'You see it arrive before you hear it - the edge of the crowd stiffening the way water stiffens just before it boils.',
+    'Vans. Both avenues at once, quiet as furniture. Enforcers step out with their visors down, and they do not hurry, because they have never once needed to.',
+    '"DISPERSE." One word for the whole street, from a speaker with nobody attached to it.',
+    'Somebody throws a bottle. You do not see who. It does not matter who. It was always going to be somebody.',
+    'The line breaks, and the plaza becomes a machine for hurting people, at the exact moment you lose sight of DAVID entirely.',
+    'Twenty of them, one street, and every lens on every pole doing what it does.'
+  ], () => {
+    player.qvar.dv6scene = 1;
+    if (mqLive('dv6') && player.quests.dv6 === 0) advanceQuest('dv6');
+    dvSpawnBrawl();
+    toast('fight for them - or get clear, and C makes you nobody once you are far enough away');
+    hurtT = Math.max(hurtT, 0.3);
+  });
+}
+function dvHangScene(){
+  openScene('A QUIET NIGHT', [
+    'The tabs come out of the bottle looking like nothing. Like mints. DAVID reads the label warnings out loud in a announcer’s voice, and after a while you are both laughing at nothing at all.',
+    'The flat softens by degrees. The city outside the window goes from a threat to a picture of a threat.',
+    'He talks about the neighborhood the way other people talk about people. He knows which window boxes died this year. He knows which corner lost its tree, and to whom.',
+    'Somewhere past midnight he goes quiet, and then: "I shouldn’t be doing this. You know that? I put this stuff down once. Took me two years to put it down."',
+    '"One night isn’t a habit," he says, to nobody in the room in particular. "One night is a reward."',
+    'He falls asleep mid-sentence on his own expensive couch, holding the empty bottle the way a child holds a toy.',
+    'You let yourself out. The hallway camera watches you go, and for once you understand exactly what he means about the cameras.'
+  ], () => {
+    if (mqLive('dv7')) mqDone('dv7');
+    takeDrug('relaxtabs');
+  });
+}
+function dvBreakScene(){
+  openScene('STATIC', [
+    'The tape goes into a deck you had assumed was furniture. The sound it makes is not music and is not trying to be.',
+    'For a while it is even good. The room drops packets. The edges of things negotiate.',
+    'Then DAVID is on the floor with his back against the good couch, and he is sobbing, and it has arrived from nowhere the way weather arrives.',
+    '"The state of it," he keeps saying. "The state of the world. Have you SEEN it? Has anybody actually SEEN it?"',
+    '"I just want some land. Some animals. A chicken that lays. Somewhere the corrupt - somewhere the city cannot FIND me. That is all. That is the entire dream. Why is the entire dream this hard."',
+    'He says the word dream until it stops being a word.',
+    'You put a blanket over him, because it is the only thing in the flat you know how to operate.',
+    '"Come back in a day," he says, from underneath it, perfectly calmly, which is worse. "I need to decompress. I am fine. Come back after a day."'
+  ], () => {
+    if (mqLive('dv12')) mqDone('dv12');
+    player.qvar.dvRestAt = dvHour() + 24;
+    takeDrug('staticd');
+  });
+}
+function dvEpilogueScene(){
+  openScene('ONE WEEK LATER', [
+    'You said no. It is worth writing down somewhere that you said no.',
+    'A week goes by the way weeks go here: sirens, weather, wages. You do not go out to the fields. There would be no kind way to do it.',
+    'And then, on an ordinary morning, on the ordinary corner in the rows - there he is. DAVID. The sign is new. The letters are straighter than they have ever been.',
+    '"DEFLOCK THE NEIGHBORHOOD," he calls, to everyone, to no one, to you - without a flicker of anything crossing his face.',
+    'Clean, maybe. Or holding it somewhere you cannot see. You will never know which, because you will never ask, and he will never say.',
+    'The city does not say either. The city was never once looking.'
+  ], () => {
+    player.qvar.dvRefused = 1;
+    /* The quest closes by hand rather than through advanceQuest: the honest
+       path's last stage carries take:{staticd:7}, and walking the refusal
+       through the machinery would bill a player who happened to be carrying
+       tapes for the privilege of saying no. */
+    if (typeof player.quests.dv17 === 'number'){
+      player.quests.dv17 = 'done';
+      sfx('ui_select', { vol: 0.7, rate: 0.7 });
+      toast('completed: GREENER LAND');
+    }
+    if (player.track === 'dv17') player.track = null;
+    toast('the good fight goes on. it always goes on');
+  });
+}
+/*------------------------------- the brawl ---------------------------------
+  Twenty of them against the crowd DAVID built. Every body here is local
+  muscle (never streamed) with brain 'brawl', run by dvBrawlFrame below:
+  enforcers hunt protesters, protesters swing back, and the player is a
+  third force nobody scripted. An enforcer the PLAYER touches is `armed`,
+  so actorHurtReact flips it hostile - it stops working the crowd and
+  starts working you, and killActor books it as a fight, not a murder. */
+function dvSpawnBrawl(){
+  const sp = dvSpot(751);
+  if (!sp) return;
+  const v = player.qvar;
+  v.dv6spawned = 1;
+  const enfLeft = 20 - (v.dv6kills || 0);
+  for (let i = 0; i < enfLeft; i++){
+    const t = randWalkNear(sp.x, sp.y, 4, 14) || [sp.x | 0, sp.y | 0];
+    const a = spawnActor('enforcer', t[0] + 0.5, t[1] + 0.5,
+      { name: 'ENFORCER', brain: 'brawl', hp: 40, shirt: C.carC, skin: C.dataDk });
+    a.atk = 8; a.armed = 1; a.barkT = 0; a.dvBrawl = 'e'; a.spd = 2.3;
+  }
+  for (let i = 0; i < 12; i++){
+    const t = randWalkNear(sp.x, sp.y, 2, 10) || [sp.x | 0, sp.y | 0];
+    /* 60 hp, not a civilian's 26: a crowd that folds in ten seconds is a
+       massacre with a spectator, and the choice the stage is built on needs
+       the fight to still be a fight while the player decides which person
+       they are. They lose anyway, on the numbers, unless somebody helps. */
+    const a = spawnActor('citizen', t[0] + 0.5, t[1] + 0.5,
+      { name: 'PROTESTER', brain: 'brawl', hp: 60 });
+    a.atk = 4; a.barkT = 0; a.dvBrawl = 'f'; a.spd = 1.9;
+  }
+  panicHere(sp.x, sp.y, 60);
+  sfx('hurt', { vol: 0.7, rate: 0.4 });
+}
+/* a local death with no author: bodies fall, nothing goes on YOUR record */
+function dvKillLocal(a){
+  const sc = actorScene(a);
+  const i = actors.indexOf(a);
+  if (i >= 0) actors.splice(i, 1);
+  killFx(a.x, a.y, 0);
+  dropBody(sc, a.x, a.y, { skin: a.skin, shirt: a.shirt,
+                           yaw: Math.atan2(a.dy || 0, a.dx || 1) });
+  sfx('hit', { vol: 0.45, rate: 0.7 });
+  if (a.dvBrawl === 'e') player.qvar.dv6kills = (player.qvar.dv6kills || 0) + 1;
+}
+/* what killActor tells the line: brawl enforcers count toward the twenty
+   whoever dropped them, and the belt razors give up their tapes */
+function davidKill(a){
+  if (a.dvBrawl === 'e')
+    player.qvar.dv6kills = (player.qvar.dv6kills || 0) + 1;
+  if (a.dvRazor){
+    player.qvar.dv16dead = (player.qvar.dv16dead || 0) + 1;
+    dropAt(actorScene(a), a.x, a.y, 'staticd', { qty: 1 });
+    toast('a STATIC tape slides out of the jacket');
+  }
+}
+/* hiding, far from the plaza, while the brawl runs: you were never there */
+function dvHideEscape(){
+  if (player.quests.dv6 !== 1 || player.qvar.dvFled) return;
+  const sp = dvSpot(751);
+  if (!sp || !player.qvar.dv6spawned) return;
+  if (Math.hypot(sp.x - cam.x, sp.y - cam.y) > 45){
+    player.qvar.dvFled = 1;
+    toast('whatever is happening on that plaza, you were never there');
+  }
+}
+function dvBrawlFrame(dt){
+  if (player.quests.dv6 !== 1 || !player.qvar.dv6spawned) return;
+  const enf = [], pro = [];
+  for (const a of actors){
+    if (a.interior || !a.dvBrawl) continue;
+    if (a.dvBrawl === 'e' && a.brain === 'brawl') enf.push(a);
+    else if (a.dvBrawl === 'f' && a.brain === 'brawl') pro.push(a);
+  }
+  const step = (a, tx, ty) => {
+    const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy) || 1;
+    a.dx = dx / d; a.dy = dy / d;
+    const ox = a.x, oy = a.y;
+    const nx = a.x + a.dx * a.spd * dt, ny = a.y + a.dy * a.spd * dt;
+    if (walkG[clamp(a.y | 0, 0, MAP - 1) * MAP + clamp(nx | 0, 0, MAP - 1)]) a.x = nx;
+    if (walkG[clamp(ny | 0, 0, MAP - 1) * MAP + clamp(a.x | 0, 0, MAP - 1)]) a.y = ny;
+    a.phase += a.spd * dt * 3.4;
+    a.moving = 1;
+    /* A straight line at a foe on the far side of masonry walks into the
+       wall forever, and two such survivors hold the whole set piece open.
+       A body that has made no ground for a few seconds is shoved back into
+       the scrum at a fresh walkable spot - the plaza is chaos, nobody sees
+       one more person come round a corner. */
+    if (Math.hypot(a.x - ox, a.y - oy) < a.spd * dt * 0.25){
+      a.bStuck = (a.bStuck || 0) + dt;
+      if (a.bStuck > 4){
+        a.bStuck = 0;
+        const sp2 = dvSpot(751);
+        const t2 = sp2 && randWalkNear(sp2.x, sp2.y, 2, 10);
+        if (t2){ a.x = t2[0] + 0.5; a.y = t2[1] + 0.5; }
+      }
+    } else a.bStuck = 0;
+  };
+  const fightTick = (a, foes) => {
+    a.moving = 0;
+    let foe = null, bd = 1e9;
+    for (const f of foes){
+      const d = Math.hypot(f.x - a.x, f.y - a.y);
+      if (d < bd){ bd = d; foe = f; }
+    }
+    if (!foe || bd > 40) return;
+    if (a.windup > 0){                        // committed: the blow lands at 0
+      a.windup -= dt;
+      const dx = foe.x - a.x, dy = foe.y - a.y, d = Math.hypot(dx, dy) || 1;
+      a.dx = dx / d; a.dy = dy / d;
+      if (a.windup <= 0 && bd < 1.7){
+        /* A riot line SUBDUES - batons and shields, worn down blow by blow -
+           while the crowd swings with everything it has. The asymmetry is
+           what lets the fight last long enough to be witnessed, and still
+           only ever end one way without help. */
+        foe.hp -= a.dvBrawl === 'e' ? 5 + ((Math.random() * 4) | 0)
+                                    : (a.atk || 5) + ((Math.random() * 4) | 0);
+        foe.hitT = 0.15;
+        if (Math.random() < 0.3) addFx(foe.x, foe.y, 1.3);
+        if (foe.hp <= 0) dvKillLocal(foe);
+      }
+      return;
+    }
+    if (bd > 1.15){ step(a, foe.x, foe.y); return; }
+    a.bCd = (a.bCd || 0) - dt;
+    const dx = foe.x - a.x, dy = foe.y - a.y, d = Math.hypot(dx, dy) || 1;
+    a.dx = dx / d; a.dy = dy / d;
+    if (a.bCd <= 0){
+      // the line works to a drill cadence; the crowd swings when it can
+      a.bCd = (a.dvBrawl === 'e' ? 1.6 : 0.9) + Math.random() * 0.6;
+      a.windup = 0.25;
+      sfx('ui_move', { rate: 0.4, vol: 0.15 });
+    }
+  };
+  // enforcers work the crowd; the crowd works back. Whichever side runs out
+  // of the other stands in the wreckage - the auto() decides what that means
+  const proLive = pro.filter(p => p.hp > 0);
+  const enfAll = actors.filter(a => !a.interior && a.dvBrawl === 'e');
+  for (const e of enf) fightTick(e, proLive);
+  for (const p of pro) fightTick(p, enfAll);
+}
+/* A post a protester would actually pick: open pavement, nothing standing
+   between him and the street. mqSpot only promises WALKABLE, and a walkable
+   tile half a metre behind a market cart is a man the city cannot see -
+   which for every other actor is a shrug and for a sign is the whole point
+   gone. Reject anything furniture-blocked or in a stall's shadow, spiral
+   out to clear ground. MUST run with the city scene bound. */
+function dvClearPost(sp){
+  const G = cityWalk();
+  const hidden = (x, y) => {
+    if (propBlocked(x, y, 0.55)) return true;
+    const near = gridQuery(propGrid, x, y, 3, _q1);
+    for (let i = 0; i < near.length; i++){
+      const p = near[i];
+      if ((p.k === PK_STALL || p.k === PK_METRO || p.k === PK_BAND) &&
+          Math.hypot(p.x - x, p.y - y) < 2.6) return true;
+    }
+    return false;
+  };
+  for (let r = 0; r <= 6.5; r += 0.7)
+    for (let a2 = 0; a2 < 8; a2++){
+      const x = sp.x + Math.cos(a2 * Math.PI / 4) * r;
+      const y = sp.y + Math.sin(a2 * Math.PI / 4) * r;
+      if (!inMap(x | 0, y | 0) || !G[(y | 0) * MAP + (x | 0)]) continue;
+      if (hidden(x, y)) continue;
+      return [x, y];
+    }
+  return [sp.x, sp.y];
+}
+/*----------------------------- the daily tick ------------------------------*/
+function davidEnsure(){
+ /* The whole pass runs against the CITY however deep indoors the player is
+    standing: walkG, propGrid and props here must be the street's own, or
+    every clearance question below is asked of somebody's shop floor. */
+ withScene(CITY, () => {
+  const here = dvWhereStreet();
+  let d = dvActor();
+  if (!here){
+    if (d) actors.splice(actors.indexOf(d), 1);
+  } else {
+    if (!d){
+      const t = dvClearPost(here);
+      d = spawnActor('citizen', t[0] + 0.5, t[1] + 0.5,
+        { name: 'DAVID', brain: 'still', shirt: C.leaf, tree: davidTree() });
+      d.range = 3;
+    }
+    d.dvSign = here.sign ? 1 : 0;
+    // a state change moved his post while he was off screen; a live march
+    // walks him there honestly instead
+    if (!dvMarchDest()){
+      if (Math.hypot(d.x - here.x, d.y - here.y) > 26){
+        const t = dvClearPost(here);
+        d.x = t[0] + 0.5; d.y = t[1] + 0.5; d.path = null;
+      } else if (propBlocked(d.x, d.y, 0.5) ||
+                 gridQuery(propGrid, d.x, d.y, 3, _q1).some(p =>
+                   (p.k === PK_STALL || p.k === PK_METRO || p.k === PK_BAND) &&
+                   Math.hypot(p.x - d.x, p.y - d.y) < 2.6)){
+        // posted in a stall's shadow: step out where the street can see him
+        const t = dvClearPost(here);
+        d.x = t[0] + 0.5; d.y = t[1] + 0.5; d.path = null;
+      }
+    }
+  }
+  const q = player.quests;
+  // the tent goes up the day the story moves him out, and never comes down
+  if (q.dv17 !== undefined && DAVID_FARM){
+    withScene(CITY, () => {
+      if (!props.some(p => p.k === PK_TENT)){
+        props.push({ x: DAVID_FARM.x, y: DAVID_FARM.y, k: PK_TENT, s: 0,
+                     r: 1.0, yaw: Math.PI });
+        indexProps(); indexSpriteProps();
+      }
+    });
+  }
+  // the meeting, standing on its corner while somebody is meant to see it
+  if (q.dv11 === 0){
+    if (!actors.some(a => a.dvSuit)){
+      const sp = dvSpot(753);
+      if (sp){
+        const s1 = spawnActor('citizen', sp.x + 0.7, sp.y,
+          { name: 'MERIDIAN SUIT', brain: 'still', shirt: C.carC,
+            tree: { start: { text: 'The suit does not turn its head. "This corner is taken, friend."',
+              opts: [{ t: '(move along)' }] } } });
+        s1.dvSuit = 1; s1.range = 2; s1.dx = -1; s1.dy = 0;
+        const s2 = spawnActor('citizen', sp.x - 0.8, sp.y + 0.2,
+          { name: 'A GREY MAN', brain: 'still', shirt: C.rail, skin: C.shirtC,
+            tree: { start: { text: 'He looks at you the way a camera does. He says nothing at all. You know his face from somewhere, and the knowing feels like a debt.',
+              opts: [{ t: '(walk away)' }] } } });
+        s2.dvSuit = 1; s2.range = 2; s2.dx = 1; s2.dy = 0;
+      }
+    }
+    // the meeting has to be on SOMEBODY's lens, or the job cannot be done -
+    // the flock replaces its eyes, which is also simply true of the flock
+    const sp = dvSpot(753);
+    if (sp) withScene(CITY, () => {
+      if (!props.some(p => p.k === PK_CAM && !p.dead &&
+                           Math.hypot(p.x - sp.x, p.y - sp.y) < 14)){
+        props.push({ x: sp.x + 2.5, y: sp.y + 1.5, k: PK_CAM, s: 0.37, r: 0.16 });
+        indexProps(); indexSpriteProps();
+      }
+    });
+  } else if (actors.some(a => a.dvSuit)){
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].dvSuit) actors.splice(i, 1);
+  }
+  // the belt crew, minus whoever has already been taken off the ledger
+  if (q.dv16 === 0){
+    const have = actors.filter(a => a.dvRazor).length;
+    const need = 3 - (player.qvar.dv16dead || 0) - have;
+    const sp = dvSpot(755);
+    for (let i = 0; i < need; i++){
+      const t = randWalkNear(sp.x, sp.y, 1, 5) || [(sp.x | 0) + i, sp.y | 0];
+      const a = spawnActor('razor', t[0] + 0.5, t[1] + 0.5,
+        { name: 'RAZOR', brain: 'still', hp: 45 });
+      a.atk = 9; a.armed = 1; a.barkT = 0; a.dvRazor = 1; a.range = 4;
+    }
+  }
+ });
+}
+function davidTick(){
+  if (!DAVID_APT && !DAVID_FARM) return;       // a world without the line
+  const q = player.quests, v = player.qvar;
+  const H = dvHour();
+  if (q.dv16 === 'done' && v.dvFarmAt && H >= v.dvFarmAt &&
+      q.dv17 === undefined && !v.dvRefused){
+    startQuest('dv17');
+    toast('DAVID is out on his land in the fields. he is expecting you');
+  }
+  if (q.dv17 === 'done' && !v.dvRefused && v.dv18At && H >= v.dv18At &&
+      q.dv18 === undefined && !inCutscene()){
+    v.dvGone = 1;
+    startQuest('dv18');
+    openDialog('YOU', [
+      'Twenty-four hours. You have counted them the way he must count them.',
+      'It went fast. That is the thing you keep arriving at: how fast the whole of it went. A man with a sign. Then a man with an itch. Then a man in a tent you paid for one tape at a time.',
+      'You should go out to the fields. You should check on DAVID.']);
+  }
+  if (q.dv18 === 'done' && q.dv19 === undefined){
+    startQuest('dv19');
+    openDialog('YOU', [
+      'His sign is still at the flat. Somebody should have it. Not the landlord. Not the bins.',
+      'Somebody who was there. You, then. To remember the good DAVID - the corner one, the loud one. That one.']);
+  }
+  if (q.dv19 === 'done' && !v.dvDawnAt)
+    v.dvDawnAt = (dayCount + (clock >= 5.5 ? 1 : 0)) * 24 + 5.9;
+  if (v.dvDawnAt && q.dv20 === undefined && H >= v.dvDawnAt &&
+      clock >= 5.9 && clock < 7.6 && !inside && !cam.riding && !skating &&
+      !topMode()){
+    startQuest('dv20');
+    dvFinaleScene();
+  }
+  // the plaza empties itself once the job is settled, whichever way it went
+  if (q.dv6 === 'done' && actors.some(a => a.dvBrawl)){
+    for (let i = actors.length - 1; i >= 0; i--)
+      if (actors[i].dvBrawl) actors.splice(i, 1);
+    toast(v.dvFled ? 'the plaza empties itself behind you'
+                   : 'the vans leave as quietly as they came, lighter than they arrived');
+  }
+  // LAST, so a state a gate just changed is standing in the world the same
+  // tick it changed - the tent, his post, the cast around him
+  davidEnsure();
+}
+/* the per-frame half: the march, and the brawl */
+function davidFrame(dt){
+  if (!DAVID_APT && !DAVID_FARM) return;
+  const q = player.quests, v = player.qvar;
+  // the march: he walks his route honestly, and waits when you fall behind
+  const dest = dvMarchDest();
+  const d = dest && dvActor();
+  if (d){
+    const ddx = dest.x - d.x, ddy = dest.y - d.y, dd = Math.hypot(ddx, ddy);
+    if (dd > 2.5){
+      const gap = Math.hypot(d.x - cam.x, d.y - cam.y);
+      if (gap > 18){
+        d.moving = 0;                         // he will not lose you
+        const px = cam.x - d.x, py = cam.y - d.y, pl = Math.hypot(px, py) || 1;
+        d.dx = px / pl; d.dy = py / pl;
+      } else {
+        if (!d.path || d.pi >= d.path.length){
+          const path = astar(clamp(d.x | 0, 0, MAP - 1), clamp(d.y | 0, 0, MAP - 1),
+                             dest.x | 0, dest.y | 0, 9000);
+          if (path){ d.path = path; d.pi = 1; }
+        }
+        if (d.path && d.pi < d.path.length){
+          const cell = d.path[d.pi], cx2 = cell % MAP, cy2 = (cell / MAP) | 0;
+          const dx = cx2 + 0.5 - d.x, dy = cy2 + 0.5 - d.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          d.dx = dx / dist; d.dy = dy / dist;
+          d.x += d.dx * 1.7 * dt; d.y += d.dy * 1.7 * dt;
+          d.phase += 1.7 * dt * 3.4;
+          d.moving = 1;
+          if (dist < 0.34) d.pi++;
+        }
+      }
+    } else d.moving = 0;
+  }
+  // the brawl respawns (minus the dead) when a reload dropped it mid-fight
+  if (q.dv6 === 1 && v.dv6scene && !v.dvFled && (v.dv6kills || 0) < 20 &&
+      !inside && !actors.some(a => a.dvBrawl)){
+    const sp = dvSpot(751);
+    if (sp && Math.hypot(sp.x - cam.x, sp.y - cam.y) < 45) dvSpawnBrawl();
+  }
+  dvBrawlFrame(dt);
+}
+/*------------------------- the flock, spying on itself ---------------------*/
+function dvCamSpy(c){
+  if (player.quests.dv11 !== 0 || player.qvar.dv11seen) return;
+  const sp = dvSpot(753);
+  if (!sp || Math.hypot(c.x - sp.x, c.y - sp.y) > 15) return;
+  player.qvar.dv11seen = 1;
+  toast('there - a MERIDIAN suit, and a grey man who stands like he is nobody at all. the suit does the listening');
+  sfx('ui_select', { vol: 0.6, rate: 0.7 });
+}
+/*------------------------------- the tent ---------------------------------*/
+function dvCheckTent(){
+  if (player.qvar.dv18checked) return;
+  player.qvar.dv18checked = 1;
+  openDialog('THE TENT', [
+    'The flap is tied shut from the outside, the way you tie a thing you intend to come back to.',
+    'Inside: the bedroll, square. Seven spent tapes in a row along its edge, ordered smallest scratch to largest, like a spine.',
+    'A bag of feed, unopened, for animals that were never bought.',
+    'No note. No DAVID. The field does not know anything. The field is a field.',
+    'You stand there long enough for the wind to change, and nobody comes.']);
+  sfx('ui_back', { vol: 0.5, rate: 0.6 });
+}
+/*------------------------- the sign, held overhead -------------------------*/
+let dvSignUp = false;
+function dvSignOn(){
+  return dvSignUp && !skating && !cam.riding && !sitting &&
+         invCount('dsign') > 0 &&
+         (typeof weaponId !== 'function' || weaponId() === 'fist');
+}
+function dvSignToggle(){
+  dvSignUp = !dvSignUp;
+  if (dvSignUp && typeof weaponId === 'function' && weaponId() !== 'fist')
+    equipWeapon('fist');
+  toast(dvSignUp ? 'the sign goes up - DEFLOCK THE NEIGHBORHOOD'
+                 : 'the sign comes down');
+  return true;
+}
+/*------------------------------ the finale ---------------------------------
+  dv20 is a camera, not a conversation: five held shots over the places the
+  line happened, a slow pan on each, and an alarm clock at the end of it.
+  The mode is named 'scene' so the usual cutscene immunities apply; the
+  world is paused, which at this hour reads as the city holding its breath.
+  cam IS the player, so the camera is put back exactly where it was taken
+  from - the same bargain the camjack strikes. */
+function dvFinaleScene(){
+  const save = { x: cam.x, y: cam.y, z: cam.z, ang: cam.ang, pitch: cam.pitch };
+  if (!netGuest()) clock = Math.max(5.95, Math.min(clock, 6.3));
+  const shots = [];
+  const aimAt = (fx, fy, tx, ty) => Math.atan2(ty - fy, tx - fx);
+  const c1 = dvSpot(741);
+  if (c1) shots.push({ x: c1.x + 4, y: c1.y + 4, z: 2.3,
+    ang: aimAt(c1.x + 4, c1.y + 4, c1.x, c1.y), pitch: -2, dur: 7, drift: 0.045,
+    cap: 'the corner in the rows. somebody else is standing on it now, waiting to cross.' });
+  const c2 = dvSpot(751);
+  if (c2) shots.push({ x: c2.x - 5, y: c2.y + 3, z: 3.2,
+    ang: aimAt(c2.x - 5, c2.y + 3, c2.x, c2.y), pitch: -3, dur: 7, drift: -0.04,
+    cap: 'the plaza is swept before the city wakes. it keeps no record and it holds no grudge.' });
+  if (DAVID_APT) shots.push({ x: DAVID_APT.x + 3, y: DAVID_APT.y + 5, z: 2.0,
+    ang: aimAt(DAVID_APT.x + 3, DAVID_APT.y + 5, DAVID_APT.x, DAVID_APT.y),
+    pitch: 6, dur: 7, drift: 0.035,
+    cap: 'a light is on in his old building. it belongs to somebody else now.' });
+  if (DAVID_FARM) shots.push({ x: DAVID_FARM.x + 6, y: DAVID_FARM.y + 5, z: 1.9,
+    ang: aimAt(DAVID_FARM.x + 6, DAVID_FARM.y + 5, DAVID_FARM.x, DAVID_FARM.y),
+    pitch: -1, dur: 8, drift: -0.03,
+    cap: 'the tent has not moved. the field is patient. the field was always going to get it back.' });
+  let rb = null;
+  for (const b of buildings)
+    if (!b.interior && b.dist === D_DOWN && (!rb || b.h > rb.h)) rb = b;
+  if (rb) shots.push({ x: (rb.x0 + rb.x1) / 2 + 0.5, y: (rb.y0 + rb.y1) / 2 + 0.5,
+    z: rb.h + 1.7, ang: 0, pitch: 2, dur: 10, drift: 0.012, alarm: 1,
+    cap: 'an alarm is ringing somewhere below. it is yours.' });
+  if (!shots.length){ mqDone('dv20'); return; }
+  pushMode({
+    name: 'scene', pausesWorld: true, i: -1, t0: 0, _bz: 0,
+    start(){
+      this.i++;
+      if (this.i >= shots.length){ this.resolve(); return; }
+      const s = shots[this.i];
+      this.t0 = performance.now();
+      cam.x = s.x; cam.y = s.y; cam.z = s.z; cam.ang = s.ang; setAim(s.pitch);
+      fade = 1;
+    },
+    resolve(){
+      if (this.said) return;
+      this.said = 1;
+      Object.assign(cam, save); setAim(save.pitch);
+      fade = 1;
+      popMode();
+      mqDone('dv20');
+      openDialog('YOU', [
+        'This morning the sun rose again, like it always does. Same old, same old.']);
+    },
+    onKey(code){
+      if (code === 'Space' || code === 'Enter') this.start();
+      else if (code === 'Escape' && performance.now() - this.openedT > 250) this.resolve();
+    },
+    draw(){
+      if (this.i < 0){ this.start(); return; }
+      const s = shots[this.i];
+      if (!s) return;
+      const el = (performance.now() - this.t0) / 1000;
+      cam.ang = s.ang + el * s.drift;          // the slow pan
+      if (s.alarm && performance.now() > this._bz){
+        this._bz = performance.now() + 640;    // it rings, and it vibrates
+        sfx('ui_move', { vol: 0.5, rate: 3.3 });
+        sfx('ui_move', { vol: 0.25, rate: 3.7 });
+      }
+      if (el > s.dur){ this.start(); return; }
+      hudStr((R.cols - 8) >> 1, 2, 'SAME OLD', H_RED);
+      const line = s.cap || '';
+      const shown = line.slice(0, Math.ceil(el * 26));
+      const w = Math.min(R.cols - 8, 66);
+      const wrapped = wrapText(shown, w);
+      const y0 = R.rows - 3 - wrapped.length;
+      for (let i = 0; i < wrapped.length; i++){
+        hudPanel((R.cols - w) >> 1, y0 + i, w, 1);
+        hudStr((R.cols - wrapped[i].length) >> 1, y0 + i, wrapped[i], H_DIM);
+      }
+      hudStr(R.cols - 12, R.rows - 2, '[SPACE] >>', H_DRK);
+    }
+  });
+  sfx('ui_select', { vol: 0.5, rate: 0.6 });
+}
+
 /*--------------------------- what a job is worth ---------------------------
   Every quest pays on completion. The main line climbs by act - errands on
   the red mile pay errand money, and by the time you are fighting up a
@@ -17344,7 +18581,13 @@ const QUEST_PAY = {
      first purses in the game that are not the bare minimum, because that is
      the whole difference between the two employers. The last one pays in a
      deed, which is worth more than all of them. */
-  sp1: 150, sp2: 200, sp3: 260, sp4: 340, sp5: 0
+  sp1: 150, sp2: 200, sp3: 260, sp4: 340, sp5: 0,
+  /* The good fight pays in belonging, which is the whole trick of it. The
+     two fees below are DAVID pressing "movement funds" on you, and by the
+     time the numbers stop entirely you have stopped expecting them. */
+  dv1: 0, dv2: 0, dv3: 25, dv4: 20, dv5: 25, dv6: 0, dv7: 0, dv8: 15,
+  dv9: 25, dv10: 0, dv11: 40, dv12: 0, dv13: 20, dv14: 20, dv15: 15,
+  dv16: 0, dv17: 0, dv18: 0, dv19: 0, dv20: 0
 };
 /* Finishing a job is not the same as being paid for one. Cutting three
    cameras in an alley used to put the fee straight in your pocket, which made
@@ -17592,7 +18835,28 @@ const QUEST_STORY = {
   sp2: 'You went back to the walls you marked for ROOK and burned over your own handwriting, three of them, with the same burner you were given for the first job you ever did.',
   sp3: 'The cell kept sending people, and you stopped four of them, and afterwards the manager filed it as work, which is a way of saying it out loud without having to hear it.',
   sp4: 'The schematics were still in the cabinet in THE WORKS. Nobody had been brave enough to go back for them. You carried them out of the building you once climbed to end it, and handed them to the people they were taken from.',
-  sp5: 'They gave you an address instead of a fee. Sixty-first floor of the spire over the water - the tower that had never once blinked, which had been somebody\u2019s whole complaint.'
+  sp5: 'They gave you an address instead of a fee. Sixty-first floor of the spire over the water - the tower that had never once blinked, which had been somebody\u2019s whole complaint.',
+  // ---- DAVID, and the good fight ----
+  dv1:  'A man on a corner in the rows, holding a sign about the cameras. You told him what he wanted to hear, three times, and he decided you were the one person in this city who sees.',
+  dv2:  'You marched a block behind his sign. People looked. He counted every one of them out loud.',
+  dv3:  'Two lenses came down for the movement. He called it surgery. He called you the scalpel.',
+  dv4:  'Firecrackers on the strip so a street full of feeds looked up for once. He talked about it for an hour.',
+  dv5:  'His slogan, burned onto a downtown wall in your handwriting. He photographed it like a father.',
+  dv6:  'The rally. The vans came in quiet and went out loud, and whatever you did while the street was screaming, DAVID was already gone.',
+  dv7:  'His flat. A whole furnished floor in the rows, and no job you ever heard him mention. He wanted relax tabs, to take the edge off. You went and got them.',
+  dv8:  'Coffee for the picket. He held the cup with both hands and talked about scratching an itch.',
+  dv9:  'Two more cameras. He keeps the count now. He says he sees things outside his window at night, and he says it like a joke, twice.',
+  dv10: 'More paint. And then, out of nowhere: a plot of land in the fields, paid for. A couple of cows. A chicken that lays. He said it like a man describing the door out of a burning building.',
+  dv11: 'You rode the flock\u2019s own eyes to a corner where a MERIDIAN suit stood talking to a grey man DAVID swears he recognizes. You told him what you saw and he stopped blinking.',
+  dv12: 'Static, because the tabs stopped working. He came apart on his own floor and cried about the state of the world, and then he asked for a day to rest, and you gave it to him.',
+  dv13: 'Scrap for sign frames. The signs are multiplying. The marchers are not.',
+  dv14: 'Fresh paint over the old paint. The wall remembers nothing. He says that is the problem with walls.',
+  dv15: 'Noodles for a picket line that, on an honest count, is one man.',
+  dv16: 'Three razors on a belt corner were holding static, and then they were not holding anything. You brought him all three tapes and he said, plainly, that it was enough to keep him going. Then he invited you to the farm.',
+  dv17: 'The plot. A tent on bare dirt where the cows were going to stand. He asked for a week of static so the city could not follow him out there, and what happened next is on both of you.',
+  dv18: 'Twenty-four hours later you went back to the fields. The tent was exactly as it had been, which was the worst thing it could have been. DAVID was not anywhere.',
+  dv19: 'His old sign was leaning inside the door of the flat, where a person leaves a thing they mean to come back for. You carry it now.',
+  dv20: 'The sun came up over the towers the way it always does, and the city went to work, and nothing anywhere was different, and that is the whole of it.'
 };
 /* The lines the city runs, and the one-off work that is nobody\u2019s line. */
 const QUEST_LINES = [
@@ -17605,6 +18869,9 @@ const QUEST_LINES = [
   { id: 'odd', name: 'ODD JOBS',
     blurb: 'errands the street hands out',
     ids: ['noodles', 'test', 'quiet', 'scrap', 'sphere'] },
+  { id: 'deflock', name: 'DEFLOCK',
+    blurb: 'DAVID, a sign, and the good fight',
+    ids: (function(){ const a = []; for (let i = 1; i <= 20; i++) a.push('dv' + i); return a; })() },
   // This one does not exist until you have earned it, and listing it as
   // 'not started' would give away that there is another ending - so it is
   // hidden outright rather than merely empty.
@@ -17680,6 +18947,8 @@ function quipTick(){                            // the street has opinions
             '"a kid points: fake. his friend: real fake."'][(Math.random() * 3) | 0];
   else if ((player.qvar.vandal || 0) >= 10)
     line = '"seen your work. the whole block has."';
+  else if (player.quests.dv1 === undefined && Math.random() < 0.3)
+    line = '"that sign guy is out in the rows again. DEFLOCK something. he never stops."';
   if (!line) return;
   quipT = 25 + Math.random() * 20;
   toast('a passerby: ' + line);
@@ -17688,6 +18957,7 @@ function checkQuests(){
   corruptionTick();
   quipTick();
   butcherSceneTick();
+  davidTick();
   // once he has a kitchen, the pavement loses its cook - saves included,
   // whichever order the world and the player arrived in
   if (player.qvar.cookMoved){
@@ -17737,7 +19007,7 @@ const SHOP_TYPES = {
   tools:      { name: 'TOOLS & TRINKETS',
                 stock: ['saw', 'burner', 'jammer', 'firecracker', 'shim', 'sniffer', 'camjack', 'deck', 'rod', 'battery'] },
   dispensary: { name: 'DISPENSARY',
-                stock: ['chill', 'haze', 'staticd', 'numb', 'rush', 'ghost', 'overclock', 'mirror', 'sake'] }
+                stock: ['chill', 'relaxtabs', 'haze', 'staticd', 'numb', 'rush', 'ghost', 'overclock', 'mirror', 'sake'] }
 };
 function shopTypeFor(bld){                    // one answer, from the use
   const u = buildingUse(bld);
@@ -18415,6 +19685,7 @@ function hideFrame(dt){
     else if (n) toast('you are nobody again - ' + n +
                       (n === 1 ? ' of them works the block' : ' of them work the block'));
     else toast('the street forgets you');
+    if (typeof dvHideEscape === 'function') dvHideEscape();
     heliT = 120 + Math.random() * 60;
     sfx('ui_select', { vol: 0.6, rate: 0.7 });
   }
@@ -19562,8 +20833,15 @@ function fireWeapon(){
   addRecoil(G.kick * RECOIL_GAIN, G.settle || (G.auto ? RECOIL_AUTO : RECOIL_TAU));
   sfx('shot', { vol: G.snd, rate: G.rate * (0.97 + Math.random() * 0.06) });
   panicHere(cam.x, cam.y, 120);
-  for (const a of actors)                       // gunfire carries
+  for (const a of actors){                      // gunfire carries
     if (a.brain === 'hostile' && Math.hypot(a.x - cam.x, a.y - cam.y) < 15) a.aggro = 1;
+    // the razors on DAVID's corner mind their own business until somebody
+    // starts shooting near them - then it is their business
+    if (a.dvRazor && a.brain !== 'hostile' &&
+        Math.hypot(a.x - cam.x, a.y - cam.y) < 14){
+      a.brain = 'hostile'; a.aggro = 1;
+    }
+  }
   const roll = () => G.dmg + ((Math.random() * G.rng) | 0);
   // what this weapon leaves of somebody it finishes
   const kfx = G.mist ? 'mist' : 0;
@@ -19836,6 +21114,7 @@ function killActor(a, by, kfx){
                              yaw: Math.atan2(a.dy || 0, a.dx || 1) });
   if (typeof mqWorksKill === 'function') mqWorksKill(a);
   if (typeof spireKill === 'function') spireKill(a);
+  if (typeof davidKill === 'function') davidKill(a);
   /* THE BUTCHER falls once, and his keys go to whoever put him down - the
      client that owns the kill, which in company is the host's answer */
   if (a.boss === 2 && mine){
@@ -19883,7 +21162,7 @@ function killActor(a, by, kfx){
    unless the story needs them alive */
 const VITAL = new Set(['THE WATCHER', 'THE FIXER', 'CHEMIST', 'DRIFTER',
                        'STALL COOK', 'VANCE', 'REGISTRAR', 'SKYPARK ATTENDANT',
-                       'ROOK', 'VESPER', 'MERIDIAN MANAGER']);
+                       'ROOK', 'VESPER', 'MERIDIAN MANAGER', 'DAVID']);
 function actorTargetable(a){
   if (a.brain === 'hostile') return true;
   return !VITAL.has(a.name);
@@ -20935,6 +22214,13 @@ function waitOnBench(){
   further down, the way a body does.
 ============================================================================*/
 function hudCell(cx, cy2, ch, ci){
+  /* The atlas holds ASCII 33..126 and nothing else, and half the game's
+     dialogue is written with typographer's quotes - which therefore drew as
+     BLANKS, so every "I’m" on every card read as "I m". Fold them to the
+     straight forms the atlas actually has, in the one cell everything
+     funnels through. */
+  if (ch === '’' || ch === '‘') ch = "'";
+  else if (ch === '“' || ch === '”') ch = '"';
   if (hudScaled) return hudBigCell(cx, cy2, ch, ci);
   if (cx < 0 || cx >= R.cols || cy2 < 0 || cy2 >= R.rows) return;
   const code = ch.charCodeAt(0) - 32;
@@ -22558,6 +23844,12 @@ function harvestEmitters(){
   const hHz = BS ? BS.hz : horizon, hPr = BS ? BS.pr : projRows;
   const hVd = BS ? BS.vd : viewD;
   const hRx = BS ? BS.rx : rayX, hRy = BS ? BS.ry : rayY;
+  /* And the SCENE those buffers were drawn in, for the same reason: around a
+     door the deferred read hands back the world you just left, and writing
+     its lights into the new scene's partition would burn the street into the
+     shop. Emit always serves the scene the camera is in NOW. */
+  const curScn = ecacheOrd(SCENE ? SCENE.id : 'city');
+  const obsScn = BS && BS.scn !== undefined ? BS.scn : curScn;
   if (DEN){
     if (!ECACHE.x) ecacheInit();
     /* The ttl is in FRAMES, and this counter used to advance once per
@@ -22608,7 +23900,7 @@ function harvestEmitters(){
     E.x[bi] *= inv; E.y[bi] *= inv; E.z[bi] *= inv;
     E.r[bi] *= inv; E.g[bi] *= inv; E.b[bi] *= inv;
     if (!DEN){ E.idx[n++] = bi; continue; }
-    ecacheWrite(E.x[bi], E.y[bi], E.z[bi], E.r[bi], E.g[bi], E.b[bi], w);
+    ecacheWrite(E.x[bi], E.y[bi], E.z[bi], E.r[bi], E.g[bi], E.b[bi], w, obsScn);
   }
   if (DEN){
     /* Animated lights do not stop performing when nobody is watching. The
@@ -22622,7 +23914,10 @@ function harvestEmitters(){
        harvest: enumerate the quanta a stall's canopy occupies, look each
        up in the cache map, recolour anything above table height. Produce
        stalls are a steady white and are left alone. */
-    for (let si = 0; si < stalls.length; si++){
+    /* Stalls are street furniture and their cache entries live in the city's
+       partition (ordinal 0, so their quantum keys are unchanged); indoors
+       there is no stall in view to re-perform. */
+    for (let si = 0; si < stalls.length && !inside; si++){
       const st = stalls[si];
       const lm = st.look || 0;
       if (lm === 1) continue;
@@ -22654,7 +23949,7 @@ function harvestEmitters(){
                            (hRy[m] - hRy[m - 1]) * cols * 0.5);
     n = ecacheEmit(E, { cx: hCx, cy: hCy, cz: hCz, dx: bDx, dy: bDy,
                         pl: Math.max(0.05, bPl), hz: hHz, pr: hPr,
-                        cols, rows });
+                        cols, rows, cur: curScn, scn: obsScn });
   }
   E.nCache = n;
   /* Too many still, on a street that is all shopfront. Keep the biggest -
@@ -22682,7 +23977,8 @@ function harvestEmitters(){
      SIGN still does not. On-screen lamps are deliberately skipped here; they
      already have a cone in lampVolume and would otherwise glow twice. */
   const offN = LIGHTV.offN;
-  if (offN > 0 && lamps.length && n < E.cap){
+  // the lamp list is the CITY's; a room has no street lamps to reflect
+  if (offN > 0 && !inside && lamps.length && n < E.cap){
     const oR2 = LIGHTV.offR * LIGHTV.offR, offW = LIGHTV.offW;
     let added = 0;
     for (let i = 0; i < lamps.length && added < offN; i++){
@@ -23417,12 +24713,22 @@ function floorPass(){
   const cols = R.cols, rows = R.rows;
   const r0 = clamp(Math.ceil(horizon), 0, rows);
   for (let r = r0; r < rows; r++){
-    const d = cam.z * projRows / (r + 0.5 - horizon);
-    if (!(d > 0) || d > viewD) continue;
+    /* A row past the view distance is not "no ground" - it is the same
+       ground, fully fogged. It used to be skipped, and over any large open
+       area (a plaza, the river basin, the fields) the rows just under the
+       horizon had no wall behind them to be painted over by, so the raw
+       background gradient - and whatever the nearby lights laid on it -
+       showed through as a bald band with no glyphs in it. Clamp the sample
+       to the view distance instead: t = 1, deepest fog level, thinnest
+       density - exactly the look the furthest visible row already has, so
+       the ground now runs unbroken into the haze. */
+    const d = Math.min(cam.z * projRows / (r + 0.5 - horizon), viewD);
+    if (!(d > 0)) continue;
     const t = d / viewD, lvl = levelOf(t), dm = densMul(t);
     // the water plane sits RIVER_DEPTH below the street, so a ray through the
-    // hole in the street plane carries further before it lands
-    const dW = (cam.z + RIVER_DEPTH) * projRows / (r + 0.5 - horizon);
+    // hole in the street plane carries further before it lands - clamped the
+    // same way, or every cell of far water dropped out as a hole of its own
+    const dW = Math.min((cam.z + RIVER_DEPTH) * projRows / (r + 0.5 - horizon), viewD);
     // counters carry a worktop: a second plane at counter height, projected
     // the way the river projects its lower one - just upward instead
     const dC = (cam.z - 1.05) * projRows / (r + 0.5 - horizon);
@@ -23457,7 +24763,6 @@ function floorPass(){
       }
       let uD = d, lv = lvl, dmm = dm;
       if (tType[iy * MAP + ix] === T_WATER){
-        if (dW > viewD) continue;
         const wx2 = cam.x + rayX[x] * dW, wy2 = cam.y + rayY[x] * dW;
         const ix2 = wx2 | 0, iy2 = wy2 | 0;
         if (wx2 < 0 || wy2 < 0 || ix2 >= MAP || iy2 >= MAP) continue;
@@ -23983,6 +25288,7 @@ function wallMirror(){
           const gu2 = side === 0 ? py + d * rdy : px + d * rdx;
           const hx2 = px + d * rdx, hy2 = py + d * rdy;
           const wobx = refWob[x];
+          const dmW = densMul(d / viewD);
           for (let r = s0; r <= s1; r++){
             const rr = Math.round(mb - r + wobx);
             if (rr <= hzRow || rr >= rows) continue;
@@ -23990,10 +25296,19 @@ function wallMirror(){
             /* in emit mode the wetness gate belongs to the card - it is the
                only thing here that ever needed refBuf read back */
             if (!_wmE && !reflects(j)) continue;
+            /* The same angle term reflectPass applies to the rows still on
+               the screen. This was a fixed 0.5 with no densMul, so a lit
+               window changed brightness in the water the moment it crossed
+               the top of the frame - which it does every time the view
+               pitches. A mirror must not care which side of the frame edge
+               its source is on. */
+            const str = reflStrength(rr, x);
+            if (str <= 0.02) continue;
             const z = cam.z - (r + 0.5 - horizon) / unitRows;
             facade(b, gu2, z, side, h, hx2, hy2);
             if (!EMISSIVE[_wb]) continue;
-            const g2 = Math.round(clamp(_wd * 0.5, 0, 1) * RMAX);
+            const g2 = (Math.round(clamp(_wd * dmW, 0, 1) * RMAX) *
+                        (REFL.srcFall * str)) | 0;
             if (!g2) continue;
             if (_wmE){ wmEmit(x, rr, g2, _wb); statCells++; continue; }
             gBuf[j] = g2; bBuf[j] = _wb;
@@ -24058,6 +25373,11 @@ function drawSprite(sx, sy, zb, wW, wH, art, sb, sd, mirror, dyn){
           if (rr <= hzRow || rr >= rows) continue;
           const j = rr * cols + c;
           if (!reflects(j)) continue;
+          // the same angle term reflectPass applies to on-screen sources -
+          // a fixed fall here made the mirror jump as the source crossed
+          // the top of the frame
+          const str = reflStrength(rr, c);
+          if (str <= 0.02) continue;
           const v = clamp((r + 0.5 - rowT) * invHs, 0, 0.9999);
           const ai2 = ((v * ah) | 0) * aw + ax2;
           const role = data[ai2];
@@ -24068,7 +25388,7 @@ function drawSprite(sx, sy, zb, wW, wH, art, sb, sd, mirror, dyn){
             base = sb[role]; if (base < 0) base = dyn;
             g0 = Math.round(clamp(sd[role] * dm, 0, 1) * RMAX);
           }
-          const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+          const ng = (g0 * ((EMISSIVE[base] ? REFL.srcFall : REFL.objFall) * str)) | 0;
           if (ng < 1) continue;
           gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0;
           statCells++;
@@ -24463,15 +25783,18 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
         srcBuf[idx] = _noRef ? 0 : (EMISSIVE[base] ? 2 : 1);
         statCells++;
       }
-      // and what the wet street gives back
+      // and what the wet street gives back - through the same angle term
+      // reflectPass uses, so a solid's mirror holds its brightness whether
+      // its source rows are on the frame or off the top of it
       if (!_noRef){
         const ur = projRows / t;
         const mb = 2 * horizon + 2 * cam.z * ur;
         const rr = Math.round(mb - r + refWob[x]);
         if (rr > hzRow && rr < rows){
           const j = rr * cols + x;
-          if (reflects(j)){
-            const ng = (g * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+          const str = reflects(j) ? reflStrength(rr, x) : 0;
+          if (str > 0.02){
+            const ng = (g * ((EMISSIVE[base] ? REFL.srcFall : REFL.objFall) * str)) | 0;
             if (ng >= 1){ gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0; statCells++;
               /* The card gathers this mirror instead of scattering it, and the
                  only way to hold the two side by side is to record what the
@@ -24557,6 +25880,9 @@ function drawPlane(axis, plane, a0, a1, zb, hm, art, sb, sd, dyn, flip){
           if (rr <= hzRow || rr >= rows) continue;
           const j = rr * cols + x;
           if (!reflects(j)) continue;
+          // reflectPass's angle term, not a fixed fall - see the wall mirror
+          const str = reflStrength(rr, x);
+          if (str <= 0.02) continue;
           const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
           const ai = ((v * ah) | 0) * aw + axp;
           const role = data[ai];
@@ -24567,7 +25893,7 @@ function drawPlane(axis, plane, a0, a1, zb, hm, art, sb, sd, dyn, flip){
             base = sb[role]; if (base < 0) base = dyn;
             g0 = Math.round(clamp(sd[role] * dm, 0, 1) * RMAX);
           }
-          const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+          const ng = (g0 * ((EMISSIVE[base] ? REFL.srcFall : REFL.objFall) * str)) | 0;
           if (ng < 1) continue;
           gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0;
           statCells++;
@@ -24653,6 +25979,7 @@ MODEL_FAR[PK_FLOTSAM] = 95;
 // with several in shot, on a 5ms frame) - this is a ceiling on a long
 // straight, not a rescue.
 MODEL_FAR[PK_RAMP] = 110;
+MODEL_FAR[PK_TENT] = 120;      // it should read from the road into the fields
 /* How a cart stands: backed up against a building, counter looking out over
    the street at the frontage on the far side. That is what a real pitch is -
    you put your back to a wall so nobody comes round it, and you face the
@@ -24954,6 +26281,20 @@ function spritePass(){
                   1.24 + bob, idf.w * left, idf.h, idf.art,
                   idf.sl.base, idf.sl.dens, C.nAmber, fy, 0.9, 0);
       }
+      if (o.dvSign && typeof DSIGN_HELD !== 'undefined'){
+        /* DAVID's sign. The ped arts cannot raise their arms, so it is
+           carried IN FRONT of him the way a picket actually stands: pole
+           against the body from the waist, board up at the face, swaying
+           the way a sign on a stick sways. */
+        const D = DSIGN_HELD;
+        const bob = Math.sin(worldTime * 1.4 + o.phase) * 0.04;
+        const sx3 = o.x + Math.cos(fy - Math.PI / 2) * 0.32;
+        const sy3 = o.y + Math.sin(fy - Math.PI / 2) * 0.32;
+        // faced to the reader - see the note on the player's placard
+        drawModel(sx3, sy3, 1.02 + bob, D.w * 1.15, D.h * 1.15, D.art,
+                  D.sl.base, D.sl.dens, 0,
+                  Math.atan2(sy3 - cam.y, sx3 - cam.x) + Math.PI / 2, 0.10, 0);
+      }
     } else if (it.k === 4){
       drawPlayerBody();
     } else if (it.k === 5){
@@ -25161,6 +26502,11 @@ function drawSignPlane(sg){
           /* In emit mode the wetness gate is the CARD's to apply - asking it
              here is the one thing that would still need refBuf read back. */
           if (!_sigE && !reflects(j)) continue;
+          /* reflectPass's angle term, not a fixed fall - without it a sign's
+             mirror changed brightness as the sign crossed the frame edge,
+             which reads as the water flaring when the view pitches */
+          const str = reflStrength(rr, x);
+          if (str <= 0.02) continue;
           const v = clamp((r + 0.5 - rowT) * invH, 0, 0.9999);
           const ay = (v * ah) | 0;
           let base, dens;
@@ -25179,7 +26525,7 @@ function drawSignPlane(sg){
             base = sg.sb[2 + ink]; dens = sg.sd[2 + ink];
           } else { base = sg.sb[1]; dens = sg.sd[1]; }
           const g0 = Math.round(clamp(dens * dm, 0, 1) * RMAX);
-          const ng = (g0 * (EMISSIVE[base] ? 0.55 : 0.42)) | 0;
+          const ng = (g0 * ((EMISSIVE[base] ? REFL.srcFall : REFL.objFall) * str)) | 0;
           if (ng < 1) continue;
           if (_sigE){ sigEmit(0, x, rr, ng, base, 0, 0, 0); statCells++; continue; }
           gBuf[j] = ng; bBuf[j] = base; srcBuf[j] = 0;
@@ -25344,6 +26690,13 @@ const REFL = {
   gain:     1.15,   // overall strength on top of that
   srcFall:  0.72,   // a light source mirrors this brightly at full angle
   objFall:  0.50,   // and a solid thing this brightly
+  /* srcFall/objFall ride reflStrength in EVERY mirror: reflectPass, the
+     off-the-top wall/sign/plane/billboard mirrors, and the solids' inline
+     and marched mirrors. Those paths used to carry fixed falls of their
+     own, so the same light mirrored at two different brightnesses depending
+     on which side of the frame edge its source sat - and the frame edge
+     moves every time the view pitches, which read as the water flaring and
+     dimming as you looked up and down. */
   ripple:   0.42,   // ripple height in world units
   rippleMax:2.2,    // never displace more rows than this, however near
   rippleK:  0.90,   // and its spatial frequency across the ground
@@ -26477,7 +27830,8 @@ function glInit(){
                      'uHorizon','uHz','uR0','uRMAX','uStages','uDFar',
                      'uViewD','uMap','uP','uRW','uNB','uDensK',
                      'uNight','uSunOn','uSunRow','uDay','uSkyMat','uLineW',
-                     'uWet','uWayOn','uRiverY','uRural','uWave','uLamp','uMat'])
+                     'uWet','uWayOn','uRiverY','uRural','uWave','uLamp','uMat',
+                     'uInside','uIntA','uIntB','uNeonC'])
       G.uW[k] = gl.getUniformLocation(G.pWorld, k);
     G.worldOK = true;              // glWorldTargets has the final say
   } catch (e){ G.worldOK = false; G.pWorld = null; }
@@ -26489,7 +27843,8 @@ function glInit(){
     G.pSprite = mkProg(VS_SPRITE, FS_SPRITE);
     G.uS = {};
     for (const k of ['uInst','uPal','uCol','uDep','uVox','uGrid','uHorizon',
-                     'uProjRows','uRMAX','uDFar','uCamZ','uMode','uMJ','uScopeCut'])
+                     'uProjRows','uRMAX','uDFar','uCamZ','uMode','uMJ','uScopeCut',
+                     'uReflA','uReflB'])
       G.uS[k] = gl.getUniformLocation(G.pSprite, k);
     G.spriteOK = true;             // glSpriteTargets has the final say
   } catch (e){ G.spriteOK = false; G.pSprite = null; }
@@ -27040,24 +28395,42 @@ const GPUE = {
    swap-deleted on expiry. Quantised at a quarter tile in x/y and two units in
    z; same-frame writes to one key MERGE (near buckets are finer than the
    quantum), later frames REPLACE (the newest observation of a window wins). */
-const ECACHE = { map: new Map(), cap: 131072, n: 0, frame: 0, x: null };
+/* AND PARTITIONED BY SCENE. World-keyed was the whole idea, but every
+   interior is stamped at the same array origin, so two different rooms - and
+   the city's own corner - share one patch of world coordinates. The cache
+   held a shop's shelf neon for ninety seconds and re-lit it inside whatever
+   room was entered next: measured, 17 of 17 of one room's lights emitted
+   into a different building. The scene id folds into the key (so a room can
+   never overwrite the city's memory of the corner) and each entry remembers
+   which scene observed it; emit hands the shader only the current scene's
+   partition. A re-entered room finds its own lights still warm, which is the
+   cache doing its job rather than the bug. */
+const ECACHE = { map: new Map(), cap: 131072, n: 0, frame: 0, x: null,
+                 ords: new Map([['city', 0]]) };
+const ECACHE_KSPAN = 1073741824;               // 2^30, one past the largest quantum key
+function ecacheOrd(id){
+  const C = ECACHE;
+  let o = C.ords.get(id);
+  if (o === undefined){ o = C.ords.size; C.ords.set(id, o); }
+  return o;
+}
 function ecacheInit(){
   const C = ECACHE, cap = C.cap;
   C.x = new Float32Array(cap); C.y = new Float32Array(cap); C.z = new Float32Array(cap);
   C.r = new Float32Array(cap); C.g = new Float32Array(cap); C.b = new Float32Array(cap);
   C.w = new Float32Array(cap); C.key = new Float64Array(cap); C.seen = new Int32Array(cap);
-  C.d2 = new Float32Array(cap);
+  C.d2 = new Float32Array(cap); C.scn = new Int32Array(cap);
 }
-function ecacheWrite(x, y, z, r, g, b, w){
+function ecacheWrite(x, y, z, r, g, b, w, scn){
   const C = ECACHE;
   const qx = Math.max(0, Math.min(4095, Math.round(x * 4)));
   const qy = Math.max(0, Math.min(4095, Math.round(y * 4)));
   const qz = Math.max(0, Math.min(63, Math.round(z * 0.5)));
-  const k = (qx * 4096 + qy) * 64 + qz;
+  const k = scn * ECACHE_KSPAN + (qx * 4096 + qy) * 64 + qz;
   let i = C.map.get(k);
   if (i === undefined){
     if (C.n >= C.cap) return;
-    i = C.n++; C.map.set(k, i); C.key[i] = k;
+    i = C.n++; C.map.set(k, i); C.key[i] = k; C.scn[i] = scn;
   } else if (C.seen[i] === C.frame){
     // a same-frame sibling: two fine buckets inside one quantum. Merge, or
     // standing close to a wall of windows loses all but the last of them.
@@ -27111,9 +28484,16 @@ function ecacheEmit(E, VIS){
   const shellK = NRING / rng2;
   const RG = C.ring, RN = C.ringN; RN.fill(0);
   const decay = GPUE.decay, dropW = GPUE.minW * 0.5;
+  /* The scene whose lights are wanted, and the scene the harvest's buffers
+     were DRAWN in - two frames apart around a door, thanks to the deferred
+     read. An entry from another scene's partition neither emits nor decays:
+     it is not in this world to be seen or missed. ttl still reaps it. */
+  const curScn = VIS && VIS.cur !== undefined ? VIS.cur : 0;
+  const obsOk = !VIS || VIS.scn === undefined || VIS.scn === curScn;
   let i = 0;
   while (i < C.n){
     let drop = C.frame - C.seen[i] > ttl;
+    const mine = C.scn[i] === curScn;
     const dx = C.x[i] - cam.x, dy = C.y[i] - cam.y, d2 = dx * dx + dy * dy;
     /* A light whose spot is ON SCREEN, in front of everything, and not
        harvested this frame is a light that is really off - a window that
@@ -27123,7 +28503,7 @@ function ecacheEmit(E, VIS){
        current camera) and decay it out over about a second. Anything
        occluded or outside the frame is exactly what the cache exists to
        remember, and is left alone. */
-    if (!drop && VIS && d2 <= rng2 && C.seen[i] !== C.frame){
+    if (!drop && mine && obsOk && VIS && d2 <= rng2 && C.seen[i] !== C.frame){
       const ox = C.x[i] - VIS.cx, oy = C.y[i] - VIS.cy;
       const fwd = ox * VIS.dx + oy * VIS.dy;
       if (fwd > 0.5){
@@ -27143,12 +28523,12 @@ function ecacheEmit(E, VIS){
       if (i !== last){
         C.x[i] = C.x[last]; C.y[i] = C.y[last]; C.z[i] = C.z[last];
         C.r[i] = C.r[last]; C.g[i] = C.g[last]; C.b[i] = C.b[last];
-        C.w[i] = C.w[last]; C.seen[i] = C.seen[last];
+        C.w[i] = C.w[last]; C.seen[i] = C.seen[last]; C.scn[i] = C.scn[last];
         C.key[i] = C.key[last]; C.map.set(C.key[i], i);
       }
       C.n = last; continue;
     }
-    if (d2 <= rng2){
+    if (mine && d2 <= rng2){
       const ring = Math.min(NRING - 1, (d2 * shellK) | 0);
       RG[ring][RN[ring]++] = i; C.d2[i] = d2;
     }
@@ -27886,7 +29266,8 @@ function lampCollect(){
    or a raindrop silently un-marks a source the beam was supposed to spare. */
 function rainCollect(){
   GV.rainN = 0;
-  if (weather !== 1 && weather !== 2) return 0;
+  // the CPU twin is gated in worldPasses: no rain falls indoors
+  if ((weather !== 1 && weather !== 2) || inside) return 0;
   const cols = R.cols, rows = R.rows;
   const perCol = weather === 2 ? 3 : 2;
   const hz = clamp(Math.floor(horizon), 0, rows - 1);
@@ -27991,7 +29372,7 @@ function glTailTargets(){
    that draws the frame, because the pack path reads the CPU buffers and would
    simply not see any of this. */
 function tailMask(){
-  if (!GL || !GL.tailOK || !GPUV.on || inside) return 0;
+  if (!GL || !GL.tailOK || !GPUV.on) return 0;
   if (!GL.compOK || !GPUC.on) return 0;
   const gpuLit = !!(GL.lightOK && GPUL.on);
   if (!gpuLit && (LIGHTV.on || GIR.on || FOGV.on)) return 0;    // _cpuLitFrame
@@ -28367,6 +29748,11 @@ function glTailRead(){
 let _emitTex = null, _heightUp = false;
 function glUploadHeight(){
   if (!GL || !GL.lightOK || _heightUp) return;
+  /* The full upload reads whatever arrays are BOUND, and bound indoors that
+     is a room stamped over an empty map - latching that as the city's
+     heightfield would flatten every shadow in the street. The corner window
+     (glSceneWindow) re-syncs itself once the real upload has happened. */
+  if (SCENE && SCENE !== CITY) return;
   /* glInit runs from initRender, which can happen BEFORE the city exists - and
      the first version of this latched _heightUp on that call, so the shader
      spent the whole session reading an all-zero heightfield and every shadow
@@ -28385,9 +29771,10 @@ function glUploadHeight(){
   for (const pn of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T])
     gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
   _heightUp = gl.getError() === 0;
+  if (_heightUp && GW) GW.sceneUp = null;   // re-window the corner over the fresh upload
 }
 function glLightPass(){
-  if (!GL || !GL.lightOK || !GPUL.on || inside) return false;
+  if (!GL || !GL.lightOK || !GPUL.on) return false;
   if (!_heightUp) glUploadHeight();          // the city may post-date glInit
   const gl = GL.gl, E = EMIT;
   if (!E || !E.n) return false;
@@ -28706,7 +30093,8 @@ function glLightPass(){
   if (GPUL._gigOn) gl.uniform4f(GL.uL.uGIG, GPUL._gigOx, GPUL._gigOy, 0.25, 24);
   else gl.uniform4f(GL.uL.uGIG, 0, 0, 0, 0);
   gl.uniform4f(GL.uL.uGI3, GIR.denoise !== false ? 1 : 0, GIR.rays || 1, 0, 0);
-  gl.uniform4f(GL.uL.uWetS, wetLevel, DEN ? GPUE.streak : 0,
+  /* No wet-road streaks in a room: the rain is outside and refBuf agrees. */
+  gl.uniform4f(GL.uL.uWetS, inside ? 0 : wetLevel, DEN ? GPUE.streak : 0,
                GPUE.streakShine, GPUE.streakZ);
   gl.uniform4f(GL.uL.uWetS2, GPUE.streakFall, 0, 0, 0);
   gl.uniform4f(GL.uL.uAir2, DEN ? GPUE.phaseG : 0, DEN ? GPUE.phaseK : 0,
@@ -28879,6 +30267,11 @@ uniform vec4  uWallM;        // trunk, -, winDark, nCyan
 uniform vec4  uWallM2;       // nMag, metal, dataDk, tire
 uniform float uLvT[8];       // where each fog level starts, as a fraction of view
 uniform float uMat[32];
+// interiors: the room the tile window currently holds. See "12c. DOORS".
+uniform float uInside;       // 1 in a room; every outdoor dressing gates on it
+uniform vec4  uIntA;         // ceiling height, tube colour, panel colour, shelf band (-1: none)
+uniform vec4  uIntB;         // floor colour A, floor colour B, worktop, signCase
+uniform float uNeonC[8];     // the poster palette, NEONC ported whole
 #define M_CAMRED   0
 #define M_NAMBER   1
 #define M_WALK     2
@@ -28902,6 +30295,7 @@ uniform float uMat[32];
 #define T_WATER  5
 #define T_BRIDGE 6
 #define T_PATH   7
+#define T_INF    8
 
 /*--- the same integer noise the CPU uses, and it ports exactly ---
   hash3 is Math.imul and >>> on 32-bit words, which is uint arithmetic with
@@ -29057,6 +30451,14 @@ void floorSample(float wx, float wy, float sx, float sy, int ix, int iy, vec4 ti
   _wwet = (t == T_ROAD || t == T_CROSS) ? puddleAt(ix, iy) : 0;
   float rx = mod(uCamM.x + sx, uP), ry = mod(uCamM.y + sy, uP);
   float fx = sx - floor(sx), fy = sy - floor(sy);
+  if (t == T_INF){                                // interior floor: dry slabs
+    _wwet = 0;
+    int ck = (ix + iy) & 1;
+    _wb = ck == 1 ? int(uIntB.x) : int(uIntB.y);
+    _wd = 0.32 + hash3(ix, iy, 91) * 0.08 + (ck == 1 ? 0.07 : 0.0);
+    if (fx < 0.05 || fy < 0.05) _wd = 0.44;       // slab joints
+    return;
+  }
   if (uWayOn > 0.5 && wayAt(ix, iy)){             // the red line home, on ANY ground
     float cfx = fx - 0.5, cfy = fy - 0.5;
     if (cfx * cfx + cfy * cfy < 0.10){
@@ -29186,6 +30588,58 @@ void domeSurface(Bld b, float z, float hx, float hy){
   else { _wd = 0.26; _wb = int(uMat[M_SIGNBACK]); }
 }
 
+/*--- interior walls: the CPU's interiorWall, line for line ------------------
+  Skirting, cornice, the odd poster - and the way out drawn as a real door,
+  dark panel in a bright frame with an amber handle. A room stands within
+  forty tiles of the array origin, so the absolute coordinates the CPU tests
+  are small enough that plain float carries them exactly. */
+void interiorWall(Bld b, vec2 guv, float z, int side, vec2 hyv){
+  /* Every product of gu is taken split: guv.x is a whole tile index, so
+     k * guv.x is exact and only the small offset ever meets the floor - the
+     unsplit floor(gu * 2) flipped whole poster columns against the CPU. */
+  if (b.interior > 1.5){                              // counter / low furniture
+    _wb = int(b.col);
+    _wd = z > 1.0 ? 0.85
+        : 0.60 + hash3(int(3.0 * guv.x + floor(3.0 * guv.y)), 3, int(b.seed)) * 0.1;
+    if (z > 1.0) _wb = int(uIntB.z);                  // just the rounded lip
+    return;
+  }
+  // the way out, clamped to exactly the door tile's inner face - the door
+  // outranks any shelf dressing, so no band ever paints across the exit
+  if (side == 1 && abs((hyv.x - b.doorY) + hyv.y) < 0.08){
+    float du = (guv.x - b.doorX) + guv.y;             // 0..1 across the door
+    if (du >= 0.0 && du <= 1.0 && z < 2.25){
+      if (du < 0.14 || du > 0.86){ _wb = int(uIntB.w); _wd = 0.9; _wg = int(uGBar); }
+      else if (z > 2.05){ _wb = int(uIntB.w); _wd = 0.9; }
+      else if (z > 0.95 && z < 1.12 && du > 0.68 && du < 0.80){ _wb = int(uMat[M_NAMBER]); _wd = 1.0; }
+      else { _wb = int(uWallM.x); _wd = 0.72; }
+      return;
+    }
+    if (du > -0.3 && du < 1.3){                       // no posters against the frame
+      _wb = int(b.col); _wd = z < 0.42 ? 0.55 : 0.32;
+      if (z < 0.42) _wb = int(uWallM.x);
+      return;
+    }
+  }
+  if (uIntA.w >= 0.0 && z > 1.2 && z < 1.7){
+    _wb = int(uIntA.w); _wd = 0.8;                    // the trade's shelf band
+    return;
+  }
+  if (z < 0.42){ _wb = int(uWallM.x); _wd = 0.55; }   // skirting board
+  else if (z > uIntA.x - 0.3){ _wb = int(uIntB.w); _wd = 0.5; }   // cornice
+  else {
+    float colB = floor(2.0 * guv.y);                  // floor(gu*2) = 2*whole + this
+    float hp = hash3(int(2.0 * guv.x + colB), 7, int(b.seed));
+    _wb = int(b.col);
+    _wd = 0.30 + hash3(int(5.0 * guv.x + floor(5.0 * guv.y)), trunc0(z * 4.0), 13) * 0.07;
+    if (hp < 0.16 && z > 1.15 && z < 2.1){            // a poster
+      float u = 2.0 * guv.y - colB;                   // gu*2 - floor(gu*2), split
+      if (u > 0.2 && u < 0.8){ _wb = int(uNeonC[int(mod(floor(hp * 50.0), 8.0))]); _wd = 0.5; }
+    }
+  }
+  if (side == 1) _wd *= 0.85;
+}
+
 /*--- the facade, in split coordinates -------------------------------------
   guv, hxv and hyv are each (whole, offset): the camera's tile index and the
   distance from it, never added together unless an absolute position is
@@ -29201,6 +30655,7 @@ void facade(Bld b, vec2 guv, float z, int side, float hh, vec2 hxv, vec2 hyv){
   float hitX = hxv.x + hxv.y, hitY = hyv.x + hyv.y;
   _wg = -1;
   if (b.dome > 0.5){ domeSurface(b, z, hitX, hitY); return; }
+  if (b.interior > 0.5){ interiorWall(b, guv, z, side, hyv); return; }
   // burned graffiti: a bright stencil piece holding on the wall for a few days
   if (z > 0.8 && z < 2.4){
     vec4 tg = texelFetch(uTags, ivec2(int(hxv.x + floor(hxv.y)), int(hyv.x + floor(hyv.y))), 0);
@@ -29401,8 +30856,37 @@ void main(){
   oG = 0.0; oPal = 0.0; oLv = 0.0; oWet = 0.0; oSrc = 0.0; oEmit = 0.0; oWrote = 0.0;
   oDep = 1e30;
 
+  /*------------------------- ceiling (interiors) ----------------------
+    The mirror of the floor pass: rows above the horizon inverse-project
+    onto the plane z = INT_CEIL. Its distance rides in per ROW exactly the
+    way the floor's does - same slot, same reason - because above the
+    horizon that slot had no floor to describe. Panel joints on the tile
+    grid, a sparse lattice of tube lights for the bloom to catch. Walls
+    draw afterwards and overwrite their span, exactly as they do over the
+    floor. Depth is written even where the glyph rounds to nothing, as the
+    CPU twin writes dBuf: the sprites have to test against the ceiling. */
+  if ((uStages & 1) != 0 && uInside > 0.5 && float(r) < uHz){
+    float d = rw.x;                       // negative: the CPU cut this row
+    if (d > 0.0){
+      float sx = uCamF.x + cd.x * d, sy = uCamF.y + cd.y * d;
+      float wx = uCamI.x + sx, wy = uCamI.y + sy;
+      int ix = int(uCamI.x + floor(sx)), iy = int(uCamI.y + floor(sy));
+      if (!(wx < 0.0 || wy < 0.0 || float(ix) >= uMap || float(iy) >= uMap)){
+        float dd; int bb;
+        if (ix % 3 == 1 && iy % 3 == 1){ dd = 0.92; bb = int(uIntA.y); }
+        else {
+          dd = 0.22 + hash3(ix, iy, 51) * 0.08; bb = int(uIntA.z);
+          if (sx - floor(sx) < 0.06 || sy - floor(sy) < 0.06) dd = 0.32;   // panel joints
+        }
+        float gg = jround(jclamp(dd * rl.y, 0.0, 1.0) * uRMAX);
+        oDep = d; oWet = 0.0;
+        if (gg != 0.0){ oG = gg; oPal = float(bb); oLv = rl.x; oWrote = 16.0; }
+      }
+    }
+  }
+
   /*------------------------------- sky -------------------------------*/
-  if ((uStages & 1) != 0 && float(r) < uHz){
+  if ((uStages & 1) != 0 && uInside < 0.5 && float(r) < uHz){
     float glowD = rw.z, up = rw.w;
     float hs = hash3(int(cs.x), int(float(r) - uHorizon), 11);
     float dens = glowD, base = uSkyMat.x;
@@ -29434,11 +30918,39 @@ void main(){
     tile is, which is the part that has to be per-cell. */
   if ((uStages & 2) != 0 && float(r) >= uR0){
     float d = rw.x;
-    if (d > 0.0 && d <= cd.w){          // negative means the CPU cut this row
+    if (d > 0.0 && d <= cd.w){   // clamped to the view distance on the CPU;
+                                 // negative only where the plane is missed
       float sx = uCamF.x + cd.x * d, sy = uCamF.y + cd.y * d;
       float wx = uCamI.x + sx, wy = uCamI.y + sy;
       int ix = int(uCamI.x + floor(sx)), iy = int(uCamI.y + floor(sy));
       if (!(wx < 0.0 || wy < 0.0 || float(ix) >= uMap || float(iy) >= uMap)){
+      /* Counters carry a worktop: a second plane at counter height, projected
+         the way the river projects its lower one - just upward instead. Its
+         per-row distance rides in the river's slot, which a room never uses.
+         The top claims the cell outright; the counter's SIDE is the wall
+         pass's business and lands over this afterwards. */
+      bool claimed = false;
+      if (uInside > 0.5){
+        float dC = rw.y;
+        if (dC > 0.0 && dC < d){
+          float sxC = uCamF.x + cd.x * dC, syC = uCamF.y + cd.y * dC;
+          float wxC = uCamI.x + sxC, wyC = uCamI.y + syC;
+          int ixC = int(uCamI.x + floor(sxC)), iyC = int(uCamI.y + floor(syC));
+          if (!(wxC < 0.0 || wyC < 0.0 || float(ixC) >= uMap || float(iyC) >= uMap)){
+            float chh = tHAt(ixC, iyC);
+            if (chh > 0.95 && chh < 1.15){
+              float fx2 = sxC - floor(sxC), fy2 = syC - floor(syC);
+              float dd = 0.62 + hash3(ixC, iyC, 77) * 0.12;
+              if (fx2 < 0.07 || fy2 < 0.07 || fx2 > 0.93 || fy2 > 0.93) dd = 0.85;
+              float gC = jround(jclamp(dd * rl.w, 0.0, 1.0) * uRMAX);
+              oDep = dC; oWet = 0.0;
+              if (gC != 0.0){ oG = gC; oPal = uIntB.z; oLv = rl.z; oWrote = 16.0; }
+              claimed = true;
+            }
+          }
+        }
+      }
+      if (!claimed){
         vec4 tile = tileAt(ix, iy);
         float uD = d, lvl = rl.x, dmm = rl.y;
         bool drop = false;
@@ -29448,7 +30960,8 @@ void main(){
              THAT is the wall it stops against, not whatever tile happens to
              sit at the far end of the ray. */
           float dW = rw.y;
-          if (dW < 0.0) drop = true;    // past the view distance, decided on the CPU
+          if (dW < 0.0) drop = true;    // the plane genuinely missed (never past
+                                        // the view distance - the CPU clamps that)
           else {
             float sx2 = uCamF.x + cd.x * dW, sy2 = uCamF.y + cd.y * dW;
             float wx2 = uCamI.x + sx2, wy2 = uCamI.y + sy2;
@@ -29498,6 +31011,7 @@ void main(){
           if (gg != 0.0){ oG = gg; oPal = float(_wb); oLv = lvl; oWrote = 16.0; }
         }
       }
+      }
     }
   }
 
@@ -29522,7 +31036,7 @@ void main(){
        reads as a hole punched through the roof you are hovering over. It does
        NOT settle the row - the CPU draws it without touching ceilLimit, so a
        tile further out is still allowed to paint over it. */
-    {
+    if (uInside < 0.5){
       float h0 = tHAt(mx0, my0);
       int b0 = bldOf(tileAt(mx0, my0));
       if (b0 >= 0 && h0 > 0.6 && uCam.z - h0 > 0.35)
@@ -29609,10 +31123,11 @@ void main(){
       } else {
         /* A wall below eye level occludes only above its FAR top edge - the
            rows between its near and far edge are its own visible top surface,
-           not cover for what is behind. Outdoors that surface is the roof. */
+           not cover for what is behind. Outdoors that surface is the roof;
+           indoors it is the worktop the ground pass draws. */
         float dExit = min(sdx0 + float(kx) * ddx, sdy0 + float(ky) * ddy);
         int rFar = int(ceil(uHorizon + (uCam.z - h) * uProjRows / dExit - 0.5)) - 1;
-        if (bi >= 0 && h > 0.6 && uCam.z - h > 0.35 && !painted){
+        if (uInside < 0.5 && bi >= 0 && h > 0.6 && uCam.z - h > 0.35 && !painted){
           if (roofSpan(getBld(bi), h, d, dExit, ceilLimit, fr, rdx, rdy))
             painted = true;
         }
@@ -29891,18 +31406,64 @@ function glWorldStatics(){
   if (!GL.wTags) GL.wTags = mkTex(null, gl.RGBA8, MAP, MAP, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(N * 4));
   GW.tagKey = -1;
   GW.domeIdx = -1;
+  GW.sceneUp = null;               // a rebuilt map invalidates the corner window
   GW.lampBuf = new Float32Array(Math.max(1, lamps.length) * 4);
   if (GL.wLamps) gl.deleteTexture(GL.wLamps);
   GL.wLamps = mkTex(null, gl.RGBA32F, Math.max(1, lamps.length), 1, gl.RGBA, gl.FLOAT, null);
 }
+/*--------------- the corner window: which room the card sees ----------------
+  Every interior is stamped into the tile arrays' corner - the same forty-odd
+  tiles of world coordinates for every room in the city - and the scenes swap
+  those arrays by reference, which the textures the card reads know nothing
+  about. So on any change of scene the corner of the tile and height textures
+  is re-uploaded from whatever is bound NOW: the room's walls on the way in,
+  the city's own corner back on the way out. A room also appended its wall
+  records to the scene's buildings array, so the buildings texture is rebuilt
+  with it. Forty-eight tiles square covers the biggest dungeon floor (rw,rh
+  <= 32 from IOX 10) with room to spare, and the upload is eighteen
+  kilobytes nobody can measure. */
+function glSceneWindow(){
+  const sid = SCENE ? SCENE.id : 'city';
+  if (GW.sceneUp === sid || !GL.wTile) return;
+  GW.sceneUp = sid;
+  const gl = GL.gl, W = 48;
+  const TB = GW.winBuf || (GW.winBuf = new Uint8Array(W * W * 4));
+  const HB = GW.winHgt || (GW.winHgt = new Float32Array(W * W));
+  const city = !SCENE || SCENE === CITY;
+  for (let y = 0; y < W; y++)
+    for (let x = 0; x < W; x++){
+      const i = y * MAP + x, o = (y * W + x) * 4;
+      TB[o] = tType[i] | (city && riverBed[i] ? 16 : 0);
+      const bi = tB[i] + 1;
+      TB[o + 1] = bi & 255; TB[o + 2] = bi >> 8;
+      TB[o + 3] = 0;
+      HB[y * W + x] = tH[i];
+    }
+  if (city) for (const k in signFloor){
+    const ki = k | 0, kx = ki % MAP, ky = (ki / MAP) | 0;
+    if (kx < W && ky < W){
+      const c = signFloor[k].charCodeAt(0);
+      if (c < 256) TB[(ky * W + kx) * 4 + 3] = c;
+    }
+  }
+  gl.bindTexture(gl.TEXTURE_2D, GL.wTile);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, W, gl.RGBA, gl.UNSIGNED_BYTE, TB);
+  if (GL.heightT && _heightUp){
+    gl.bindTexture(gl.TEXTURE_2D, GL.heightT);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, W, gl.RED, gl.FLOAT, HB);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  GW.bldKey = -1;                  // the room's wall records ride with it
+}
 /* The whole world pass. Returns a bitmask of which stages it actually did,
    so worldPasses can run the CPU original for whatever is left. */
 function glWorldPass(defer){
-  if (!GL || !GL.worldOK || !GL.pWorld || !GPUW.on || inside) return 0;
+  if (!GL || !GL.worldOK || !GL.pWorld || !GPUW.on) return 0;
   const stages = GPUW.stages & GPUW.max;
   if (!stages) return 0;
   const _T = GW.t || (GW.t = {stat:0,setup:0,upload:0,draw:0,read:0,unpack:0,n:0});
   let _t0 = performance.now();
+  glSceneWindow();       // before statics, so a room's building records go up THIS frame
   glWorldStatics();
   _T.stat += performance.now() - _t0; _t0 = performance.now();
   if (!GL.wTile) return 0;
@@ -29934,18 +31495,37 @@ function glWorldPass(defer){
   const rD = GW.rowD;
   for (let r = 0; r < rows; r++){
     const o = r * 4, o2 = rows * 4 + r * 4;
-    const d = cam.z * projRows / (r + 0.5 - horizon);
-    const dW = (cam.z + RIVER_DEPTH) * projRows / (r + 0.5 - horizon);
-    /* "Is this row past the view distance" is decided HERE, not in the
-       shader, and the answer rides in as a negative distance. It has to be:
-       projRows comes out 144.00000000000003 rather than 144, so a row that
-       lands on exactly the view distance is 96.00000000000001 in double
-       precision and rounds to exactly 96 on the way to the card - and the two
-       then disagree about a whole row of the frame. Every other float in this
-       pass is off by an ulp in a place where an ulp does not matter; this one
-       is a >= against a round number, which is where it always matters. */
-    rD[o]     = (d > 0 && d <= viewD) ? d : -1;
-    rD[o + 1] = (dW > 0 && dW <= viewD) ? dW : -1;
+    /* Indoors the slots above the horizon describe the CEILING plane rather
+       than the sky, and the river's slot carries the counter worktop's plane
+       instead - a room has no water to drop through. Same layout, same
+       double-precision reasons; the shader's interior branches read them. */
+    if (inside){
+      const dc = r < hz ? (INT_CEIL - cam.z) * projRows / (horizon - (r + 0.5)) : -1;
+      const d = cam.z * projRows / (r + 0.5 - horizon);
+      const dC = (cam.z - 1.05) * projRows / (r + 0.5 - horizon);
+      const useC = r < hz;
+      rD[o]     = useC ? ((dc > 0 && dc <= viewD) ? dc : -1)
+                       : ((d > 0 && d <= viewD) ? d : -1);
+      rD[o + 1] = !useC && dC > 0 ? dC : -1;
+      rD[o + 2] = 0; rD[o + 3] = 0;
+      const t = rD[o] > 0 ? rD[o] / viewD : 0, tc = dC > 0 ? dC / viewD : 0;
+      rD[o2] = levelOf(t); rD[o2 + 1] = densMul(t);
+      rD[o2 + 2] = levelOf(tc); rD[o2 + 3] = densMul(tc);
+      continue;
+    }
+    /* A row past the view distance is CLAMPED to it, not cut - the CPU twin
+       in floorPass says why: the ground does not stop existing at the fog,
+       and cutting it left a bald band of raw background under the horizon
+       over every large open area. The clamp is decided HERE, in double
+       precision, for the same reason the cut used to be: the shader must
+       never re-derive a boundary the CPU already settled, or the two
+       disagree about a whole row of the frame. A negative distance now only
+       ever marks a row the plane genuinely misses. The room above keeps the
+       cut: an interior ends at its own walls, well inside the fog. */
+    const d = Math.min(cam.z * projRows / (r + 0.5 - horizon), viewD);
+    const dW = Math.min((cam.z + RIVER_DEPTH) * projRows / (r + 0.5 - horizon), viewD);
+    rD[o]     = d > 0 ? d : -1;
+    rD[o + 1] = dW > 0 ? dW : -1;
     if (r < hz){
       const up = (hz - r) / Math.max(1, hz);
       rD[o + 2] = Math.pow(1 - up, 2.5) * glowAmp;
@@ -30060,7 +31640,7 @@ function glWorldPass(defer){
   const TAU = Math.PI * 2;
   gl.uniform4f(U.uWave, (worldTime * 0.33) % TAU, (-worldTime * 0.61) % TAU,
                         (worldTime * 0.85) % TAU, (-worldTime * 1.55) % TAU);
-  gl.uniform4f(U.uLamp, _lampNight, LAMP_REACH, LAMP_GAIN, LAMP_STEPS);
+  gl.uniform4f(U.uLamp, inside ? 0 : _lampNight, LAMP_REACH, LAMP_GAIN, LAMP_STEPS);
   gl.uniform1f(U.uProjRows, projRows);
   gl.uniform1f(U.uDeckT, DECK_T);
   gl.uniform1f(U.uGBar, G_BAR);
@@ -30105,6 +31685,22 @@ function glWorldPass(defer){
     m[12] = C.asphalt; m[13] = C.bank; m[14] = LAMPPOOL[0][0]; m[15] = C.signBack;
   }
   gl.uniform1fv(U.uMat, GW.mat);
+  /* Interiors. The lamp pools are forced dark with them - lampPool's CPU twin
+     gates on `inside` because lampGrid is the city's, and the shader's only
+     gate is the night term. */
+  gl.uniform1f(U.uInside, inside ? 1 : 0);
+  if (inside){
+    const shop = inside.shop, SF = shop && SHOP_FLAVOR[shop];
+    gl.uniform4f(U.uIntA, INT_CEIL,
+      shop === 'dispensary' ? C.nGreen : shop === 'armory' ? C.camRed : C.nWhite,
+      C.screen, SF && SF.band !== undefined ? SF.band : -1);
+    gl.uniform4f(U.uIntB, intFloorA, intFloorB, C.worktop, C.signCase);
+    if (!GW.neon){
+      GW.neon = new Float32Array(NEONC.length);
+      for (let i = 0; i < NEONC.length; i++) GW.neon[i] = NEONC[i];
+    }
+    gl.uniform1fv(U.uNeonC, GW.neon);
+  }
   gl.bindVertexArray(GL.empty);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.disable(gl.DEPTH_TEST);
@@ -30181,6 +31777,7 @@ function glWorldRead(defer){
       bs = GW.pbBasis[slot] = { rx: new Float32Array(cols), ry: new Float32Array(cols) };
     bs.cx = cam.x; bs.cy = cam.y; bs.cz = cam.z;
     bs.hz = horizon; bs.pr = projRows; bs.vd = viewD;
+    bs.scn = ecacheOrd(SCENE ? SCENE.id : 'city');   // whose world these bytes show
     bs.rx.set(rayX.subarray(0, cols)); bs.ry.set(rayY.subarray(0, cols));
     gl.flush();                       // or the fence is never submitted
     GW.pbSet = (slot + 1) % 3;
@@ -30327,6 +31924,8 @@ uniform vec2  uGrid;
 uniform float uHorizon, uProjRows, uRMAX, uDFar, uCamZ;
 uniform vec4  uMJ;              // mirror search: hi, lo, verify, occlude
 uniform vec4  uScopeCut;        // the composed glass: cx, cy, radC, radR
+uniform vec4  uReflA;           // fres0, power, gain, srcFall
+uniform vec4  uReflB;           // objFall, fadeD, maxD, unused
 uniform int   uMode;            // 0 the solid, 1 its reflection
 flat in int vI;
 
@@ -30472,6 +32071,22 @@ void main(){
     mirror of; that row is then marched properly, because the glyph the CPU
     reflected is the glyph it drew there, face shading and all. ---*/
   float wob = cd.z;
+  /* the angle term reflectPass applies, one for one with the CPU's
+     reflStrength(rr, x) at this destination row - a fixed fall here made a
+     solid's mirror change brightness as its source rows crossed the top of
+     the frame, i.e. every time the view pitched */
+  float kkS = (float(r) + 0.5 - uHorizon) / uProjRows;
+  if (kkS <= 1e-4) discard;
+  float cosS = kkS / sqrt(rx * rx + ry * ry + kkS * kkS);
+  float fresS = uReflA.x + (1.0 - uReflA.x) * pow(1.0 - cosS, uReflA.y);
+  float dRoadS = uCamZ / kkS;
+  float fadeS = 1.0;
+  if (dRoadS > uReflB.y){
+    fadeS = 1.0 - (dRoadS - uReflB.y) / (uReflB.z - uReflB.y);
+    if (fadeS <= 0.0) discard;
+  }
+  float strS = fresS * fadeS * uReflA.z;
+  if (strS <= 0.02) discard;
   float ks = (float(r) - wob - uHorizon) / uProjRows;
   int fm; float tm;
   if (march(rx, ry, ks, Oz - 2.0 * uCamZ, ks, fm, tm) == 0) discard;
@@ -30501,7 +32116,7 @@ void main(){
     vec4 P = texelFetch(uPal, ivec2(role, vI), 0);
     float g = jround(jclamp(P.y * faceDim(face) * dm, 0.0, 1.0) * uRMAX);
     if (g == 0.0) continue;
-    float ng = floor(g * (P.z > 0.5 ? 0.55 : 0.42));
+    float ng = floor(g * ((P.z > 0.5 ? uReflA.w : uReflB.x) * strS));
     if (ng < 1.0) continue;
     oA = vec4(ng, P.x, 255.0, 0.0) / 255.0;
     return;
@@ -30724,6 +32339,8 @@ function glSpritePass(){
   gl.uniform1f(U.uDFar, viewD + 4);
   gl.uniform1f(U.uCamZ, cam.z);
   gl.uniform4f(U.uMJ, GS.mj[0], GS.mj[1], GS.mj[2], GS.mj[3]);
+  gl.uniform4f(U.uReflA, REFL.fres0, REFL.power, REFL.gain, REFL.srcFall);
+  gl.uniform4f(U.uReflB, REFL.objFall, REFL.fadeD, REFL.maxD, 0);
   // the composed glass circle; instances flagged with bit 2 keep out of it
   if (_scopeCut)
     gl.uniform4f(U.uScopeCut, _scopeCut.cx, _scopeCut.cy, _scopeCut.rad, _scopeCut.ry);
@@ -31710,6 +33327,7 @@ function hudPass(){
         chips.push('EYES ' + eyes);          // what can see you, not what is near
     }
     if (hideT > 0) chips.push('HIDING ' + hideT.toFixed(1));
+    if (dvSignOn()) chips.push('SIGN UP');
     if (heli) chips.push(heli.lock > 0.5 ? 'SPOTLIT' : 'HELI');
     if (chips.length)
       put(row++, chips.join(' '), player.corruption > 0 || heli ? H_RED : H_GRN);
@@ -32028,12 +33646,12 @@ function netNow(){ return performance.now() / 1000; }
 /* what a body is doing, in one byte */
 const NF_MOVE = 1, NF_RUN = 2, NF_SKATE = 4, NF_SIT = 8, NF_AIM = 16,
       NF_PUNCH = 32, NF_HURT = 64, NF_AIR = 128, NF_PUSH = 256,
-      NF_RELOAD = 512;
+      NF_RELOAD = 512, NF_SIGN = 1024;
 function netFlags(p){
   return (p.moving ? NF_MOVE : 0) | (p.running ? NF_RUN : 0) |
          (p.skate ? NF_SKATE : 0) | (p.sit ? NF_SIT : 0) |
          (p.aiming ? NF_AIM : 0) | (p.punchT > 0 ? NF_PUNCH : 0) |
-         (p.hitT > 0 ? NF_HURT : 0) |
+         (p.hitT > 0 ? NF_HURT : 0) | (p.sign ? NF_SIGN : 0) |
          // the board's two states that are not a stance: off the ground, and
          // the back foot down on the road driving
          (p.air ? NF_AIR : 0) | (p.pushT > 0 ? NF_PUSH : 0) |
@@ -32047,6 +33665,7 @@ function netUnflag(p, f){
   p.hitT   = f & NF_HURT ? 0.2 : 0;
   p.air    = f & NF_AIR ? 1 : 0;
   p.pushT  = f & NF_PUSH ? 0.2 : 0;
+  p.sign   = f & NF_SIGN ? 1 : 0;
   /* a reload is long enough that a flag is the whole of it: the peer holds
      the canted pose while the bit is set and drops out of it when it
      clears, which is exactly how long the reload actually took */
@@ -32077,6 +33696,7 @@ function netSampleMe(dt){
   ME.aiming  = !!(typeof weaponId === 'function' && weaponId() &&
                   document.pointerLockElement === view);
   ME.hp = player.hp;
+  ME.sign = dvSignOn() ? 1 : 0;                 // the placard, over the wire
   ME.weapon = typeof weaponId === 'function' ? weaponId() : 'fist';
   ME.using = usingNow();                        // mid-ritual, and which one
   ME.z = liftZ;                                 // how far off the street we are
@@ -33432,6 +35052,7 @@ function simulate(dt){
        that can say whose heat is whose, so they wait for one. */
     if (ME.scene === CITY){
       heliFrame(dt); hideFrame(dt); wayTick(dt); runFrame(dt); enfBrainTick(dt);
+      davidFrame(dt);
     }
   }
   // every room with somebody standing in it thinks; the empty ones do not
@@ -33527,7 +35148,7 @@ function worldPasses(){
     if (tr && (tr !== TAIL_ALL || GV.dbgRead)){ glTailRead(); GV.used = 0; }
   };
   const wantS = GPUS.on && (GPUS.stages & GPUS.max) !== 0 &&
-                GPUW.on && (GPUW.stages & GPUW.max) === 7 && !inside &&
+                GPUW.on && (GPUW.stages & GPUW.max) === 7 &&
                 GL && GL.spriteOK && GL.worldOK && GL.pWorld;
   const gw = glWorldPass(wantS);
   const gs = (wantS && gw === 7) ? glSpritePass() : 0;
@@ -33605,7 +35226,7 @@ function worldPasses(){
      still cheapest to build from srcBuf here. Everything after it is skipped,
      including the upsample, because the light texture is sampled directly by
      the glyph shader and never comes back across the bus. */
-  const gpuLit = !!(GL && GL.lightOK && GPUL.on && !inside);
+  const gpuLit = !!(GL && GL.lightOK && GPUL.on);
   _cpuLitFrame = false;
   if (gpuLit){
     litR.fill(0); litG.fill(0); litB.fill(0); litA.fill(1);
