@@ -1,8 +1,29 @@
 {
-  "pistol":   { "flip": true, "res": 96 },
-  "nailer":   { "flip": true, "res": 96 },
-  "rifle":    { "drillScope": true, "res": 112 },
-  "holdout":  { "res": 80 },
-  "revolver": { "res": 96 },
-  "smg":      { "res": 96 }
+  "pistol": {
+    "flip": true,
+    "res": 96
+  },
+  "nailer": {
+    "flip": true,
+    "res": 96
+  },
+  "rifle": {
+    "res": 112,
+    "scope": {
+      "u": 4,
+      "z": 2.5,
+      "rad": 1.9,
+      "v0": 30,
+      "v1": 77
+    }
+  },
+  "holdout": {
+    "res": 80
+  },
+  "revolver": {
+    "res": 96
+  },
+  "smg": {
+    "res": 96
+  }
 }
