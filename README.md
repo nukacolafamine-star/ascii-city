@@ -310,7 +310,7 @@ its bearing, so nothing in the city is findable only by luck.
   with its far wall rising out of the water. It severs the walk graph, which is
   the point.
 - **Central Bridge** carries a whole boulevard across — roadway and both
-  sidewalks — with railings, lamps and a **toll plaza** on the north approach.
+  sidewalks — with railings and lamps down the deck.
 - **The Old Crossing**, narrower and unlit, three blocks upriver.
 - **The Sphere** — a stepped hemisphere whose entire skin is one display.
   Tile heights follow `h = H·√(1 − (r/R)²)`, so it is a voxel dome; every wall
@@ -500,6 +500,79 @@ carrying your signature. Two clean days fade a point; **the fixer** on the
 red mile deletes one for forty credits, no questions. Razors and enforcers
 are fair game — putting them down costs nothing but ammunition.
 
+### Five calibres, and a magazine between them and you
+
+Every gun in the city used to eat the same rounds, which meant the only
+question a firefight ever asked was *how many*. There are **five** now —
+light, pistol, heavy, shells and power cells — and each weapon names exactly
+one of them. The holdout and the hornet take light; the zip and the judge
+take pistol; the longwire and the nailer take heavy; the doorbell takes
+shells; and the two specials drink cells and nothing else. So the maglev
+lance slung on your back is dead weight until you find cells for it, and the
+box of buckshot you cannot chamber is still worth carrying to a counter.
+Armouries stock all five, bodies and back-room caches give up what the city
+is actually full of — light and pistol rounds mostly, cells almost never —
+and a razor is carrying rounds for the gun you shot him with about half the
+time, which is what keeps a running fight running. You can hold 9,999 of
+each: the constraint is finding them, not pockets.
+
+**And rounds live in two places.** What is loose in the bag, and what is
+seated in the weapon in your hands. The HUD reads `12/240`, and the number
+on the left is the one that decides the next ten seconds. A judge with six
+in the cylinder and a two-and-a-half second break is a different weapon from
+a hornet with thirty-two at the same damage, and a lance that holds **three**
+makes you count before you pull. `R` reloads; so does pulling the trigger on
+an empty magazine, because that is what your hands would do. The rounds move
+at the *end* of the animation, never at the press — a reload you abandon by
+switching weapons costs you the seconds and leaves the magazine exactly as
+empty as it was, which is the whole reason a reload is a decision.
+
+The animation is the same gun at the same anchor, not a separate pose: it
+comes **up** in front of your chest, canted off the eye line so you can see
+into it, with the trigger hand never letting go and the off hand leaving the
+forestock and coming back. A magazine is one trip — strip, fetch, seat, and a
+slap at the end that jolts the whole weapon. A cylinder or a tube is fed one
+round at a time, so the off hand makes that trip three times over the same
+span and the weapon sits canted the whole while. From outside — a hijacked
+camera, another player across a junction — it reads as one held pose with the
+muzzle off you and an arm away from the gun: *cannot shoot back for a second
+and a half*, which is the only thing anybody watching needs from it.
+
+### What the specials do to a body
+
+Four of the weapons are not really about damage.
+
+**The arc gun** throws a bolt you can watch: a random walk perpendicular to
+the line, damped to nothing at both ends so it starts at the coil and
+finishes in the target, with forks thrown off the channel that die in the
+air. It leaps from body to body — the cast, the crowd and the other players
+all conduct — and every hop draws its own.
+
+**The nailer** does not knock a target over, it **carries** them. Every hit
+takes them back along the line of the shot until something stops them, and
+the interesting case is what: open pavement and they ride it out and recover
+— no stun, just distance. Masonry, a bin, a bench, and the spike goes
+through them into it. That is a pin: sparks off the wall rather than off the
+body, and they are not going anywhere until it comes out. Even a boss wears
+it.
+
+**The maglev lance** and **the shock maul** do not wound so much as
+disassemble. Anything they finish comes apart into a burst of fine droplets
+with gravity on them and a low ring that hangs at knee height and settles —
+and there is no body afterwards, because there is nothing left to lay out.
+
+**The vibro katana** takes the top off. Its arc draws the line of the cut at
+neck height across everyone in it, and what it leaves lying on the pavement
+has its head a hand's width from its shoulders and something red in the gap.
+The corpse is remembered like any other: walk back tomorrow and it is still
+there, still headless, until the street gets cleaned.
+
+All of it rides one particle system, which is the impact-spark list with the
+physics put back in — a point, a colour, a size, a life, and now a velocity,
+a gravity and a drag. Particles land on the floor and stay landed, and the
+list is capped, so a lance through a queue of eight cannot spend the frame on
+its own tracer.
+
 ## The arsenal
 
 Nearly forty items, and every consumable has its own first-person ritual
@@ -513,7 +586,24 @@ OVERCLOCK drops the whole city into slow motion around you, STATIC makes
 reality drop packets, and MIRRORSHADE bends every color in the district —
 each substance warps movement, palette, camera, and audio to match, one
 ride at a time. **Bludgeons**: a lead pipe swings fast, a nail bat swings
-like a verdict, both with their own hold-and-swing animations. **Drip**,
+like a verdict — and every weapon in the city, gun and blade alike, is now a
+real model rather than an authored box list, voxelised off the mesh and
+flood-solidified so nothing in your hands is a shell.
+
+**Every melee weapon swings in two alternating strokes** — a main and a
+follow-up, the way the fists have always traded lead hands. The vibro katana
+cuts level at neck height from one edge of the screen to the other, then
+draws up and slices the diagonal from the top-left corner through the
+bottom-right. The shock maul goes from its diagonal carry to a full
+over-the-head slam into the ground, then jabs straight forward with the
+head. The nail bat swings a batter's home run off the right shoulder and
+answers it with the same swing in the mirror. The lead pipe drops out of the
+top-right corner and stops dead on the crown of the head — a bonk, not a
+swing — then backhands across. The boxcutter keeps its quick stabby
+identity, with a reverse flick between slashes. Each stroke is a raise, a
+whip that puts the damage beat mid-arc at peak speed, and a recover that
+lands back in the hold without a cut — and a peer watching sees the strokes
+trade direction too. **Drip**,
 from bodega tee to ADIBAS tracksuit to BALENCIAGO puffer to a ROLLIX on the
 wrist — wear it; the street notices. **Tools of gentle anarchy**: a hacksaw
 that cuts flock cams (they drop scrap) and street lights, the CAM-JACK that
@@ -576,6 +666,43 @@ your handwriting on the walls of a neighbourhood, finish work for the people
 who live in it, and land a clean run without a scrape, and once in a while
 somebody on that street will cross the pavement after a trick and press a few
 credits on you.
+
+## Fishing
+
+The river is fishable. A **fishing rod** hangs in the tool shops, and it is a
+real imported model run through the gun pipeline - which learned two repairs
+on its account: the format conversion had dashed the rod's drooping line into
+four separate pieces, so the importer now **stitches** severed pieces back
+together along their shortest gaps and welds the corner slits (`stitch` /
+`weld` in `tools/gun-import.json`), and what you hold is one connected solid.
+
+`LMB` casts: the rod sweeps back over your head and flicks forward - the same
+draw-time tilt the scoped rifle uses, asked for a much bigger angle - and the
+line leaves the tip along your aim, so the reticle is the range dial. Land it
+on water and the float settles. When the water **splashes**, `RMB` sets the
+hook, and then the fight: HOLD `RMB` while the water is calm to reel, LET GO
+when it snags, one to six increments sized by the bulk of whatever is
+down there. Hold through a snag and the line parts, and all you learn is
+that whatever it was, it got away. The catch stays hidden until it lands.
+
+Mostly it is the river's own rubbish - a sodden pallet, a dented drum, a knot
+of bottles, a bald tyre - all priced, because the counters buy junk. Rarely
+the hook reaches into the wardrobe, the jewellery counter or the armoury,
+weighted against price, so the expensive things stay stories. Cast at the
+street instead and the hook drags a loose pickup to your feet (the flock
+still decides whether that was theft), or puts a razor on your line, which
+is a decision you can drag toward you.
+
+And once in 256 catches the line hands you something with fingers. The
+patrol files it against YOU; the stall cook says you will not like what you
+find, and points at **THE MEATWORKS** - the tall cold-stack tower in the
+industrial belt, an endgame dungeon that deals all four stairwell locks in
+order, floor by floor, dressed to a butcher's taste. **THE BUTCHER** at the
+top works to a shift pattern - runs up, swings, walks away, and heals behind
+a drumstick that makes him untouchable until it is finished - and what he
+says about the burgers is worse than the fight. His keys go back to the
+cook, who scrubs the tower down to the bone over five more errands and
+reopens its top floor as the only honest kitchen in the city, permanently.
 
 ## Inventory, stats and saves
 
@@ -644,6 +771,7 @@ Volumes live in the ESC menu and persist. To hear the WebAudio tier locally,
 | `SPACE` | talk / take / enter / sit — whatever the prompt names |
 | `W` (seated) | wait until the light changes |
 | `LMB` / `CTRL` | attack — bare knuckles, or the zip pistol once you own one |
+| `R` | reload (on the flyer it is still altitude) |
 | `TAB` | inventory and stats |
 | `M` | the full city map — pan, zoom, intersection ids, search |
 | `ESC` | pause menu — settings, volumes, save / load, new city |

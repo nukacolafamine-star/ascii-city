@@ -247,6 +247,22 @@ silhouette came back from every angle and a park of forty read as one tree
 stamped forty times. Measured standing in the densest tree patch in the city,
 44 of them within 22 tiles: 2.85 ms of an 8.07 ms frame, a 124 fps ceiling.
 
+## The gun pipeline learned the repairs too
+
+`gun-import.mjs` now carries the same two fixes, config-gated per model in
+`gun-import.json` so existing bakes stay byte-identical - plus one of its
+own. The fishing rod arrived with its drooping line DASHED: the conversion
+had broken the thin diagonal into four separate strokes with two-cell gaps,
+which corner welds cannot reach across.
+
+| option   | what it does |
+|----------|--------------|
+| `weld: n`   | n passes of the corner-join weld, after a severed-layer bridge |
+| `stitch: g` | connect whole PIECES: find the two components with the smallest manhattan gap, run a one-voxel bridge between their nearest cells, repeat until one piece stands or the next gap exceeds `g` (a genuinely separate part gets reported, not bridged) |
+
+The report prints pieces before -> after; the rod went 4 -> 1 on three
+two-cell bridges and two weld passes.
+
 ## Seven models in, so far
 
 The flock camera also arrived with a **pinch**: its post drops to a single
@@ -276,3 +292,83 @@ and both take `anchor` plus `lampYaw`. The camera's arm is mirrored relative
 to the streetlight's, which is why its axis spec starts `-z` rather than `z` —
 flipping it in the importer means the engine-side aiming rule is shared
 verbatim instead of forked with a half-turn.
+
+## The armoury: fifteen weapons in
+
+`gun-import.mjs` bakes every folder under `voxel models/_guns` whose name
+matches a weapon id, and `splice-guns.mjs` moves the result into
+`index.html`. Two commands, no hand-editing:
+
+```
+node tools/gun-import.mjs
+node tools/splice-guns.mjs
+```
+
+The last eight went in together — the three remaining guns, and the five
+melee weapons that had been drawing from authored box lists since the
+beginning. Their per-model settings live in `tools/gun-import.json`:
+
+| id | source | lattice | res | flip | roles |
+|---|---|---|---|---|---|
+| `arcgun` | Coil Gun | 18 × 96 × 27 | 96 | — | `H`/`T` body, `X` coil, `R` charge |
+| `railgun` | Ray Gun | 17 × 96 × 56 | 96 | **yes** | `H` shroud, `T` rail, `V` strip |
+| `shotgun` | Shotgun | 5 × 96 × 17 | 96 | — | `P` furniture, `H` receiver |
+| `katana` | Light saber | 7 × 96 × 10 | 96 | **yes** | `V` blade, `T` guard, `H` grip |
+| `knife` | Utility Knife | 3 × 80 × 10 | 80 | — | `L` |
+| `pipe` | Pipe | 6 × 80 × 17 | 80 | — | `T` |
+| `bat` | Wooden Bat Barbed | 12 × 80 × 12 | 80 | — | `P` |
+| `maul` | Sledgehammer | 7 × 80 × 17 | 80 | — | `H` head, `T` shaft, `V` collar |
+
+**Read the printed side elevation for the butt.** `flip` is the whole of the
+model's orientation and the preview is the only thing that shows it: the ray
+gun arrived with its grip at high `v` and the light saber with its tip there,
+so both point backwards out of your own hands without it. Everything else in
+the set happened to be authored the right way round, which is exactly why a
+wrong one is easy to miss — it is not an error, it is a mirror.
+
+**`--tex` has no counterpart here, and `map` is doing that job.** Four of the
+eight carry their whole model on one material, and `classify` reads a colour
+rather than a part: the sledgehammer's two blacks both fell to `H`, the
+shotgun's very dark walnut came through as `H` rather than `P`, and the
+lead pipe's near-black conduit likewise. `map` overrides by material index
+or name, and the report's `[n] name rgb … -> ROLE` lines are what to read it
+against.
+
+### `glow`: the gun side of `--mark`
+
+Nothing in a mesh says "this part is live". The coil gun brought its own
+lights in its materials — orange coils, a red charge lamp — and both of them
+survived `classify` untouched. A sledgehammer and a rail did not, and both
+are weapons whose entire character is the energy in them.
+
+`glow` takes one or more boxes **in grid cells, read straight off the printed
+preview**, and promotes the solid voxels inside them to a role:
+
+```json
+"maul":    { "glow": [{ "v0": 64, "v1": 71, "role": "V" }] },
+"railgun": { "glow": [{ "v0": 52, "v1": 92, "z0": 9, "z1": 9, "role": "V" }] }
+```
+
+The maul gets a cyan collar on the shaft just below the head; the rail gets a
+single-layer strip down the top of the barrel. Any bound may be omitted and
+spans the axis. It cannot add material — an empty cell stays empty — so it can
+only ever repaint a silhouette that already reads right, and the printed role
+histogram says how many voxels it actually claimed.
+
+A weapon that ends up with **no** emissive role at all still gets the city's
+one amber pip on top of its receiver, added engine-side after the decode. That
+is why the knife, the pipe and the bat each carry a single lit voxel without
+anything in this file asking for one.
+
+### Size is `len`, and `len` is not length
+
+`gunDims` takes a weapon's width and height from the **model's own**
+proportions and only its length from `WEAPON_HOLD`. So `len` scales all three,
+and a model whose lattice is unusually deep gets big in every direction at
+once. The ray gun is 56 cells tall against 96 long where the sniper rifle is
+28 against 112: at the rifle's `len` it stood two-thirds of a metre high in
+first person and read as a wall with a trigger. It ships at 0.78.
+
+**Check it in the viewmodel, not in the preview.** The importer's elevation
+says the shape survived; only the first-person draw says whether the thing is
+the right size to hold.

@@ -1,0 +1,31 @@
+{
+  "_readme": [
+    "Per-model settings for food-import.mjs, keyed by folder under",
+    "voxel models/_food. axU/axV/axW pick the model axes for across/length/",
+    "up (0=x 1=y 2=z) - the auto pick sorts by extent, which lays every",
+    "burger and bowl on its side because their two DIAMETERS are the long",
+    "axes. map overrides material->role by name or index. glow repaints",
+    "solid voxels in grid-cell boxes, read off the printed previews."
+  ],
+  "bao":     { "axU": 0, "axV": 1, "axW": 2,
+               "map": { "0": "P", "1": "L", "2": "X", "3": "H", "4": "R", "5": "G" } },
+  "coffee":  { "axU": 1, "axV": 0, "axW": 2,
+               "map": { "0": "P", "1": "H", "2": "H" },
+               "glow": [ { "role": "H", "z0": 0, "z1": 7 },
+                         { "role": "M", "z0": 16, "z1": 27 } ] },
+  "noodles": { "axU": 2, "axV": 0, "axW": 1 },
+  "ramen":   { "axU": 0, "axV": 2, "axW": 1,
+               "map": { "0": "M" },
+               "glow": [ { "role": "P", "z0": 0, "z1": 5, "v0": 0, "v1": 9 },
+                         { "role": "L", "z0": 0, "z1": 5, "v0": 10, "v1": 31 },
+                         { "role": "L", "u0": 4, "u1": 26, "v0": 4, "v1": 27, "z0": 6, "z1": 7 },
+                         { "role": "X", "u0": 8, "u1": 11, "v0": 8, "v1": 11, "z0": 6, "z1": 6 },
+                         { "role": "R", "u0": 18, "u1": 21, "v0": 16, "v1": 19, "z0": 6, "z1": 6 } ] },
+  "onigiri": { "map": { "0": "L" },
+               "glow": [ { "role": "H", "z0": 17, "z1": 25 } ] },
+  "medkit":  { "glow": [ { "role": "W", "z0": 0, "z1": 1, "u0": 13, "u1": 17, "v0": 7, "v1": 24 },
+                         { "role": "W", "z0": 0, "z1": 1, "u0": 5, "u1": 25, "v0": 13, "v1": 18 } ] },
+  "kebab":   { "map": { "0": "P", "1": "M", "2": "G", "3": "R" } },
+  "soda":    { "axU": 2, "axV": 0, "axW": 1, "res": 24 },
+  "taiyaki": { "map": { "1": "L" }, "flip": true }
+}

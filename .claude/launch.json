@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ascii-city",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.mjs", "8123"],
+      "port": 8123
+    },
+    {
+      "name": "ascii-city-alt",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.mjs", "8124"],
+      "port": 8124
+    },
+    {
+      "name": "ascii-city-b",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.mjs", "8125"],
+      "port": 8125
+    },
+    {
+      "name": "ascii-city-c",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.mjs", "8126"],
+      "port": 8126
+    },
+    {
+      "name": "ascii-city-d",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.mjs", "8127"],
+      "port": 8127
+    }
+  ]
+}
