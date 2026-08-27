@@ -13800,13 +13800,16 @@ function fpGunHold(RP, w){
     const hgtS = (E ? G.len * E.hFrac : (G.h || 0.1)) * FP_GUN_SCALE * gsc;
     const bu = sc2 ? (sc2.u - 0.5) * widS : 0;
     const bw = sc2 ? (sc2.w - 0.5) * hgtS : hgtS * 0.35;
-    const bvFar = sc2 && sc2.v1 ? sc2.v1 : (sc2 ? sc2.v : 0.5) + 0.12;
-    /* 0.28, not 0.19: the rays clip at 0.15, and with the tube any nearer
-       most of the RIFLE sat inside the clip and vanished - the scope hung
-       in space with no gun under it. This far out, the receiver and the
-       barrel stay in frame around the glass. */
-    const boreD = 0.22;                          // the far mouth, at the eye
-    const tf = boreD - bvFar * lenS;             // the butt goes past the ear
+    /* Anchor the EYEPIECE, not the objective. Hanging the far lens at the
+       eye reads right on paper, but it puts the whole rifle behind the
+       camera where nothing can render - scoped in, the gun was gone. With
+       the near mouth at the eye the glass fills the eyepiece edge to edge
+       the way real optics do, and the tube, the receiver and a metre of
+       barrel all stand IN FRONT of you, under the glass, on screen. */
+    const bvNear = sc2 && sc2.v0 !== undefined ? sc2.v0
+                 : (sc2 ? sc2.v : 0.5) - 0.12;
+    const boreD = 0.19;                          // the eyepiece, at the eye
+    const tf = boreD - bvNear * lenS;            // only the stock goes past
     gf = gf * (1 - st) + tf * st;
     gh = gh * (1 - st) + (-bw) * st;
     gu = gu * (1 - st) + (-bu) * st;
@@ -17398,7 +17401,7 @@ function scopeUp(){
    the rifle rides it to the eye; the magnification only arrives over the
    LAST stretch of the rise, once the tube is nearly seated - and it drains
    back out the same way, so letting go is a zoom-out, not a jump cut. */
-let scopeT = 0, scopeBoreR = 0, scopeBoreD = 0.22;
+let scopeT = 0, scopeBoreR = 0, scopeBoreD = 0.19;
 let scopeResSave = null, scopeManSave = false;
 function scopeRamp(){ return easeIO(clamp((scopeT - 0.55) / 0.45, 0, 1)); }
 function scopeZoom(){
