@@ -1,0 +1,8 @@
+{
+  "pistol":   { "flip": true, "res": 96 },
+  "nailer":   { "flip": true, "res": 96 },
+  "rifle":    { "drillScope": true, "res": 112 },
+  "holdout":  { "res": 80 },
+  "revolver": { "res": 96 },
+  "smg":      { "res": 96 }
+}
