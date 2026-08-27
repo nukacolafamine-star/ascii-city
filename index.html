@@ -18931,6 +18931,220 @@ function questTarget(){
   }
   return null;
 }
+/*==================== who is holding work, and who is waiting ==============
+  questTarget answers "where am I going next". This answers the question the
+  chart could never ask: "who, anywhere in this city, has something for me
+  RIGHT NOW". The lines are hidden behind the people who run them - a player
+  who has never spoken to the drifter has no way of learning that the drifter
+  is a thread at all - and the map is the one screen where that is fixable.
+
+  The authority on whether somebody has work is their CONVERSATION, not a
+  list kept beside it. A second list would drift the first time a beat moved
+  from one node to another, and there are thirty of them in the cell alone.
+  So this walks the tree the way the player would: start where entry() opens
+  it, take every option whose `if` lets it show, follow where they go, and
+  read which quests those options would TOUCH.
+
+  Nothing is run. An option's `do` is read as source and the ids in it are
+  checked against player.quests, which is what makes the reading honest both
+  ways: startQuest returns early on a job you already have, so an id that is
+  no longer undefined is not an offer, and advanceQuest ignores a job you are
+  not carrying, so an id that is not a live number is not a hand-in. The two
+  states the chart draws fall straight out of that - a job you have not been
+  offered is `!`, a job you are carrying and could close is `?`.
+============================================================================*/
+const _QG_OFFER = /(?:mqStart|startQuest)\(\s*['"]([A-Za-z0-9_]+)['"]/g;
+const _QG_CLOSE = /(?:mqDone|advanceQuest)\(\s*['"]([A-Za-z0-9_]+)['"]/g;
+const _QG_CALL  = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+/* The four verbs above are read where they are WRITTEN and never followed
+   into. They are engine plumbing that every job in the city passes through,
+   and advanceQuest in particular hard-codes the one line that opens itself -
+   so following it handed every single option in the game a standing offer of
+   sp1, and the whole city lit up with work it does not have. Their literal
+   arguments are already caught by the two patterns above; there is nothing
+   downstream of them that belongs to the option that called them. */
+const _QG_PRIM = { startQuest: 1, mqStart: 1, advanceQuest: 1, mqDone: 1 };
+/* One read of a function's source, ever. The set of ids a handler can reach
+   does not depend on the state of the game - only on the code - so it is
+   worked out once per function and kept, which is what makes this cheap
+   enough for the corner map to ask every frame it is up. */
+const _qgSrc = new WeakMap();
+function qgTouches(fn){
+  let e = _qgSrc.get(fn);
+  if (e) return e;
+  e = { offer: [], close: [] };
+  /* An option does not always do its own work. Every evening in the DEFLOCK
+     line closes its stage inside the cutscene the option OPENS, not in the
+     option, so a handler that only reads `dvHangScene()` names no quest at
+     all and the man with the tabs in your pocket loses his mark. So the
+     calls are followed by name, two ranks past the handler itself: far
+     enough for an option to hand off to a scene and the scene to hand off to
+     its own ending, and short enough that a menu cannot pull the whole file
+     in behind it. Only bare globals are followed - the game's own function
+     declarations - and never one already on the list. */
+  const seen = new Set([fn]);
+  let rank = [fn];
+  for (let d = 0; d < 3 && rank.length; d++){
+    const next = [];
+    for (const f of rank){
+      let s = '', m;
+      try { s = Function.prototype.toString.call(f); } catch (err){ continue; }
+      _QG_OFFER.lastIndex = 0;
+      while ((m = _QG_OFFER.exec(s))) e.offer.push(m[1]);
+      _QG_CLOSE.lastIndex = 0;
+      while ((m = _QG_CLOSE.exec(s))) e.close.push(m[1]);
+      if (d === 2 || seen.size > 64) continue;      // the last rank is read, not followed
+      _QG_CALL.lastIndex = 0;
+      while ((m = _QG_CALL.exec(s))){
+        let g = null;
+        try { g = window[m[1]]; } catch (err){ g = null; }
+        if (typeof g === 'function' && !_QG_PRIM[m[1]] && !seen.has(g)){
+          seen.add(g); next.push(g);
+        }
+      }
+    }
+    rank = next;
+  }
+  _qgSrc.set(fn, e);
+  return e;
+}
+/* Walk one tree from where it would open. `entry`, every `if` and every
+   `next` are the predicates the dialogue itself calls to decide what to draw,
+   so asking them costs nothing and changes nothing; a `next` asked before its
+   option's `do` has run simply answers for the state we are actually in,
+   which is the state the chart is drawing. Guarded anyway - a tree that threw
+   in here would take the map down with it. */
+function treeWork(tree){
+  if (!tree) return null;
+  let offer = false, close = false;
+  const seen = {}, q = [];
+  const push = id => {
+    if (typeof id !== 'string' || !tree[id] || seen[id]) return;
+    seen[id] = 1; q.push(id);
+  };
+  const branch = n => {
+    try { return typeof n === 'function' ? n() : n; } catch (e){ return null; }
+  };
+  let e0 = 'start';
+  try { if (tree.entry) e0 = tree.entry.call(tree) || 'start'; } catch (e){ e0 = 'start'; }
+  push(e0);
+  for (let i = 0; i < q.length && i < 64; i++){
+    const node = tree[q[i]];
+    if (!node) continue;
+    const shown = [];
+    for (const o of (node.opts || [])){
+      let ok = true;
+      if (o.if){ try { ok = !!o.if(); } catch (e){ ok = false; } }
+      if (ok) shown.push(o);
+    }
+    // a list with nothing showing falls through to the node's own `next`,
+    // which is exactly what openTree does with it
+    if (!shown.length){ push(branch(node.next)); continue; }
+    for (const o of shown){
+      if (o.do){
+        const t = qgTouches(o.do);
+        for (const id of t.offer)
+          if (QUESTS[id] && player.quests[id] === undefined) offer = true;
+        for (const id of t.close)
+          if (typeof player.quests[id] === 'number') close = true;
+      }
+      push(branch(o.next));
+    }
+  }
+  return { offer, close };
+}
+/* The three who live behind a door, and the counter that runs a trial. None
+   of them exists as a body until you are in the room with them - the hideout
+   cast is dealt fresh every time that door opens - so their conversation is
+   built here and asked the same question at the doorstep they are behind,
+   which is the tile the chart can actually draw. */
+function questGiverRoster(){
+  const r = [];
+  if (HIDEOUT && !player.qvar.betrayed){
+    r.push({ n: 'ROOK', x: HIDEOUT.x, y: HIDEOUT.y, tree: rookTree() });
+    if (!player.qvar.vesperDead)
+      r.push({ n: 'VESPER', x: HIDEOUT.x, y: HIDEOUT.y, tree: vesperTree() });
+  }
+  if (FIXER) r.push({ n: 'THE FIXER', x: FIXER.x, y: FIXER.y, tree: fixerTree() });
+  /* DAVID spends half his line indoors - the invitation, the tapes, the day
+     he needs to decompress - and dvWhereStreet takes his body OFF the street
+     for all of it, so the actor pass cannot see him exactly when he is most
+     worth walking to. toDavid already knows where he is in every one of those
+     states; the one thing it does not check is the state where there is no
+     answer, because he has left the city for good. */
+  if (!player.qvar.dvGone){
+    const dp = toDavid();
+    if (dp) r.push({ n: 'DAVID', x: dp.x, y: dp.y, tree: davidTree() });
+  }
+  // the chemist's trial belongs to whichever dispensary you are nearest, the
+  // same way its own quest marker already picks one
+  const dsp = nearestShopFor('mirror');
+  if (dsp) r.push({ n: 'THE CHEMIST', x: dsp.x, y: dsp.y,
+                    tree: makeShopTree('dispensary') });
+  return r;
+}
+/* Everybody the chart can put a mark on, in city coordinates. Held for a
+   fraction of a second because the corner map asks every frame, and nothing
+   in the answer can change between two of them without a keypress. The clock
+   is the WALL clock, not worldTime: a quest is handed over inside a
+   conversation, and a conversation stops the world - so a cache keyed on
+   world time would be frozen across the exact moment it needs to notice. */
+let _qgList = null, _qgAt = -1e9;
+function questGivers(){
+  /* Street coordinates, read off street globals. Indoors `actors` and `doors`
+     are the ROOM's, and a mark built from them would be a point near the
+     array origin rather than a place in the city - the same trap mqSpot fell
+     into. Neither caller asks from in there (the chart will not open indoors
+     and the corner map is drawing the room), so the last answer from outside
+     is both the right one and the only one worth keeping. */
+  if (inside) return _qgList || [];
+  if (_qgList && performance.now() - _qgAt < 400) return _qgList;
+  const out = [], tile = {};
+  /* One mark per doorstep. ROOK and VESPER share a door and a shopkeeper
+     shares theirs with the shutter; two pins on one tile is one unreadable
+     pin. A hand-in outranks an offer on a shared tile, because the job you
+     are already carrying is the one you came about. */
+  const add = (n, x, y, kind) => {
+    if (!(isFinite(x) && isFinite(y))) return;
+    const k = (x | 0) + ',' + (y | 0);
+    const had = tile[k];
+    if (had){ if (kind === 'close') had.k = 'close'; return; }
+    const e = { n: n || 'SOMEBODY', x, y, k: kind };
+    tile[k] = e; out.push(e);
+  };
+  // everybody standing in the city, asked their own conversation. An actor
+  // with an interior is standing in a scratch room stamped at the array
+  // origin - those coordinates are not a place on this chart.
+  for (const a of actors){
+    if (a.interior || !a.tree || a.brain === 'hostile' || a.hp <= 0) continue;
+    const w = treeWork(a.tree);
+    if (!w || !(w.offer || w.close)) continue;
+    add(a.name, a.x, a.y, w.close ? 'close' : 'offer');
+  }
+  for (const g of questGiverRoster()){
+    const w = treeWork(g.tree);
+    if (!w || !(w.offer || w.close)) continue;
+    add(g.n, g.x, g.y, w.close ? 'close' : 'offer');
+  }
+  /* And the people the books say are waiting. A job that closes away from
+     whoever handed it out leaves an entry in `owed` - a fee, or a zero that
+     means "report back" - and none of that is in anybody's dialogue tree,
+     because payOwed settles it the moment their card opens rather than
+     through an option you pick. See payQuest. */
+  const owed = player.qvar.owed || {}, giver = player.qvar.giver || {},
+        gAt = player.qvar.giverAt || {};
+  for (const id in owed){
+    const who = giver[id];
+    const a = who && actors.find(x => x.name === who && !x.interior && x.hp > 0);
+    const p = a || gAt[id];
+    if (p) add(who, p.x, p.y, 'close');
+  }
+  _qgList = out; _qgAt = performance.now();
+  return out;
+}
+/* What the two marks are drawn as, in one place, so the chart, the corner map
+   and the key can never disagree about them. */
+const QG_SYM = { offer: ['!', H_GRN], close: ['?', H_GRN] };
 let qAcc = 0, quipT = 30;
 function quipTick(){                            // the street has opinions
   quipT -= 0.5;
@@ -22354,6 +22568,16 @@ function mapMarks(m){
   const qt = questTarget();
   if (qt) out.push({ n: qt.name || 'OBJECTIVE', x: qt.x, y: qt.y, k: 'quest' });
   if (waypoint) out.push({ n: 'WAYPOINT', x: waypoint.x, y: waypoint.y, k: 'pin' });
+  /* Whoever is holding work goes on the cycle button as well as the chart -
+     a mark you can see but cannot step to is a mark you have to hunt for by
+     dragging, and these are the ones you most want walked to. Not the one
+     the objective is ALREADY pointing at, though: the errand you are tracking
+     is usually a person, and two consecutive presses landing on the same
+     doorstep under two names is not stepping through anything. */
+  for (const g of questGivers()){
+    if (qt && (qt.x | 0) === (g.x | 0) && (qt.y | 0) === (g.y | 0)) continue;
+    out.push({ n: g.n, x: g.x, y: g.y, k: g.k === 'close' ? 'waiting' : 'work' });
+  }
   for (const l of landmarks) out.push({ n: l.name, x: l.x, y: l.y, k: 'landmark' });
   for (const d of m.dlbl) out.push({ n: d.name, x: d.x, y: d.y, k: 'district' });
   for (const h in HOMES){
@@ -22567,7 +22791,12 @@ function doorTag(bldId){
   }
   const u = buildingUse(b);
   if (u && USES[u] && USES[u].trade) return TRADE_TAG[USES[u].trade] || null;
-  return u && !USES[u].kind ? ['?', H_DIM] : null;   // a door onto nothing yet
+  /* A door onto nothing yet. This used to be a question mark, which is now
+     the mark for somebody waiting to hear from you - and there are a dozen
+     unbuilt doors on any close screen, so the one that MEANT something was
+     lost in them. A sill reads as an empty threshold and is quieter, which
+     is what an undocumented placeholder should have been all along. */
+  return u && !USES[u].kind ? ['_', H_DIM] : null;
 }
 /* ---- one lattice, and a ladder that reaches --------------------------------
    One map sample used to be one character cell, which meant the chart got
@@ -22674,11 +22903,19 @@ const MAP_KEY = [D_DOWN, D_STRIP, D_RED, D_RES, D_IND, D_SUB, D_RURAL];
    whole chart is fifty cells across, which is not a sentence, so it falls
    back to short tags and then to the bare marks. Anything that does not fit
    is worse than nothing - it lands on top of the footer. */
-function mapKeyParts(cols, street){
+function mapKeyParts(cols, street, work){
   const wide = [], tags = [], bare = [];
   const add = (g, col, name, tag) => {
     wide.push([g + ' ' + name, col]); tags.push([g + tag, col]); bare.push([g, col]);
   };
+  /* The people go FIRST, because the key is cut from the right when the grid
+     is narrow and the two marks that move are worth more than the two that
+     name a colour. Named only while somebody is actually holding work, so the
+     key never explains a glyph that is not on the paper. */
+  if (work){
+    add('!', QG_SYM.offer[1], 'has work', 'job');
+    add('?', QG_SYM.close[1], 'waiting',  'due');
+  }
   if (street){                              // only what you can actually see:
     add('#', H_GRY, 'block',    'blk');     // the sidewalks and the open ground
     add('.', H_DIM, 'street',   'st');      // are drawn to recede, and naming
@@ -22831,6 +23068,14 @@ function drawMapMode(m){
   const qt = questTarget();
   const qx = qt ? sx(qt.x) : 0, qy = qt ? sy(qt.y) : 0;
   if (qt) pinClaim(qx, qy);
+  /* Everybody holding work. They claim their cell alongside the landmarks -
+     before any word is laid down - so a district name can never be printed
+     across the one mark on this chart that is about a person. */
+  const givers = questGivers();
+  for (const g of givers){
+    const x = sx(g.x), y = sy(g.y);
+    if (onChart(x, y)) pinClaim(x, y);
+  }
   /* Landmarks are on show at EVERY zoom. They were gated at eight tiles to a
      sample, which is exactly backwards: the further out you pull the less
      else there is to steer by, and the moment the chart stops showing
@@ -22845,6 +23090,22 @@ function drawMapMode(m){
   if (qt && qt.name && onChart(qx, qy) && qx + 2 + tw(qt.name.length) < cols - 1 &&
       free(qx + 2, qy, tw(qt.name.length)))
     word(qx + 2, qy, qt.name, H_YEL);
+  /* And who each of those marks IS, which is the whole value of them: a bare
+     exclamation mark on a corner is a rumour, ROOK on a corner is a decision.
+     Nearest the cursor first, ahead of the landmarks, because a person with
+     a job for you outranks a building with a name - and there are rarely
+     more than a handful of them to fit. */
+  {
+    const near = givers.slice().sort((a, b) =>
+      Math.hypot(a.x - m.cx, a.y - m.cy) - Math.hypot(b.x - m.cx, b.y - m.cy));
+    for (const g of near){
+      const x = sx(g.x), y = sy(g.y);
+      if (!onChart(x, y)) continue;
+      const col = QG_SYM[g.k][1], w = tw(g.n.length);
+      if (x + 2 + w < cols - 1 && free(x + 2, y, w)) word(x + 2, y, g.n, col);
+      else if (x - 2 - w > 0 && free(x - 1 - w, y, w)) word(x - 1 - w, y, g.n, col);
+    }
+  }
   /* Landmark names, at every zoom, nearest the cursor first. The name is the
      whole value of a landmark on a chart - a yellow star with no word on it
      is somewhere, not a place - so they are laid down in the order you are
@@ -22917,6 +23178,19 @@ function drawMapMode(m){
       if (onChart(x, y)) pinDraw(x, y, l.sym || '*', l.col !== undefined ? l.col : H_YEL);
     }
   }
+  /* ---- and the people ---------------------------------------------------
+     After the landmarks, because THE FIXER is both and the half of him that
+     changes is the half worth drawing: an ampersand says where his office is,
+     a question mark says he is upstairs waiting for you. Before the objective
+     below, so the one job you are actually tracking still wins its own tile.
+     `!` is a job you have not been offered yet, `?` one you are carrying
+     that this person can close. */
+  for (const g of givers){
+    const x = sx(g.x), y = sy(g.y);
+    if (!onChart(x, y)) continue;
+    const sym = QG_SYM[g.k];
+    pinDraw(x, y, sym[0], sym[1]);
+  }
 
   // ---- the crosshair, the waypoint, you --------------------------------
   // the crosshair goes through the same lattice as everything else, so it sits
@@ -22958,18 +23232,36 @@ function drawMapMode(m){
   };
   // whichever of the two charts you are looking at is the one explained
   if (z <= 2){
-    let leg = 'T tools  A arms  D disp  J gold  C threads  M market  ' +
-              'B bodega  G goods  $ casino  X parlor  W condemned  H home  & fixer';
-    if (leg.length > bc - 2){              // cut on a gap, never through a word
-      leg = leg.slice(0, bc - 2);
-      leg = leg.slice(0, Math.max(0, leg.lastIndexOf('  ')));
+    /* The trades, in one dim run - and in front of them, in their own colour,
+       the two marks that stand for a PERSON. They go first because this line
+       is cut from the right when the grid is narrow, and somebody holding
+       work outlives a bodega. Each entry is now its own word, so the cut
+       still lands in a gap rather than through a name. */
+    const parts = [];
+    if (givers.length)
+      parts.push(['! has work', QG_SYM.offer[1]], ['? waiting', QG_SYM.close[1]]);
+    for (const t of ('T tools  A arms  D disp  J gold  C threads  M market  ' +
+                     'B bodega  G goods  $ casino  X parlor  W condemned  ' +
+                     'H home  & fixer').split('  '))
+      parts.push([t, H_DIM]);
+    let w = -2;
+    const fit = [];
+    for (const t of parts){
+      if (w + 2 + t[0].length > bc - 2) break;
+      w += 2 + t[0].length; fit.push(t);
     }
-    mstr(Math.max(1, (bc - leg.length) >> 1), br - 2, leg, H_DIM);
+    /* The gap after each word is written as part of it. A string clears the
+       cells its spaces land on; the space BETWEEN two separately drawn
+       strings is never written to at all, and the key row is low enough to
+       be inside the chart - so a door mark under it came up through the gap
+       and read as part of the sentence. */
+    let x = Math.max(1, (bc - w) >> 1);
+    for (const [txt, col] of fit){ mstr(x, br - 2, txt + '  ', col); x += txt.length + 2; }
   } else {
-    const [parts, gap] = mapKeyParts(bc, streets);
+    const [parts, gap] = mapKeyParts(bc, streets, givers.length > 0);
     let x = Math.max(1, (bc - parts.reduce((a, t) => a + t[0].length + gap, -gap)) >> 1);
     for (const [txt, col] of parts){       // each named in the colour it is drawn in
-      mstr(x, br - 2, txt, col);
+      mstr(x, br - 2, txt + (gap > 1 ? '  ' : ' '), col);
       x += txt.length + gap;
     }
   }
@@ -33178,6 +33470,17 @@ function drawMinimap(x0, y0){
     const t = doorTag(d.b);
     if (t) plot(d.x, d.y, t[0], t[1]);
   }
+  /* Whoever is holding work, over the top of the violet '@' the actor pass
+     already put there - the whole point of the mark is that it separates the
+     one person on this street with a job for you from the four without one.
+     City-space, so the same rule as the quest pin below applies: while you
+     are indoors this window is the ROOM and these coordinates are not on it. */
+  if (!inside)
+    for (const g of questGivers()){
+      if (Math.abs(g.x - cam.x) >= hw || Math.abs(g.y - cam.y) >= hh * 2) continue;
+      const sym = QG_SYM[g.k];
+      plot(g.x, g.y, sym[0], sym[1]);
+    }
   if (heli){                                    // the machine and its light
     const pulse2 = ((Date.now() / 220) | 0) & 1;
     plot(heli.x, heli.y, pulse2 ? 'H' : '+', H_RED);
