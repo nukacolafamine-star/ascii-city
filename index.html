@@ -12977,15 +12977,18 @@ for (const k in WEAPON_VOX_RAW){
                     tint: e.tint !== undefined ? C[e.tint] : null,
                     scopeAt: e.scopeAt || null };
 }
-/* The scope bore gets a LINING: every wall cell facing the drilled tube
+/* The scope bore gets a LINING: the wall ring facing the drilled tube
    goes near-black, because a hollow lit the same grey as its own end caps
-   reads as a solid - the darkness inside is what says "tube" from every
-   angle the hold ever shows it at. */
+   reads as a solid - the darkness inside is what says "tube" looking into
+   either mouth. ONLY the first ring: this used to reach half a wall
+   further, past the tube's outer shell, and a scope whose outside is
+   painted the same near-black as its bore is not a hollow, it is a void
+   shaped like a sausage riding the receiver. */
 for (const k in WEAPON_VOX){
   const E = WEAPON_VOX[k], sc = E.scopeAt;
   if (!sc) continue;
   const uc = sc.u * E.gw - 0.5, zc = (1 - sc.w) * E.gh - 0.5;
-  const radC = sc.rad * E.gh + 1.35;
+  const radC = sc.rad * E.gh + 0.5;
   const v0 = Math.max(0, Math.floor(sc.v0 * E.gd) - 1);
   const v1 = Math.min(E.gd - 1, Math.ceil(sc.v1 * E.gd));
   for (let z = 0; z < E.gh; z++)
@@ -13017,37 +13020,11 @@ for (const k in WEAPON_VOX){
         break outer;
       }
 }
-/* Every gun also carries a half-lattice copy of itself, majority-sampled.
-   The scope pass renders on the CPU (the glass blends the CPU buffers by
-   hand), and marching a full-lattice rifle over half the screen at three
-   millimetre steps is what ten frames a second feels like - the eyepiece
-   shadow covers the difference anyway. */
-for (const k in WEAPON_VOX){
-  const E = WEAPON_VOX[k];
-  const gw = Math.max(3, E.gw >> 1), gd = Math.max(3, E.gd >> 1),
-        gh = Math.max(3, E.gh >> 1);
-  const v = new Uint8Array(gw * gd * gh);
-  for (let z = 0; z < gh; z++)
-    for (let y = 0; y < gd; y++)
-      for (let x = 0; x < gw; x++){
-        const cnt = {};
-        let best = 0, bn = 0, hits = 0;
-        for (let dz = 0; dz < 2; dz++)
-          for (let dy2 = 0; dy2 < 2; dy2++)
-            for (let dx = 0; dx < 2; dx++){
-              const sz = Math.min(E.gh - 1, z * 2 + dz);
-              const sy2 = Math.min(E.gd - 1, y * 2 + dy2);
-              const sx = Math.min(E.gw - 1, x * 2 + dx);
-              const r = E.vox[(sz * E.gd + sy2) * E.gw + sx];
-              if (!r) continue;
-              hits++;
-              const n = (cnt[r] = (cnt[r] || 0) + 1);
-              if (n > bn){ bn = n; best = r; }
-            }
-        if (hits >= 3) v[(z * gd + y) * gw + x] = best;
-      }
-  E.half = { gw, gd, gh, vox: v };
-}
+/* The guns used to carry a half-lattice copy of themselves for the scoped
+   pass, because the scoped rifle REBAKED - per pitch quantum, on the CPU -
+   and only a coarse grid could afford it. The rebake is gone (the draw
+   tilts the one static volume through _vwXf), so the glass now gets the
+   full lattice and every cell of detail in it. */
 /* the size a gun actually draws at: length from the stats table it has
    always had, width and height from the MODEL's own proportions - forcing
    a real revolver into the old box's aspect is exactly the squash artifact
@@ -13813,6 +13790,22 @@ function fpRigSample(dt){
   else if (!skating) fpGuard(RP, wt);
   // riding empty-handed, the arms are out at your sides for balance -
   // which is to say out of frame; the deck is the whole viewmodel
+  /* The sway is a DRAW-TIME translation of the whole kit - it never touches
+     the bake (see fpRigVol), so a walking rig is the same volume as a still
+     one, slid; sub-voxel offsets rebaked per frame re-rounded every blob
+     into a new shape and read as the hands boiling. Scoped, the hip sway
+     hands over to the SCOPE's own sway: the tube trails the aim
+     (scopeSwayR/C, in rows and columns), and converting it to metres at
+     the bore's depth here puts the rifle, the hands, the drawn ring and
+     the zoom circle all on the same trailing point - the scope is bolted
+     to the GUN, and your eye is the thing doing the chasing. */
+  if (RP.gun && RP.gun.st){
+    const st2 = RP.gun.st;
+    const swU = scopeSwayC * scopeBoreD * planeLen * 2 / R.cols;
+    const swH = -scopeSwayR * scopeBoreD / projRows;
+    RP.du = RP.du * (1 - st2) + swU * st2;
+    RP.dh = RP.dh * (1 - st2) + swH * st2;
+  }
   /* the hands ride the same pitch the gun does, about the same pivot - or
      a raised rifle would swing away from the fists that hold it */
   if (RP.gun && WEAPON_VOX[RP.gun.id]){
@@ -14046,18 +14039,22 @@ function fpRigVol(aw, vd, ah){
   const hasCoat = ['puffer', 'vest', 'workjacket', 'tracksuit', 'hoodie']
                     .some(id => worn.indexOf(id) >= 0);
   const sleeveR = hasCoat ? R2.K : R2.S;
-  const du = RP.du || 0, dh = RP.dh || 0;
   /* metric -> voxel. u is centred on the eye line, f runs away from the
      camera (the box's LOW y, like every weapon's muzzle), h hangs from the
-     eye line at RIG_TOP under the box top. */
+     eye line at RIG_TOP under the box top.
+     NEITHER the sway NOR the aim glue is baked any more: the walk bob and
+     turn lag translate the drawn solid (drawFpRig), and the rise-with-
+     forward-distance glue is a draw-time shear (_vwXf on the same call) -
+     so this volume depends on the POSE alone, and an idle rig walking down
+     a street while pitching the aim is one bake, not sixty a second. */
   const vx = RIG_W / aw, vy = RIG_D / vd, vz = RIG_H / ah;
   const set = (x, y, z, r) => {
     if (x < 0 || y < 0 || z < 0 || x >= aw || y >= vd || z >= ah) return;
     v[(z * vd + y) * aw + x] = r;
   };
-  const X = u => Math.round((u + du) / vx + (aw - 1) / 2);
+  const X = u => Math.round(u / vx + (aw - 1) / 2);
   const Y = f => Math.round(vd - 1 - (f - 0.05) / vy);      // f 0.05 at the near face
-  const Z = h => Math.round((RIG_TOP - (h + dh)) / vz);
+  const Z = h => Math.round((RIG_TOP - h) / vz);
   const blob = (u, f, h, r, role) => {
     const x0 = X(u), y0 = Y(f), z0 = Z(h);
     const rx = Math.max(1, Math.round(r / vx)), ry = Math.max(1, Math.round(r / vy));
@@ -14117,6 +14114,7 @@ function rigWeapon(v, aw, vd, ah, RP, X, Y, Z, set){
   const len = (GM.len || 0.3) * sc;
   const cp = Math.cos(G.pitch || 0), sp = Math.sin(G.pitch || 0);
   const cy = Math.cos(G.dyaw || 0), sy = Math.sin(G.dyaw || 0);
+  // the ride-the-aim glue is the rig solid's draw-time shear now
   if (E){
     /* a baked model: stamp every grid cell through the same transform the
        boxes take. The grid is far finer than the rig, so each rig voxel is
@@ -14177,7 +14175,8 @@ function rigWeapon(v, aw, vd, ah, RP, X, Y, Z, set){
   }
   if (RP.flash > 0){
     // light leaving the bore, and a few sparks that live one frame each
-    const mf = G.f + len * cp * cy, mh = G.h + len * sp, mu = G.u + len * cp * sy;
+    const mf = G.f + len * cp * cy, mu = G.u + len * cp * sy;
+    const mh = G.h + len * sp;
     const r = 0.030 + 0.045 * RP.flash;
     for (let i = 0; i < 26; i++){
       const a = Math.random() * Math.PI * 2, rr = Math.random() * r * 2.2;
@@ -14195,8 +14194,10 @@ function rigGunFlash(RP, X, Y, Z, set){
   const GM = (WEAPON_HOLD[G.id] && WEAPON_HOLD[G.id].gun) || { len: 0.3 };
   const len = GM.len * FP_GUN_SCALE * (G.scale || 1);
   const cy = Math.cos(G.dyaw || 0), sy = Math.sin(G.dyaw || 0);
-  // the bore follows the pitched gun: the muzzle end swings about the grip
-  const th = (camPitchStep() + (G.rest || 0)) * PITCH_STEP;
+  /* the bore follows the pitched gun: the muzzle end swings about the grip.
+     The SAME continuous angle drawFpGun tilts by, or the flash leaves the
+     wrong spot; the aim glue is the rig's own draw-time shear now */
+  const th = fpGunViewTilt(G);
   const mArm = len * 0.86;
   const mf = G.f + len * 0.14 + mArm * Math.cos(th) * cy;
   const mu = G.u + len * sy;
@@ -14217,86 +14218,105 @@ function rigGunFlash(RP, X, Y, Z, set){
   is a real voxel on screen, which is where the small detail lives, and the
   drilled scope keeps its round bore instead of a resampled slot. */
 /*--- the gun pitches with the view -----------------------------------------
-  The renderer's vertical look is a shear: no solid can tilt, so a camera
-  pitched thirty degrees showed the same profile of the same level gun. The
-  held weapon now bakes ROTATED variants of its own grid - eight-degree
-  steps, built lazily, cached like everything else - and the draw pivots
-  them about the grip (or about the eyepiece while scoped, so the glass
-  never leaves your aim): look up and the muzzle comes up with you,
-  foreshortening as it goes. ---*/
+  The renderer's vertical look is a shear: no solid used to be able to
+  tilt, so the gun baked rotated variants of its own grid - eight-degree
+  steps at the hip, a per-degree rebake under the glass - and every variant
+  swap or rebake re-rolled the whole nearest-neighbour resample at once:
+  the rifle SNAPPED at the hip and MORPHED through the scope. A solid can
+  tilt now (_vwXf, the renderer's per-solid sampling transform), so the one
+  static volume answers the exact view angle every frame, pivoting about
+  the grip (or the eyepiece while scoped, so the glass never leaves your
+  aim): look up and the muzzle comes up with you, foreshortening as it
+  goes, with never a rebake. ---*/
+/*--- ...and it RIDES the aim, not the horizon -------------------------------
+  Rotating the art was half the job. The whole first-person kit - gun,
+  hands, flash, glass - used to hang at EYE HEIGHT, and under a shear a
+  level thing projects to the horizon row, which slides cam.pitch rows away
+  from the centre of the screen the moment you look up or down. The aim ray
+  itself always lands dead centre (slope pitch/projRows through row
+  rows/2), so the gun visibly walked away from its own crosshair, and the
+  scope ring with it. The cure is one slope: lift every first-person part
+  by its forward distance times fpAimSlope() and its screen position stops
+  depending on pitch at all - the viewmodel is glued to the aim the way
+  every FPS glues it to the camera, and the muzzle points at the reticle.
+  Combat never cared (the hit test is flat); this is the picture agreeing
+  with it. ---*/
 const PITCH_STEP = 8 * Math.PI / 180, PITCH_MAX = 4;    // +-32 degrees
 function camPitchStep(){
   return clamp(Math.round(Math.atan2(cam.pitch, projRows) / PITCH_STEP),
                -PITCH_MAX, PITCH_MAX);
 }
+// the centre ray's rise per metre forward - THE aim, as the shear sees it
+function fpAimSlope(){ return cam.pitch / projRows; }
+/* The gun's pitch, continuous and clamped to the same reach the old baked
+   steps had. `rest` is the low-ready droop, still spoken in steps. This is
+   the ONE angle the whole first-person kit answers - the tilted solid, the
+   muzzle flash, the hands' bucketed grip - so it lives in one place. */
+function fpGunViewTilt(G){
+  const mA = PITCH_MAX * PITCH_STEP;
+  return clamp(Math.atan2(cam.pitch, projRows) + ((G && G.rest) || 0) * PITCH_STEP,
+               -mA, mA);
+}
+/* ONE static art per weapon: the import grid copied straight across, cached
+   and atlased once like any prop in the city. The pitched variants died
+   with the bake - the draw tilts this volume through the renderer's (v,w)
+   sampling transform instead, at the exact view angle, every frame, for
+   free. One resample instead of two is also where the boil went: a rotated
+   REBAKE committed every cell to a new nearest-neighbour roll and then got
+   sampled again, and each quantum crossing flipped hundreds of cells at
+   once; a bent ray through the original bytes flips only the cells a real
+   rotation flips. */
 const _fpGunArt = {};
-function fpGunArt(id, lo, ps){
-  const key = id + (lo ? ':lo' : '') + ':' + ps;
-  let a = _fpGunArt[key];
+function fpGunArt(id){
+  let a = _fpGunArt[id];
   if (a) return a;
-  const E = lo ? WEAPON_VOX[id].half : WEAPON_VOX[id];
-  if (!ps){
-    a = { w: E.gw, h: E.gh, gdV: E.gd, ghV: E.gh,
-          data: new Uint8Array(E.gw * E.gh),
-          vol: (aw, vd, ah) => {
-            const v = new Uint8Array(aw * vd * ah);
-            for (let iz = 0; iz < E.gh; iz++)
-              for (let iv = 0; iv < E.gd; iv++)
-                for (let iu = 0; iu < E.gw; iu++){
-                  const r = E.vox[(iz * E.gd + iv) * E.gw + iu];
-                  // low art-y is the front: the muzzle (iv high) lands there
-                  if (r) v[(iz * vd + (vd - 1 - iv)) * aw + iu] = r;
-                }
-            return v;
-          } };
-    return (_fpGunArt[key] = a);
-  }
-  const th = ps * PITCH_STEP, c = Math.cos(th), s = Math.sin(th);
-  const gdR = Math.ceil(E.gd * Math.abs(c) + E.gh * Math.abs(s));
-  const ghR = Math.ceil(E.gd * Math.abs(s) + E.gh * Math.abs(c));
-  a = { w: E.gw, h: ghR, gdV: gdR, ghV: ghR,
-        data: new Uint8Array(E.gw * ghR),
+  const E = WEAPON_VOX[id];
+  a = { w: E.gw, h: E.gh, gdV: E.gd, ghV: E.gh,
+        data: new Uint8Array(E.gw * E.gh),
         vol: (aw, vd, ah) => {
           const v = new Uint8Array(aw * vd * ah);
-          for (let iz = 0; iz < ghR; iz++){
-            const dw = ghR * 0.5 - (iz + 0.5);          // up, in cells
-            for (let iv = 0; iv < gdR; iv++){
-              const dv = iv + 0.5 - gdR * 0.5;          // toward the muzzle
-              // out of the rotated frame, back into the gun's own
-              const sv = dv * c + dw * s + E.gd * 0.5;
-              const sw = -dv * s + dw * c + E.gh * 0.5;
-              const jv = sv | 0, jz = E.gh - 1 - (sw | 0);
-              if (jv < 0 || jv >= E.gd || jz < 0 || jz >= E.gh) continue;
+          for (let iz = 0; iz < E.gh; iz++)
+            for (let iv = 0; iv < E.gd; iv++)
               for (let iu = 0; iu < E.gw; iu++){
-                const r = E.vox[(jz * E.gd + jv) * E.gw + iu];
+                const r = E.vox[(iz * E.gd + iv) * E.gw + iu];
+                // low art-y is the front: the muzzle (iv high) lands there
                 if (r) v[(iz * vd + (vd - 1 - iv)) * aw + iu] = r;
               }
-            }
-          }
           return v;
         } };
-  return (_fpGunArt[key] = a);
+  return (_fpGunArt[id] = a);
 }
 function drawFpGun(){
   const G = rigRP.gun;
-  const E0 = WEAPON_VOX[G.id];
-  /* the scope pass runs on the CPU, so the rifle against your cheek drops
-     to its half lattice while the glass is up - the eyepiece shadow covers
-     the difference, and the frame rate keeps its footing */
-  const lo = scopeT > 0.35;
-  const E = lo ? E0.half : E0;
+  const E = WEAPON_VOX[G.id];
   const GM = (WEAPON_HOLD[G.id] && WEAPON_HOLD[G.id].gun) || { len: 0.3 };
   const lenS = GM.len * FP_GUN_SCALE * (G.scale || 1);
-  const widS = Math.max(0.05, lenS * E0.wFrac), hgtS = lenS * E0.hFrac;
-  const ps = clamp(camPitchStep() + (G.rest || 0), -PITCH_MAX, PITCH_MAX);
-  const A = fpGunArt(G.id, lo, ps);
-  const th = ps * PITCH_STEP, c = Math.cos(th), s = Math.sin(th);
+  const widS = Math.max(0.02, lenS * E.wFrac), hgtS = lenS * E.hFrac;
+  /* the gun answers the view EXACTLY, hip or glass: one static full-lattice
+     volume, tilted through the renderer's (v,w) sampling transform at the
+     continuous view angle. No steps to snap between, no per-degree rebake
+     to re-roll the resample - the cells that change on a mouse tick are
+     the cells a real rotating object changes, and the scoped rifle keeps
+     its full detail because there is no half-lattice fallback to pay for
+     rebakes that no longer happen. */
+  const A = fpGunArt(G.id);
+  const th = fpGunViewTilt(G);
+  const c = Math.cos(th), s = Math.sin(th);
   const cell = lenS / E.gd;                     // cells are cubic
-  const D2 = A.gdV * cell, H2 = A.ghV * cell;
+  const H2 = A.ghV * cell;
+  /* The depth scale is the art's own gdV/w, NOT a ratio of world sizes.
+     voxelize turns it back into a cell count with round(aw * depthScale),
+     and vol() indexes rows by exactly gdV - so the count must land on gdV
+     to the cell. The old world-size ratio passed through a width clamp
+     that rounded the pistol's 96 rows down to 85, and the eleven muzzle
+     rows past the end wrapped into the layer below: the baked model
+     shipped mangled. The grid ratio is also constant per art, so the
+     scope-up's animated scale caches ONE volume, full stop. */
+  const dScl = A.gdV / A.w;
   /* the pivot: the grip at rest, sliding to the eyepiece as the scope comes
      up - the one point of the gun that must NOT move when the view pitches,
      because it is the point nailed to your aim */
-  const sc2 = E0.scopeAt, st2 = G.st || 0;
+  const sc2 = E.scopeAt, st2 = G.st || 0;
   const vA = sc2 ? 0.14 + (sc2.v0 - 0.14) * st2 : 0.14;
   const wA = sc2 ? 0.5 + (sc2.w - 0.5) * st2 : 0.5;
   const dv0 = (vA - 0.5) * lenS, dw0 = (wA - 0.5) * hgtS;
@@ -14305,14 +14325,26 @@ function drawFpGun(){
   const fx = Math.cos(cam.ang), fy = Math.sin(cam.ang);
   const rx = Math.cos(cam.ang + Math.PI / 2), ry = Math.sin(cam.ang + Math.PI / 2);
   const sx = Math.cos(swp), sy2 = Math.sin(swp);
-  // the anchor point's place today, then the rotated volume hung off it
-  const bx = cam.x + fx * G.f + rx * G.u, by = cam.y + fy * G.f + ry * G.u;
+  // the same whole-kit sway the rig solid takes, so the hands and the gun
+  // slide as one piece instead of the fists skating on the stock
+  const du = rigRP.du || 0, dh = rigRP.dh || 0;
+  // the anchor point's place today, then the tilted volume hung off it
+  const bx = cam.x + fx * G.f + rx * (G.u + du),
+        by = cam.y + fy * G.f + ry * (G.u + du);
   const aF = vA * lenS;
   const ox = bx + sx * (aF - dvR), oy = by + sy2 * (aF - dvR);
-  const anchorH = G.h + (wA - 0.5) * hgtS;
+  /* the aim glue: the anchor rises with its forward distance so the gun's
+     screen position stops depending on pitch - grip or eyepiece, it sits
+     where the reticle sits, and the tilted art extends along the aim */
+  const anchorH = G.h + dh + (wA - 0.5) * hgtS
+                + (G.f + aF * Math.cos(G.dyaw || 0)) * fpAimSlope();
+  /* the tilt itself: same rotation the dead baked variants applied, now a
+     bent ray through the one true volume */
+  _vwXf = { A: c, B: -s, C: s, D: c, F: 0 };
   drawModel(ox, oy, cam.z + anchorH - dwR - H2 * 0.5, widS, H2, A,
             fpGunSlots(G.id).base, fpGunSlots(G.id).dens, 0,
-            swp + Math.PI / 2, D2 / widS, 0);
+            swp + Math.PI / 2, dScl, 0);
+  _vwXf = null;
 }
 /* what is being taken, by class, in the item's own colour */
 function rigItem(RP, blob, beam, set, X, Y, Z){
@@ -14448,7 +14480,12 @@ function rigSig(){
   if (!rigRP) return 'x';
   if (rigRP.flash > 0 || rigRP.item) return 'live' + poseFrame;   // sparks and steam animate
   const q = v => Math.round((v || 0) * 200);
-  const p = [q(rigRP.du), q(rigRP.dh)];
+  /* the POSE and nothing else: the sway and the aim glue both left the
+     bake for the draw, so walking, turning and pitching leave this string
+     - and therefore the volume - untouched. The hands' own bucketed grip
+     rotation still lands here through their positions, which is the point:
+     a rebake happens when the hands actually move. */
+  const p = [];
   for (const k of ['L', 'R']){
     const h = rigRP[k];
     p.push(h ? q(h.u) + ',' + q(h.f) + ',' + q(h.h) + ',' + (h.bare ? 1 : 0) : 'x');
@@ -14497,10 +14534,21 @@ function drawFpRig(){
   const sl = rigSlots(icol);
   const fx = Math.cos(cam.ang), fy = Math.sin(cam.ang);
   _noRef = 1;                    // your own arms have no business in a puddle
-  if (rigRP && (rigRP.L || rigRP.R || rigRP.gun || rigRP.item))
-    drawModel(cam.x + fx * RIG_FWD, cam.y + fy * RIG_FWD,
-              cam.z + RIG_TOP - RIG_H, RIG_W, RIG_H, RIG_ART,
+  if (rigRP && (rigRP.L || rigRP.R || rigRP.gun || rigRP.item)){
+    /* the sway slides the SOLID and the aim glue shears the RAYS - the
+       volume underneath is byte-identical through all of it, which is what
+       finally keeps a walking, pitching fist the same fist */
+    const rx2 = Math.cos(cam.ang + Math.PI / 2),
+          ry2 = Math.sin(cam.ang + Math.PI / 2);
+    const du = rigRP.du || 0, dh = rigRP.dh || 0;
+    const aimS = fpAimSlope();
+    _vwXf = { A: 1, B: 0, C: aimS, D: 1, F: -RIG_FWD * aimS };
+    drawModel(cam.x + fx * RIG_FWD + rx2 * du,
+              cam.y + fy * RIG_FWD + ry2 * du,
+              cam.z + RIG_TOP - RIG_H + dh, RIG_W, RIG_H, RIG_ART,
               sl.base, sl.dens, 0, cam.ang + Math.PI / 2, RIG_D / RIG_W, 0);
+    _vwXf = null;
+  }
   // the baked gun rides beside the rig at its own full lattice
   if (rigRP && rigRP.gun && WEAPON_VOX[rigRP.gun.id]) drawFpGun();
   if (skating){
@@ -17552,6 +17600,34 @@ function scopeUp(){
    back out the same way, so letting go is a zoom-out, not a jump cut. */
 let scopeT = 0, scopeBoreR = 0, scopeBoreD = 0.19;
 let scopeResSave = null, scopeManSave = false;
+/*--- the scope is bolted to the RIFLE, not to your eye ----------------------
+  With the eyepiece nailed to the screen centre the glass never moved, and
+  the rifle swung about it like the tube was screwed into your skull. What
+  a scoped rifle actually does is TRAIL: snap your aim up and the gun needs
+  a beat to follow, walk and the whole assembly bobs, and between breaths
+  it drifts - your eye does the chasing. scopeSwayR/C is where the tube
+  actually is, in rows and columns off the aim; a lag spring eats the aim's
+  own velocity (recoil lands here too, so a shot through the glass dips it),
+  and the breathe and the walk ride on top. The gun solid, the hands, the
+  drawn ring and the zoom-reveal circle all read the same two numbers, so
+  the glass, the drilled bore and the magnified picture move as one thing. */
+let scopeSwayR = 0, scopeSwayC = 0, _scLagR = 0, _scLagC = 0;
+let _scSwP = 0, _scSwA = 0;
+function scopeSwayTick(dt){
+  const dp = cam.pitch - _scSwP; _scSwP = cam.pitch;
+  let dA = cam.ang - _scSwA; _scSwA = cam.ang;
+  while (dA > Math.PI) dA -= Math.PI * 2;
+  while (dA < -Math.PI) dA += Math.PI * 2;
+  if (scopeT <= 0.02){ _scLagR = _scLagC = scopeSwayR = scopeSwayC = 0; return; }
+  const settle = Math.exp(-dt / 0.16);         // the catch-up, about a beat
+  _scLagR = clamp((_scLagR + dp * 0.55) * settle, -5, 5);
+  _scLagC = clamp((_scLagC - dA * (R.cols / CFG.FOV) * 0.45) * settle, -6, 6);
+  const mv = ME.moving ? 1 : 0;
+  scopeSwayR = _scLagR + Math.sin(worldTime * 1.6) * 0.5
+             + mv * Math.abs(Math.cos(cam.walkPhase)) * 1.0;
+  scopeSwayC = _scLagC + Math.cos(worldTime * 1.1) * 0.3
+             + mv * Math.sin(cam.walkPhase) * 0.9;
+}
 function scopeRamp(){ return easeIO(clamp((scopeT - 0.55) / 0.45, 0, 1)); }
 function scopeZoom(){
   const G = scopeGun();
@@ -17559,11 +17635,33 @@ function scopeZoom(){
   const r = scopeRamp();
   return r <= 0 ? 1 : 1 + (G.scope - 1) * r;
 }
-/* Where the tube sits. Centred on the aim point rather than on the screen,
-   so the dot is dead centre of the glass at any pitch - which is the whole
-   point of putting a ring round it. Cells are taller than they are wide, so
-   the vertical radius is squashed by the cell aspect or the circle comes out
-   an egg. */
+/* Whether the glass can be composed on the card this frame: the compose
+   shader magnifies the finished frame inside the bore's circle, so the
+   world renders ONCE and nothing is read back. Mirrors glComposeWorld's
+   own bail conditions (a CPU-lit frame sends compose to the CPU) - when
+   this says no, render() falls back to the old double-render CPU blend. */
+let _scopeCompose = null;
+/* The circle the viewmodel must NOT paint while compose carries the glass.
+   The magnifier samples the FINISHED naked frame - and looking down a real
+   drilled tube, the frame inside the eyepiece is mostly the tube's own dark
+   interior walls, which is what the glass would then magnify. The old zoom
+   pass never met this because it repainted the whole circle with a second
+   render. So while the composed glass is up, the rig and the gun skip every
+   cell inside it: the world stays visible through the circle, the magnifier
+   sees city instead of gunmetal, and the drawn ring covers the seam. Only
+   the first-person solids are cut - a car crossing the glass IS the picture. */
+let _scopeCut = null;
+function scopeOnCard(){
+  return !!(GL && GL.compOK && GPUC.on &&
+            ((GL.lightOK && GPUL.on) || !(LIGHTV.on || GIR.on || FOGV.on)));
+}
+/* Where the tube sits: dead centre, because that is where the aim IS. The
+   shear's centre ray is the aim ray at every pitch, and the rifle is glued
+   to it (fpAimSlope), so the drilled bore projects to rows/2 exactly. This
+   used to add cam.pitch - the HORIZON row, where the old level-held rifle
+   sat - and the glass slid away from the reticle whenever you pitched.
+   Cells are taller than they are wide, so the vertical radius is squashed
+   by the cell aspect or the circle comes out an egg. */
 function scopeGeom(){
   /* With a baked rifle up, the glass is not a screen fraction any more: it
      is the drilled bore of the voxel scope, projected - so the ring, the
@@ -17583,8 +17681,11 @@ function scopeGeom(){
     rad = Math.min(rad * 1.3,
                    scopeBoreR / scopeBoreD * R.cols / (2 * pl0) * 1.14);
   const r2 = scopeRamp();
-  return { cx: (R.cols - 1) / 2,
-           cy: R.rows / 2 + cam.pitch,
+  /* the ring rides the tube's sway, not the screen: the same rows and
+     columns the rifle solid trails by (see fpRigSample), so the glass, the
+     drilled bore and the magnified picture stay one rigid instrument */
+  return { cx: (R.cols - 1) / 2 + scopeSwayC * r2,
+           cy: R.rows / 2 + scopeSwayR * r2,
            rad: Math.max(3, rad * (0.35 + 0.65 * r2)) };
 }
 /* One ring of glyphs, deduped, so a circle drawn on a character grid does
@@ -21674,6 +21775,18 @@ const FACE_DIM = [1.0, 0.84, 1.14];             // side, front/back, top
    over the channel is drawn without one. */
 let _noRef = 0;
 let _refDbg = null, _refDbg2 = null;
+/* An optional (v,w) SAMPLING transform for the next solid drawn: the volume
+   stays the bytes it was baked as, and the rays are bent through it instead.
+   {A,B,C,D,F} maps a render-space point (v, w) - v along the solid's depth
+   axis, w its height over zb, about the pivot (v=0, w=hW/2) - to the source
+   point actually sampled: vs = A*v + B*(w-cw); ws = C*v + D*(w-cw) + cw + F.
+   A rotation here is how a held gun pitches CONTINUOUSLY with the view, and
+   a shear is how the whole first-person rig rides the aim - with no rebake,
+   because rebaking a volume at a sub-voxel-different pose every frame is
+   exactly the boil this exists to kill. Identity when null, and the null
+   path costs nothing. Set immediately before drawModel, cleared after, the
+   way _noRef is. */
+let _vwXf = null;
 function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const cols = R.cols, rows = R.rows;
   const relX = ox - cam.x, relY = oy - cam.y;
@@ -21687,8 +21800,37 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
   const dW = wW * depthScale;
   // the solid's true extent in its own frame
   const bu0 = -wW * 0.5 + wW * m.fx0, bu1 = -wW * 0.5 + wW * m.fx1;
-  const bv0 = -dW * 0.5 + dW * m.fy0, bv1 = -dW * 0.5 + dW * m.fy1;
-  const bz0 = hW * (1 - m.fz1), bz1 = hW * (1 - m.fz0);
+  let bv0 = -dW * 0.5 + dW * m.fy0, bv1 = -dW * 0.5 + dW * m.fy1;
+  let bz0 = hW * (1 - m.fz1), bz1 = hW * (1 - m.fz0);
+  /* a sampling transform moves the content: the box the rays are clipped to
+     has to follow it, or a muzzle pitched past the volume's own top face
+     would be sheared off. The content corners through the INVERSE map are
+     the render-space extent - which can stand outside [0,hW], and that is
+     fine: the slab is only a clip, the sampler answers air out there. */
+  const xf = _vwXf;
+  let xA = 1, xB = 0, xC = 0, xD = 1, xF = 0, xfOn = 0;
+  const cw = hW * 0.5;
+  if (xf){
+    xA = xf.A; xB = xf.B; xC = xf.C; xD = xf.D; xF = xf.F;
+    /* an identity transform IS no transform, decided from the coefficients
+       here and from the same coefficients in the shader's flag - so both
+       marchers take the exact same untransformed arithmetic for it, to the
+       ulp the parity counts live and die by */
+    xfOn = (xA !== 1 || xB !== 0 || xC !== 0 || xD !== 1 || xF !== 0) ? 1 : 0;
+  }
+  if (xfOn){
+    const det = xA * xD - xB * xC || 1e-9;
+    let v0 = 1e9, v1 = -1e9, w0 = 1e9, w1 = -1e9;
+    for (let k = 0; k < 4; k++){
+      const vs = (k & 1) ? bv1 : bv0;
+      const Ws = ((k & 2) ? bz1 : bz0) - cw - xF;
+      const rv = (xD * vs - xB * Ws) / det;
+      const rw = cw + (-xC * vs + xA * Ws) / det;
+      if (rv < v0) v0 = rv; if (rv > v1) v1 = rv;
+      if (rw < w0) w0 = rw; if (rw > w1) w1 = rw;
+    }
+    bv0 = v0; bv1 = v1; bz0 = w0; bz1 = w1;
+  }
   const rad = 0.5 * Math.max(bu1 - bu0, bv1 - bv0) +
               Math.max(Math.abs(bu0 + bu1), Math.abs(bv0 + bv1)) * 0.5;
   const tNear = Math.max(0.2, tC - rad);
@@ -21763,12 +21905,13 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
     const slot = lit ? null : (GS.n < GS.max ? spriteSlot(m) : null);
     if (!slot){
       GS.over++;
-      GS.defer.push([ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy, _noRef]);
+      GS.defer.push([ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy, _noRef, _vwXf]);
       return;
     }
     spriteCapture(m, slot, Ou, Ov, Oz, tCap, cy, sy, step, nMax,
                   bu0, bu1, bv0, bv1, bz0, bz1, lvl, dm,
-                  wW, dW, hW, c0, c1, r0, r1, tNear, tFar, zb, sb, sd, dyn);
+                  wW, dW, hW, c0, c1, r0, r1, tNear, tFar, zb, sb, sd, dyn,
+                  xA, xB, xC, xD, xF);
     return;
   }
   for (let x = c0; x <= c1; x++){
@@ -21791,6 +21934,12 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
     for (let r = r0; r <= r1; r++){
       const onScreen = r >= 0;
       const idx = onScreen ? r * cols + x : -1;
+      // the composed glass: the viewmodel keeps out of the circle entirely
+      if (onScreen && _noRef && _scopeCut){
+        const dqx = (x + 0.5 - _scopeCut.cx) / _scopeCut.rad;
+        const dqy = (r + 0.5 - _scopeCut.cy) / _scopeCut.ry;
+        if (dqx * dqx + dqy * dqy <= 1) continue;
+      }
       const k = (r - horizon) / projRows;       // the ray's fall per unit depth
       const Dz = -k;
       let t0 = cu0, t1 = cu1;                   // only the height slab is left
@@ -21805,10 +21954,17 @@ function drawModel(ox, oy, zb, wW, hW, art, sb, sd, dyn, yaw, depthScale, boxy){
       if (onScreen && dBuf[idx] < t0 - 0.02) continue;   // a wall already won
       const L = Math.hypot(rx, ry, k) || 1;
       const dt = step / L;
+      /* the bent ray: origin and direction through the sampling transform,
+         once per ray - the inner loop then costs what it always cost */
+      let OvS = Ov, DvS = Dv, OwS = Oz, DwS = Dz;
+      if (xfOn){
+        OvS = xA * Ov + xB * (Oz - cw);            DvS = xA * Dv + xB * Dz;
+        OwS = xC * Ov + xD * (Oz - cw) + cw + xF;  DwS = xC * Dv + xD * Dz;
+      }
       let hit = -1, hx = 0, hy = 0, hz = 0, face = 0, ht = 0;
       let px = -1, py = -1, pz = -1;
       for (let t = t0 + dt * 0.5, n = 0; t <= t1 && n < nMax; t += dt, n++){
-        const u = Ou + Du * t, v = Ov + Dv * t, w = Oz + Dz * t;
+        const u = Ou + Du * t, v = OvS + DvS * t, w = OwS + DwS * t;
         const ix = ((u + hu) / wW * aw) | 0;
         const iy = ((v + hv) / dW * vd) | 0;
         const iz = ((1 - w / hW) * ah) | 0;      // art row 0 is the top
@@ -22997,12 +23153,27 @@ uniform sampler2D uTex;      // the glyph atlas
 uniform sampler2D uLight;    // per-cell light from the light pass
 uniform float uLightOn;
 uniform vec2 uGrid, uCell, uOrigin, uRes, uAtlas;
+/* The scope's glass, done HERE rather than by rendering the world twice.
+   The old scoped frame drew the whole city again through a halved plane
+   and blended the two by hand on the CPU - which meant two synchronous
+   readbacks a frame, ~30ms each of pipeline stall, and a benched tail.
+   Magnifying the finished frame about the bore's centre is the same
+   picture for a 2x optic (the source disc sits wholly inside the drilled
+   hole, so it only ever sees world), the glyphs scale smoothly through
+   the atlas instead of blocking up, and the frame never leaves the card. */
+uniform vec4 uScope;         // cx, cy, radius in cols, radius in rows
+uniform float uScopeZ;       // magnification; 1 = no glass up
 float byteAt(sampler2D t, ivec2 c){ return floor(texelFetch(t, c, 0).r * 255.0 + 0.5); }
 void main(){
   // gl_FragCoord counts up from the bottom; the grid is laid out from the top
   vec2 sp = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
   vec2 cf = (sp - uOrigin) / uCell;
   if (cf.x < 0.0 || cf.y < 0.0 || cf.x >= uGrid.x || cf.y >= uGrid.y) discard;
+  if (uScopeZ > 1.001){
+    vec2 dc = cf - uScope.xy;
+    vec2 dn = dc / uScope.zw;
+    if (dot(dn, dn) <= 1.0) cf = uScope.xy + dc / uScopeZ;
+  }
   vec2 cw = floor(cf);
   ivec2 ci = ivec2(cw);
   float g = byteAt(uG, ci);
@@ -23758,7 +23929,8 @@ function glInit(){
     G.pComp = mkProg(VS_FULL, FS_COMPOSE);
     G.uC = {};
     for (const k of ['uG','uB','uLv','uPal','uTex','uLight','uLightOn',
-                     'uGrid','uCell','uOrigin','uRes','uAtlas','uEmis','uEGain','uAirK'])
+                     'uGrid','uCell','uOrigin','uRes','uAtlas','uEmis','uEGain','uAirK',
+                     'uScope','uScopeZ'])
       G.uC[k] = gl.getUniformLocation(G.pComp, k);
     G.uC.uLSat = gl.getUniformLocation(G.pComp, 'uLSat');
     /* which materials emit, set once - EMISSIVE never changes after boot */
@@ -23837,7 +24009,7 @@ function glInit(){
     G.pSprite = mkProg(VS_SPRITE, FS_SPRITE);
     G.uS = {};
     for (const k of ['uInst','uPal','uCol','uDep','uVox','uGrid','uHorizon',
-                     'uProjRows','uRMAX','uDFar','uCamZ','uMode','uMJ'])
+                     'uProjRows','uRMAX','uDFar','uCamZ','uMode','uMJ','uScopeCut'])
       G.uS[k] = gl.getUniformLocation(G.pSprite, k);
     G.spriteOK = true;             // glSpriteTargets has the final say
   } catch (e){ G.spriteOK = false; G.pSprite = null; }
@@ -25343,7 +25515,9 @@ function tailMask(){
   if (!GL.compOK || !GPUC.on) return 0;
   const gpuLit = !!(GL.lightOK && GPUL.on);
   if (!gpuLit && (LIGHTV.on || GIR.on || FOGV.on)) return 0;    // _cpuLitFrame
-  if (scopeZoom() !== 1) return 0;      // the scope blends the CPU buffers by hand
+  // only the CPU-blend scope needs the buffers back; the composed glass
+  // never leaves the card, so the tail stays deferred under it
+  if (scopeZoom() !== 1 && !scopeOnCard()) return 0;
   const st = GPUV.stages & GPUV.max;
   /* A SUFFIX of the chain, or nothing. Anything short of TAIL_ALL still has a
      CPU pass behind it, so it reads its answer back - a full sync, slower than
@@ -27612,7 +27786,16 @@ const GPUS = {
   max:    3
 };
 const GS = {
-  W: 256, H: 256, L: 64,           // the volume atlas
+  /* The volume atlas. L has to hold the TALLEST volume a frame can ask for,
+     and that is no longer a standing body: the held gun bakes pitch-rotated
+     variants of itself, and a metre of rifle at thirty-two degrees stands a
+     hundred layers high. A volume over L gets no slot, and the replay path
+     that was supposed to catch it draws into gBuf - which compose never
+     reads while the tail owns the frame. Too small an L is not a slow path,
+     it is an invisible gun. The same goes for H: a shelf row is as tall as
+     the deepest volume in it, and the gun variants run ~115 deep - at 256
+     the third tall variant found no row and vanished the same way. */
+  W: 256, H: 512, L: 128,
   px: 0, py: 0, rowH: 0, gen: 1, packed: 0, full: 0,
   max: 1024, n: 0, over: 0, data: null, pal: null, defer: [],
   /*--- how far the mirror searches for the row that wrote a cell -----------
@@ -27655,7 +27838,7 @@ layout(location = 0) out vec4 oA;    // glyph, palette, level, wetness
 layout(location = 1) out vec4 oB;    // source kind, emitter kind, did-write
 layout(location = 2) out vec4 oD;    // depth
 
-uniform sampler2D uInst;        // 8 texels a solid, see spriteCapture
+uniform sampler2D uInst;        // 10 texels a solid, see spriteCapture
 uniform sampler2D uPal;         // 14 texels a solid: base, density, emissive
 uniform sampler2D uCol;         // the world pass's per-column ray data
 uniform sampler2D uDep;         // the depth the world and the solids just wrote
@@ -27663,10 +27846,11 @@ uniform usampler2DArray uVox;   // every volume in the frame, shelf packed
 uniform vec2  uGrid;
 uniform float uHorizon, uProjRows, uRMAX, uDFar, uCamZ;
 uniform vec4  uMJ;              // mirror search: hi, lo, verify, occlude
+uniform vec4  uScopeCut;        // the composed glass: cx, cy, radC, radR
 uniform int   uMode;            // 0 the solid, 1 its reflection
 flat in int vI;
 
-vec4 I0, I1, I2, I3, I4, I5, I6, I7;
+vec4 I0, I1, I2, I3, I4, I5, I6, I7, I8, I9;
 
 float jround(float v){ return floor(v + 0.5); }
 float jclamp(float v, float a, float b){ return min(max(v, a), b); }
@@ -27714,6 +27898,18 @@ int march(float rx, float ry, float k, float Ozz, float Dzz,
   float L = length(vec3(rx, ry, k));
   if (L == 0.0) L = 1.0;
   float dt = stp / L;
+  /* the bent ray: the (v,w) sampling transform, one for one with the CPU's
+     OvS/DvS block. The identity BRANCHES rather than multiplying through:
+     (Ozz-cw)+cw can land an ulp off Ozz, and an ulp is a flipped truncation
+     in the parity count */
+  float OvS = Ov, DvS = Dv, OwS = Ozz, DwS = Dzz;
+  if ((int(I9.y + 0.5) & 1) != 0){
+    float cwp = hW * 0.5;
+    OvS = I8.x * Ov + I8.y * (Ozz - cwp);
+    DvS = I8.x * Dv + I8.y * Dzz;
+    OwS = I8.z * Ov + I8.w * (Ozz - cwp) + cwp + I9.x;
+    DwS = I8.z * Dv + I8.w * Dzz;
+  }
   /* t comes off n rather than being accumulated. The CPU accumulates, but it
      accumulates in DOUBLE, where sixty-four additions are exact to a part in
      1e16 - so the closed form is nearer to what the CPU actually got than a
@@ -27722,7 +27918,7 @@ int march(float rx, float ry, float k, float Ozz, float Dzz,
   for (int n = 0; n < nMax; n++){
     float t = t0 + dt * (float(n) + 0.5);
     if (t > t1) break;
-    float u = Ou + Du * t, v = Ov + Dv * t, w = Ozz + Dzz * t;
+    float u = Ou + Du * t, v = OvS + DvS * t, w = OwS + DwS * t;
     // int(), not floor(): the CPU truncates with |0, and a sample a hair
     // outside the near face lands on index 0 in both languages
     int ix = int((u + wW * 0.5) / wW * awf);
@@ -27749,6 +27945,8 @@ void main(){
   I5 = texelFetch(uInst, ivec2(5, vI), 0);
   I6 = texelFetch(uInst, ivec2(6, vI), 0);
   I7 = texelFetch(uInst, ivec2(7, vI), 0);
+  I8 = texelFetch(uInst, ivec2(8, vI), 0);
+  I9 = texelFetch(uInst, ivec2(9, vI), 0);
   int x = int(gl_FragCoord.x);
   int r = int(gl_FragCoord.y);
   vec4 cd = texelFetch(uCol, ivec2(x, 0), 0);
@@ -27757,6 +27955,12 @@ void main(){
   gl_FragDepth = 1.0;
 
   if (uMode == 0){
+    // a viewmodel keeps out of the composed glass - same circle, same rule,
+    // as the CPU marcher's cut
+    if ((int(I9.y + 0.5) & 2) != 0){
+      vec2 dq = (vec2(float(x), float(r)) + 0.5 - uScopeCut.xy) / uScopeCut.zw;
+      if (dot(dq, dq) <= 1.0) discard;
+    }
     float k = (float(r) - uHorizon) / uProjRows;
     int face; float t;
     int role = march(rx, ry, k, Oz, -k, face, t);
@@ -27922,7 +28126,7 @@ function glSpriteTargets(){
   GS.rq = new Uint8Array(W * H * 4);
   GS.rq32 = new Uint32Array(GS.rq.buffer);
   if (!GS.data){
-    GS.data = new Float32Array(GS.max * 32);
+    GS.data = new Float32Array(GS.max * 40);
     GS.pal  = new Float32Array(GS.max * NROLE * 4);
   }
   const mkData = (w, h) => {
@@ -27935,7 +28139,7 @@ function glSpriteTargets(){
       gl.texParameteri(gl.TEXTURE_2D, pn, gl.CLAMP_TO_EDGE);
     return t;
   };
-  if (!GL.sInst) GL.sInst = mkData(8, GS.max);
+  if (!GL.sInst) GL.sInst = mkData(10, GS.max);
   if (!GL.sPal)  GL.sPal  = mkData(NROLE, GS.max);
   /* Once, and NOT with the grid. A volume is a solid's own shape and does not
      know how many character cells the screen has - rebuilding four megabytes
@@ -27951,9 +28155,10 @@ function glSpriteTargets(){
   other side of the bus that could drift. */
 function spriteCapture(m, slot, Ou, Ov, Oz, tCap, cy, sy, step, nMax,
                        bu0, bu1, bv0, bv1, bz0, bz1, lvl, dm,
-                       wW, dW, hW, c0, c1, r0, r1, tNear, tFar, zb, sb, sd, dyn){
+                       wW, dW, hW, c0, c1, r0, r1, tNear, tFar, zb, sb, sd, dyn,
+                       xA, xB, xC, xD, xF){
   const i = GS.n++;
-  const D = GS.data, o = i * 32;
+  const D = GS.data, o = i * 40;
   D[o]      = Ou;  D[o + 1]  = Ov;  D[o + 2]  = Oz;   D[o + 3]  = tCap;
   D[o + 4]  = cy;  D[o + 5]  = sy;  D[o + 6]  = step; D[o + 7]  = nMax;
   D[o + 8]  = bu0; D[o + 9]  = bu1; D[o + 10] = bv0;  D[o + 11] = bv1;
@@ -27973,6 +28178,14 @@ function spriteCapture(m, slot, Ou, Ov, Oz, tCap, cy, sy, step, nMax,
     m1 = Math.min(R.rows - 1, Math.ceil(Math.max(a1, a2, a3, a4)) + 2);
   }
   D[o + 28] = m0; D[o + 29] = m1; D[o + 30] = slot.x; D[o + 31] = slot.y;
+  /* the (v,w) sampling transform, and the flag word: bit 1 says a transform
+     is present, bit 2 says this solid is a viewmodel that keeps out of the
+     composed glass (uScopeCut) */
+  D[o + 32] = xA; D[o + 33] = xB; D[o + 34] = xC; D[o + 35] = xD;
+  D[o + 36] = xF;
+  D[o + 37] = ((xA !== 1 || xB !== 0 || xC !== 0 || xD !== 1 || xF !== 0) ? 1 : 0)
+            + (_noRef && _scopeCut ? 2 : 0);
+  D[o + 38] = 0;  D[o + 39] = 0;
   const P = GS.pal, po = i * NROLE * 4;
   for (let q = 0; q < NROLE; q++){
     let b = sb[q];
@@ -27999,8 +28212,8 @@ function glSpritePass(){
   _T.build += performance.now() - _t0; _t0 = performance.now();
   if (n){
     gl.bindTexture(gl.TEXTURE_2D, GL.sInst);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 8, n, gl.RGBA, gl.FLOAT,
-                     GS.data.subarray(0, n * 32));
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 10, n, gl.RGBA, gl.FLOAT,
+                     GS.data.subarray(0, n * 40));
     gl.bindTexture(gl.TEXTURE_2D, GL.sPal);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NROLE, n, gl.RGBA, gl.FLOAT,
                      GS.pal.subarray(0, n * NROLE * 4));
@@ -28031,6 +28244,10 @@ function glSpritePass(){
   gl.uniform1f(U.uDFar, viewD + 4);
   gl.uniform1f(U.uCamZ, cam.z);
   gl.uniform4f(U.uMJ, GS.mj[0], GS.mj[1], GS.mj[2], GS.mj[3]);
+  // the composed glass circle; instances flagged with bit 2 keep out of it
+  if (_scopeCut)
+    gl.uniform4f(U.uScopeCut, _scopeCut.cx, _scopeCut.cy, _scopeCut.rad, _scopeCut.ry);
+  else gl.uniform4f(U.uScopeCut, -1e5, -1e5, 1, 1);
   gl.bindVertexArray(GL.empty);
   gl.disable(gl.BLEND);
   gl.viewport(0, 0, cols, rows);
@@ -28115,9 +28332,9 @@ function spriteReplay(){
     if (a.length === 10){
       drawSprite(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
     } else {
-      _noRef = a[12];
+      _noRef = a[12]; _vwXf = a[13] || null;
       drawModel(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
-      _noRef = 0;
+      _noRef = 0; _vwXf = null;
     }
   }
   D.length = 0;
@@ -28203,6 +28420,12 @@ function glComposeWorld(){
   gl.uniform1f(GL.uC.uEGain, bloomOn && CFG.timeMode !== 2 ? BLOOMV.egain : 1);
   gl.uniform1f(GL.uC.uAirK, GPUE.on ? GPUE.airGlow : 0);
   gl.uniform1f(GL.uC.uLSat, GPUE.on ? GPUE.lightSat : 1);
+  // the glass, when render() decided compose carries it this frame
+  if (_scopeCompose){
+    gl.uniform4f(GL.uC.uScope, _scopeCompose.cx, _scopeCompose.cy,
+                 _scopeCompose.rad, _scopeCompose.rad * (R.cellW / R.cellH));
+    gl.uniform1f(GL.uC.uScopeZ, _scopeCompose.zoom);
+  } else gl.uniform1f(GL.uC.uScopeZ, 1);
   gl.uniform1i(GL.uC.uG, 0);     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.g : GL.cellG);
   gl.uniform1i(GL.uC.uB, 1);     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.b : GL.cellB);
   gl.uniform1i(GL.uC.uLv, 2);    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, TG ? TG.l : GL.cellL);
@@ -29053,7 +29276,10 @@ function hudPass(){
       hudStr(x + 1, (rows >> 1) + 6, msg, H_GRN);
     }
     const aim = cam.riding ? null : hostileInSights(30);
-    const rr0 = (rows >> 1) + Math.round(cam.pitch);
+    /* the reticle sits at the shear's fixed point - the one row whose ray
+       is the aim ray at every pitch. It used to ride the horizon
+       (+cam.pitch), which walked it up and down the screen as you looked */
+    const rr0 = rows >> 1;
     hudStr(cols >> 1, rr0, aim ? 'x' : '+',
            aim ? H_RED : player.bling === 'shades' ? H_PUR : H_GRN);
     if (aim){
@@ -30755,7 +30981,11 @@ function setView(zoom){
   // numbers were reversed. This is the one sign that caused all of it.
   planeX = -dirY * planeLen; planeY = dirX * planeLen;
   projRows = (cols * R.cellW) / (2 * planeLen * R.cellH);
-  horizon = R.rows * 0.5 + cam.pitch;
+  /* pitch is an ANGLE wearing rows as a unit, so under magnification the
+     row offset scales with the projection - without the *zoom the scoped
+     pass looked up at HALF the angle the rifle was pitched at, and the
+     world in the glass barely answered the mouse */
+  horizon = R.rows * 0.5 + cam.pitch * zoom;
   hzRow = clamp(Math.floor(horizon), 0, R.rows - 1);
   const amp = weather === 2 ? 1.5 : weather === 1 ? 0.9 : 0.55;
   for (let x = 0; x < cols; x++){
@@ -30929,9 +31159,24 @@ function render(){
   _lampAir = (weather === 3 ? 2.60 : weather === 2 ? 1.75 : weather === 1 ? 1.40 : 1)
            * (1 + wetLevel * 0.18);
   const zoom = scopeZoom();
+  /* The glass. On the card it costs nothing: compose magnifies the frame
+     inside the bore's circle (see FS_COMPOSE), the world renders once, and
+     the tail stays deferred - the old path here rendered the whole city a
+     second time and stalled the pipeline ~30ms per readback, twice a
+     frame, which is most of what "scoped feels awful" ever was. The CPU
+     blend below survives as the fallback for frames compose cannot take.
+     The cut circle is decided BEFORE the passes, because the viewmodel
+     draws inside them and has to know to keep out of the glass. */
+  _scopeCut = null;
+  if (zoom !== 1 && scopeOnCard()){
+    const g = scopeGeom();
+    _scopeCut = { cx: g.cx, cy: g.cy, rad: g.rad,
+                  ry: g.rad * (R.cellW / R.cellH), zoom };
+  }
   setView(1);
   worldPasses();
-  if (zoom !== 1){
+  _scopeCompose = _scopeCut;
+  if (zoom !== 1 && !_scopeCut){
     // keep the naked-eye frame, draw the magnified one over it, then put the
     // first one back everywhere the tube is not
     const n = gBuf.length;
@@ -31061,12 +31306,19 @@ function frame(now){
   // the glass rises while it is held and drains when it is not
   scopeT += ((scopeUp() ? 1 : 0) - scopeT) * Math.min(1, dt * 7);
   if (scopeT < 0.004) scopeT = 0;
+  scopeSwayTick(dt);               // and the tube trails the aim while it is up
   /* The glass takes a grid the CPU can carry, the way the map takes the
-     finest one. A scoped frame renders the world twice with the card
-     benched, and left to itself auto-res thrashed all the way to the floor
-     and handed back a scope full of mush. One deliberate mid rung, held for
-     exactly as long as the glass is up. */
-  if (scopeT > 0.5 && scopeResSave === null && !CFG.manualRes){
+     finest one. A scoped frame renders the world twice, and when the CPU
+     is carrying those renders, left to itself auto-res thrashed all the
+     way to the floor and handed back a scope full of mush - one deliberate
+     mid rung for exactly as long as the glass is up. With COMPOSE carrying
+     the glass (scopeOnCard) there is no second render at all, so the drop
+     is not needed - and it WAS the complaint: halving the grid mid-scope
+     doubles every glyph, and a screen of doubled glyphs reads as the whole
+     world magnified, when the outside of the glass is supposed to stay
+     exactly as it was. Auto-res still stands behind a genuinely slow
+     scoped frame. */
+  if (scopeT > 0.5 && scopeResSave === null && !CFG.manualRes && !scopeOnCard()){
     const W = R.cols * R.cellW;
     let ri = CFG.CELLW.length - 1;
     while (ri > 0 && W / CFG.CELLW[ri] > 250) ri--;
